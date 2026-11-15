@@ -134,6 +134,8 @@ nav .links a { color: var(--ink2); }
 .ico.y { background: linear-gradient(135deg, #ffcc4d, #ff9248); } .ico.r { background: linear-gradient(135deg, #ff6b6b, #c93d84); }
 .ico.p { background: linear-gradient(135deg, #a07cff, #5b6bff); }
 
+.keys { margin: 18px 0 0; color: var(--ink3); font-size: 13.5px; text-align: center; }
+
 /* iPhone */
 .ios-head { display: grid; grid-template-columns: 1.1fr .9fr; gap: 28px; align-items: end; }
 @media (max-width: 860px) { .ios-head { grid-template-columns: 1fr; } }
@@ -193,16 +195,17 @@ footer p { margin: 4px 0; max-width: 640px; }
     <div class="eyebrow">Features</div>
     <h2>Everything Finder does, for iCloud.</h2>
     <div class="grid">
-      <div class="card"><div class="ico">🗂️</div><h3>Finder-native</h3><p>Icons, list and columns, a preview pane, tabs and two panes side by side. Quick Look, Get Info and your usual shortcuts all work.</p></div>
-      <div class="card"><div class="ico o">🖐️</div><h3>Drag anything anywhere</h3><p>Move files between iCloud Drive, Photos, your disks, cameras and Finder. Every move goes through a transfer queue with progress, retries and size checks.</p></div>
+      <div class="card"><div class="ico">🗂️</div><h3>Finder-native</h3><p>Icon, list, column and gallery views, a preview pane, tabs and separate windows, and two panes side by side. Finder’s shortcuts and trackpad gestures work too: pinch to resize, swipe back, force click to Quick Look.</p></div>
+      <div class="card"><div class="ico o">🖐️</div><h3>Drag anything anywhere</h3><p>Move files between iCloud Drive, Photos, your disks, cameras and Finder, or drop them on any window tab. Folders spring open while you drag, and Cirrus confirms the moment your files join the transfer queue.</p></div>
       <div class="card"><div class="ico y">🌄</div><h3>Photos, properly</h3><p>See your library by month, with albums, Live Photos, favorites and Recently Deleted. Exports keep the originals and their capture dates.</p></div>
-      <div class="card"><div class="ico p">🔎</div><h3>Search, tags, rename</h3><p>Search through subfolders, add Finder tags and rename many files at once. Also: folder sizes, New File, Make Alias and Open in Terminal.</p></div>
+      <div class="card"><div class="ico p">🔎</div><h3>Search, tags, rename</h3><p>Search through subfolders, add Finder tags, click a name to rename it, or rename many files at once. Also: folder sizes, New File, Make Alias, Go to Folder and Open in Terminal.</p></div>
       <div class="card"><div class="ico g">💾</div><h3>Back up &amp; sync</h3><p>Back up all of iCloud to any drive as ordinary folders, with photos sorted by year and month. Sync jobs copy, mirror or two-way sync, and you always see a preview first.</p></div>
       <div class="card"><div class="ico">⇄</div><h3>iCloud ⇄ Google</h3><p>Move to Google Drive and Google Photos, or back again (Google Takeout included). Your albums come along, and nothing is ever deleted.</p></div>
       <div class="card"><div class="ico p">🔑</div><h3>Any Apple ID</h3><p>Use your device's own iCloud, or sign in to any Apple ID the way iCloud.com does, with two-factor and Advanced Data Protection.</p></div>
       <div class="card"><div class="ico r">🛡️</div><h3>Safe by design</h3><p>Removals only ever go to the Trash or Recently Deleted. In read-only mode, nothing in iCloud can change at all.</p></div>
       <div class="card"><div class="ico g">🔒</div><h3>Private</h3><p>Cirrus talks only to Apple and Google, with no analytics and no servers of its own. Passwords stay on your device behind Touch ID or Face ID.</p></div>
     </div>
+    <p class="keys">⌘1–4 views · ⌘T new tab · ⌘N new window · ⇧⌘P preview · Space Quick Look · ⌘↓ open · ⇧⌘G go to folder · ⌥⌘O open in new window · pinch, swipe and force click</p>
   </div>
 </section>
 
@@ -271,7 +274,8 @@ footer p { margin: 4px 0; max-width: 640px; }
 (() => {
   // [file, caption, width, height] — sizes reserve space so the strips never jump while loading
   const sets = {
-    mac: [['photos', 'Photos by month', 1024, 640], ['columns', 'Column view', 1024, 640], ['preview', 'Preview pane', 1024, 640],
+    mac: [['photos', 'Photos by month', 1024, 640], ['gallery', 'Gallery view', 1024, 640], ['columns', 'Column view', 1024, 640],
+          ['tabdrop', 'Drop on any tab', 1024, 640], ['preview', 'Preview pane', 1024, 640], ['notice', 'Every drop confirmed', 1024, 640],
           ['drive', 'iCloud Drive', 1024, 640], ['dual', 'Two panes', 1024, 640], ['list', 'List view', 1024, 640],
           ['google', 'Move to or from Google', 492, 640], ['albums', 'Albums', 1024, 640], ['backup', 'Back Up iCloud', 528, 640]],
     ios: [['drive', 'iCloud Drive', 396, 860], ['photos', 'Photos by month', 396, 860], ['photo', 'Live Photo', 396, 860], ['albums', 'Albums', 396, 860],

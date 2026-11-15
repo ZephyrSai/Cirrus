@@ -11,10 +11,10 @@ A native app for browsing, moving, syncing and backing up iCloud Drive and iClou
 
 ## What it does
 
-- **Finder-style browsing.** Icon, list and column views, a preview pane, tabs, two panes side by side, Quick Look and Get Info. Also Finder tags, search through subfolders, batch rename, folder sizes, New File, Make Alias, Open in Terminal, and folders that spring open while you drag.
-- **Drag anything anywhere.** Move files between iCloud Drive, iCloud Photos, your disks, connected cameras and phones, and Finder.
+- **Finder-style browsing.** Icon, list, column and gallery views, a preview pane, tabs and separate windows, two panes side by side, Quick Look and Get Info. Finder tags, search through subfolders, slow-click and batch rename, folder sizes, New File, Make Alias, Go to Folder and Open in Terminal. Finder’s shortcuts (⌘1–4, ⌘T, ⌘N, ⇧⌘P, ⌘↓, ⇧⌘G…) and trackpad gestures (pinch, swipe back/forward, force click for Quick Look).
+- **Drag anything anywhere.** Move files between iCloud Drive, iCloud Photos, your disks, connected cameras and phones, and Finder, or drop them on any window tab (a drop zone appears under each tab). Folders spring open while you drag.
 - **Photos, properly.** The library is grouped by month, with albums, Live Photos, favorites and Recently Deleted. Export originals with their capture dates.
-- **Managed transfers.** A real queue with speed and time left, size checks before anything starts, automatic retries, and no idle sleep while files move.
+- **Managed transfers.** A real queue with speed and time left, size checks before anything starts, automatic retries, and no idle sleep while files move. Every drop, paste or Copy To is confirmed on screen the moment it joins the queue.
 - **Sync jobs.** Copy, mirror or two-way sync a folder with iCloud Drive: by hand, on a schedule, or when a drive is plugged in. You always see a preview first.
 - **Back Up iCloud.** Checks space, then downloads everything as ordinary files and folders on a drive you choose. Photos are sorted into `YYYY/MM` folders with their Live Photo videos, edits and RAW files. Later runs fetch only what's new.
 - **iCloud ⇄ Google.** Move iCloud Drive and Photos to Google Drive and Google Photos, or bring Google Drive and a Google Takeout export of your photos into iCloud. Albums and favorites come along. Runs are resumable and incremental, and nothing is ever deleted.
