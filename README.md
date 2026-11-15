@@ -36,7 +36,7 @@ A native app for browsing, moving, syncing and backing up iCloud Drive and iClou
 | **macOS 14+** (Apple silicon and Intel) | Available: AppKit app |
 | **iPhone and iPad** (iOS 17+) | Build from source: SwiftUI app on the same Swift engine, with multiple Apple IDs, exports and backups to USB drives (`ios/`, `scripts/build-ios.sh`) |
 | **Windows 10/11** (x64 and Arm64) | Preview: WPF app with the same engine, ported to .NET |
-| **iCloud ⇄ Google Drive / Google Photos** | Available in the Mac app (bring your own free Google Cloud OAuth client); coming to Windows |
+| **iCloud ⇄ Google Drive / Google Photos** | In the Mac and Windows apps (bring your own free Google Cloud OAuth client) |
 
 ## Building
 
@@ -45,9 +45,10 @@ scripts/test.sh            # run the tests
 scripts/build-app.sh       # build/Cirrus.app
 scripts/package-mac.sh     # universal .dmg and .zip
 scripts/build-windows.sh   # Windows x64 + Arm64 zips (needs the .NET SDK)
+scripts/build-ios.sh       # iPhone/iPad app (Xcode; TEAM_ID=… to sign for your device)
 ```
 
-[BUILDING.md](BUILDING.md) covers signing, notarization, tester builds and the Windows toolchain.
+[BUILDING.md](BUILDING.md) covers signing, notarization, tester builds, the Windows toolchain and the iPhone/iPad build.
 
 ## License
 

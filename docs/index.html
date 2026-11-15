@@ -152,7 +152,7 @@ kbd { white-space: nowrap; font: 12.5px ui-monospace, SFMono-Regular, Menlo, mon
 .pill { border-radius: 999px; padding: 4px 10px; font-size: 13px; font-weight: 600; }
 
 /* Roadmap */
-.road { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 40px; }
+.road { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; margin-top: 40px; }
 @media (max-width: 900px) { .road { grid-template-columns: 1fr; } }
 .tag { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; border-radius: 999px; padding: 3px 10px; margin-bottom: 12px; }
 .tag.now { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
@@ -196,7 +196,7 @@ footer p { margin: 6px 0; max-width: 640px; }
   <div class="wrap">
     <img class="appicon" src="img/icon-512.webp" alt="Cirrus app icon" width="132" height="132">
     <h1>Your iCloud,<br><span class="grad">in a real Finder.</span></h1>
-    <p class="lede">Cirrus is a native Mac app for browsing, moving, syncing and backing up iCloud Drive and iCloud Photos — even on a Mac that isn't signed in to iCloud.</p>
+    <p class="lede">Cirrus is a native app for browsing, moving, syncing and backing up iCloud Drive and iCloud Photos — on a Mac, on Windows, and on iPhone and iPad — even without being signed in to iCloud on that device.</p>
     <div class="ctas">
       <a class="btn primary" href="https://github.com/ZephyrSai/Cirrus/releases/latest">Download for Mac <small>macOS 14+ · Apple silicon &amp; Intel</small></a>
       <a class="btn" href="https://github.com/ZephyrSai/Cirrus">View source</a>
@@ -328,12 +328,13 @@ footer p { margin: 6px 0; max-width: 640px; }
   <div class="wrap">
     <div class="reveal">
       <div class="eyebrow">Get it</div>
-      <h2>Mac today. Windows in preview.</h2>
+      <h2>Mac, Windows, iPhone and iPad.</h2>
     </div>
     <div class="road">
       <div class="card reveal"><span class="tag now">Available</span><h3>Cirrus for Mac</h3><p>Universal app for Apple silicon and Intel, macOS 14 or later. Free and open source under GPL v3.</p><p><a href="https://github.com/ZephyrSai/Cirrus/releases/latest">Download the latest release →</a></p></div>
       <div class="card reveal"><span class="tag soon">Preview</span><h3>Cirrus for Windows</h3><p>A native Windows 10 and 11 app on .NET with the same engine: browse, transfer, back up — and it can use iCloud for Windows' folders when they're there.</p></div>
-      <div class="card reveal"><span class="tag now">New</span><h3>iCloud ⇄ Google</h3><p>Built into Cirrus for Mac (Sync › Move to or from Google…), both directions. Coming to the Windows app next.</p></div>
+      <div class="card reveal"><span class="tag soon">Build from source</span><h3>Cirrus for iPhone &amp; iPad</h3><p>A SwiftUI app on the same engine: several Apple IDs, browse Drive and Photos, export originals to Files, and back up iCloud to a USB drive. Build it with Xcode (<code>scripts/build-ios.sh</code>).</p></div>
+      <div class="card reveal"><span class="tag now">New</span><h3>iCloud ⇄ Google</h3><p>In Cirrus for Mac and Windows (Move to or from Google…), both directions, including Google Takeout imports.</p></div>
     </div>
   </div>
 </section>
