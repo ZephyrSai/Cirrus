@@ -673,8 +673,10 @@ final class Ops {
                 let r = await a.present(window)
                 guard r == .alertFirstButtonReturn else { return }
             }
-            do { try await photos.delete(assets); refresh(loc); if case .album(let ac, let lib, _) = loc { refresh(.album(ac, lib, "smart:Recently Deleted")) } }
-            catch { displayError(error, title: "Couldn’t delete", window: window) }
+            do {
+                try await photos.delete(assets)
+                patchAndShow(loc, updated: [], removed: Set(assets.map(\.id)))
+            } catch { displayError(error, title: "Couldn’t delete", window: window) }
         }
         let dev = items.compactMap(\.deviceItem)
         if !dev.isEmpty {
@@ -716,14 +718,28 @@ final class Ops {
 
     func setFavorite(_ items: [Item], _ value: Bool, in loc: Location, window: NSWindow?) async {
         guard let photos = loc.account?.photos ?? items.first?.account.flatMap({ AccountManager.shared.account(id: $0)?.photos }) else { return }
-        do { _ = try await photos.setFavorite(items.compactMap(\.photo), value); refresh(loc) }
-        catch { displayError(error, title: "Couldn’t update favorites", window: window) }
+        do {
+            let updated = try await photos.setFavorite(items.compactMap(\.photo), value)
+            patchAndShow(loc, updated: updated)
+        } catch { displayError(error, title: "Couldn’t update favorites", window: window) }
     }
 
     func setHidden(_ items: [Item], _ value: Bool, in loc: Location, window: NSWindow?) async {
         guard let photos = loc.account?.photos else { return }
-        do { _ = try await photos.setHidden(items.compactMap(\.photo), value); refresh(loc) }
-        catch { displayError(error, title: "Couldn’t update", window: window) }
+        do {
+            let updated = try await photos.setHidden(items.compactMap(\.photo), value)
+            patchAndShow(loc, updated: updated, removed: Set(updated.map(\.id)))
+        } catch { displayError(error, title: "Couldn’t update", window: window) }
+    }
+
+    /// Reflect photo edits in every cached view without re-downloading listings.
+    func patchAndShow(_ loc: Location, updated: [PhotoAsset], removed: Set<String> = []) {
+        guard case .album(let a, let lib, _) = loc else { refresh(loc); return }
+        Catalog.shared.patchPhotos(account: a, library: lib, updated: updated, removed: removed)
+        NotificationCenter.default.post(name: .cirrusLocationChanged, object: loc)
+        for id in ["smart:Recently Deleted", "smart:Favorites", "smart:Hidden"] where Location.album(a, lib, id) != loc {
+            NotificationCenter.default.post(name: .cirrusLocationChanged, object: Location.album(a, lib, id))
+        }
     }
 
     // Native iCloud Drive (Mac signed in)

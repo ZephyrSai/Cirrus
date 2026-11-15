@@ -35,6 +35,7 @@ sealed class SettingsWindow : Window
         var foldersTop = Ui.Check("Keep folders on top when sorting", s.FoldersOnTop, v => { s.FoldersOnTop = v; s.Save(); });
         var live = Ui.Check("Include Live Photo videos (.MOV) when downloading photos", s.ExportLive, v => { s.ExportLive = v; s.Save(); });
         var edited = Ui.Check("Download edited versions of photos when they exist", s.ExportEdited, v => { s.ExportEdited = v; s.Save(); });
+        var previews = Ui.Check("Show previews of iCloud Drive images in the icon view (downloads images up to 20 MB into a cache)", s.DrivePreviews, v => { s.DrivePreviews = v; s.Save(); });
         var byMonth = Ui.Check("Group photos by month", s.GroupPhotosByMonth, v => { s.GroupPhotosByMonth = v; s.Save(); });
 
         var maxT = new ComboBox { ItemsSource = new[] { 1, 2, 3, 4, 6, 8 }, SelectedItem = s.MaxTransfers, Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
@@ -83,7 +84,7 @@ sealed class SettingsWindow : Window
 
         var root = Ui.Stack(
             Ui.Header("Safety"), safetyCard,
-            Ui.Header("Browsing"), Ui.Card(Ui.Stack(hidden, foldersTop, Ui.Labeled("Photo tile size", tile))),
+            Ui.Header("Browsing"), Ui.Card(Ui.Stack(hidden, foldersTop, previews, Ui.Labeled("Photo tile size", tile))),
             Ui.Header("Photos"), Ui.Card(Ui.Stack(live, edited, byMonth, Ui.Labeled("iCloud Photos folder", Ui.Row(photosFolder, browse)))),
             Ui.Header("Transfers"), Ui.Card(Ui.Labeled("At the same time", maxT)),
             Ui.Header("Accounts"), Ui.Card(accounts),

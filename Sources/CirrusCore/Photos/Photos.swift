@@ -113,6 +113,16 @@ public protocol PhotosBackend: AnyObject, Sendable {
                      progress: @escaping @Sendable (Int64, Int64) -> Void) async throws
     func add(_ assets: [PhotoAsset], to album: PhotoAlbum, library: PhotoLibraryRef) async throws
     func createAlbum(_ name: String, in library: PhotoLibraryRef) async throws -> PhotoAlbum
+    /// Requirements (not just extension methods) so calls through `any PhotosBackend` reach the real implementation.
+    func syncToken(library: PhotoLibraryRef) -> String?
+    func hasChanges(since token: String, library: PhotoLibraryRef) async throws -> (changed: Bool, token: String?)
+}
+
+public extension PhotosBackend {
+    /// Opaque “as of” marker for a library after the last listing (nil = backend can't tell).
+    func syncToken(library: PhotoLibraryRef) -> String? { nil }
+    /// Whether anything changed since `token`; returns the newer token. Default: assume it did.
+    func hasChanges(since token: String, library: PhotoLibraryRef) async throws -> (changed: Bool, token: String?) { (true, nil) }
 }
 
 public enum PhotoFormats {

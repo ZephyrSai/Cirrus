@@ -778,11 +778,17 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     @objc func goBackAction(_ sender: Any?) { goBack() }
     @objc func goForwardAction(_ sender: Any?) { goForward() }
     @objc func goUpAction(_ sender: Any?) { goUp() }
+    /// ⌘R: skip every cache for this view (album list included) and ask the server.
     @objc func refresh(_ sender: Any?) {
         Catalog.shared.invalidate(location)
-        if case .photos(let a, let lib, _) = location { Catalog.shared.albumIndex[a + "|" + lib] = nil }
-        if case .album(let a, let lib, _) = location { Catalog.shared.albumIndex[a + "|" + lib] = nil }
-        reload()
+        var acctLib: (String, String)?
+        if case .photos(let a, let lib, _) = location { acctLib = (a, lib) }
+        if case .album(let a, let lib, _) = location { acctLib = (a, lib) }
+        guard let (a, lib) = acctLib else { reload(); return }
+        Task {
+            _ = try? await Catalog.shared.albums(account: a, library: lib, refresh: true)
+            reload()
+        }
     }
 
     @objc func newFolder(_ sender: Any?) {

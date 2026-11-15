@@ -108,7 +108,27 @@ final class Catalog {
     var driveNames = [String: (name: String, parent: String?)]()     // "acct|id"
     var albumIndex = [String: [PhotoAlbum]]()                         // "acct|lib"
     var libraryIndex = [String: [PhotoLibraryRef]]()                  // acct
-    var memory = [Location: [Item]]()
+    var memory = [Location: [Item]]() { didSet { } }
+    var memoryAt = [Location: Date]()
+    var forceNext = Set<Location>()
+
+    /// How long an in-memory listing is trusted before re-checking the server (our own edits invalidate sooner).
+    func ttl(_ loc: Location) -> TimeInterval {
+        switch loc {
+        case .drive, .driveTrash: return 60
+        case .photos: return 300
+        case .album: return 0          // listAlbum does its own token-based freshness check
+        default: return 0              // local / devices are cheap and watched
+        }
+    }
+
+    struct AlbumCache: Codable { var assets: [PhotoAsset]; var token: String?; var savedAt: Date }
+    struct DriveCache: Codable { var nodes: [DriveNode]; var savedAt: Date }
+    #if DEBUG
+    static let albumFreshFor: TimeInterval = Double(ProcessInfo.processInfo.environment["CIRRUS_ALBUM_TTL"] ?? "") ?? 300
+    #else
+    static let albumFreshFor: TimeInterval = 300
+    #endif
     var showHidden: Bool { UserDefaults.standard.bool(forKey: "showHidden") }
 
     // MARK: Titles & icons
@@ -300,6 +320,8 @@ final class Catalog {
     // MARK: Listing
 
     func list(_ loc: Location, partial: @escaping @MainActor ([Item]) -> Void) async throws -> [Item] {
+        let forced = forceNext.remove(loc) != nil
+        if !forced, let m = memory[loc], let t = memoryAt[loc], Date().timeIntervalSince(t) < ttl(loc) { return m }
         let started = Date()
         defer {
             let secs = Date().timeIntervalSince(started)
@@ -316,7 +338,12 @@ final class Catalog {
                 + rootExtras(url)
         case .drive(let a, let id):
             guard let acct = AccountManager.shared.account(id: a), let drive = acct.drive else { throw ICloudError.needsSignIn }
+            let file = cacheFile(account: a, library: "drive", album: Ops.stableKey(id))
+            if memory[loc] == nil, let d = try? Data(contentsOf: file), let c = try? JSONDecoder().decode(DriveCache.self, from: d) {
+                partial(c.nodes.map { driveItem($0, account: a) })
+            }
             let nodes = try await drive.list(id)
+            if acct.kind == .web, let d = try? JSONEncoder().encode(DriveCache(nodes: nodes, savedAt: Date())) { try? d.write(to: file, options: .atomic) }
             for n in nodes where n.isFolder { driveNames[a + "|" + n.id] = (n.name, id) }
             items = nodes.map { driveItem($0, account: a) }
         case .driveTrash(let a):
@@ -327,7 +354,7 @@ final class Catalog {
             items = albums.filter { $0.parentID == folder && !(folder == nil && $0.kind == .smart && $0.count == 0 && !$0.isAllPhotos && $0.id != "smart:Favorites") }
                 .map { albumItem($0, account: a, library: lib) }
         case .album(let a, let lib, let id):
-            items = try await listAlbum(account: a, library: lib, albumID: id, partial: partial)
+            items = try await listAlbum(account: a, library: lib, albumID: id, forced: forced, partial: partial)
         case .device(let d, let folder):
             items = DeviceManager.shared.items(device: d, folder: folder).map { deviceItem($0) }
         }
@@ -444,6 +471,8 @@ final class Catalog {
         if AccountManager.shared.account(id: account)?.kind == .web, let d = try? Data(contentsOf: file),
            let cached = try? JSONDecoder().decode([PhotoLibraryRef].self, from: d), !cached.isEmpty {
             libraryIndex[account] = cached
+            let age = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate).map { Date().timeIntervalSince($0) } ?? .infinity
+            if age < 86_400 { return cached }
             Task { @MainActor in if let fresh = try? await photos.libraries() { Catalog.shared.libraryIndex[account] = fresh; if let d = try? JSONEncoder().encode(fresh) { try? d.write(to: file, options: .atomic) } } }
             return cached
         }
@@ -465,6 +494,8 @@ final class Catalog {
         if !refresh, AccountManager.shared.account(id: account)?.kind == .web,
            let d = try? Data(contentsOf: file), let cached = try? JSONDecoder().decode([PhotoAlbum].self, from: d) {
             albumIndex[key] = cached
+            let age = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate).map { Date().timeIntervalSince($0) } ?? .infinity
+            if age < 600 { return cached }
             Task { @MainActor in
                 if let fresh = try? await Catalog.shared.albums(account: account, library: library, refresh: true), fresh != cached {
                     NotificationCenter.default.post(name: .cirrusLocationChanged, object: Location.photos(account, library, nil))
@@ -491,28 +522,74 @@ final class Catalog {
         return dir.appendingPathComponent((library + "-" + album).replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_") + ".json")
     }
 
-    func listAlbum(account: String, library: String, albumID: String, partial: @escaping @MainActor ([Item]) -> Void) async throws -> [Item] {
+    func listAlbum(account: String, library: String, albumID: String, forced: Bool = false,
+                   partial: @escaping @MainActor ([Item]) -> Void) async throws -> [Item] {
         guard let acct = AccountManager.shared.account(id: account), let photos = acct.photos else { throw ICloudError.needsSignIn }
         let lib = try await self.library(account: account, id: library)
         let album = try await self.album(account: account, library: library, id: albumID)
         let cacheURL = cacheFile(account: account, library: library, album: albumID)
         let useDiskCache = acct.kind == .web
-        var hadCache = false
-        if useDiskCache, let d = try? Data(contentsOf: cacheURL), let cached = try? JSONDecoder().decode([PhotoAsset].self, from: d) {
-            hadCache = true
-            partial(cached.map { photoItem($0, account: account) })
+        var cache: AlbumCache?
+        if useDiskCache, let d = try? Data(contentsOf: cacheURL) {
+            cache = (try? JSONDecoder().decode(AlbumCache.self, from: d))
+                ?? (try? JSONDecoder().decode([PhotoAsset].self, from: d)).map { AlbumCache(assets: $0, token: nil, savedAt: .distantPast) }
         }
+        if let c = cache, !forced {
+            let items = c.assets.map { photoItem($0, account: account) }
+            // Fresh enough: no network at all.
+            if Date().timeIntervalSince(c.savedAt) < Self.albumFreshFor { return items }
+            partial(items)
+            // Ask CloudKit whether anything changed since this listing; if not, keep it.
+            if let token = c.token, let (changed, newToken) = try? await photos.hasChanges(since: token, library: lib), !changed {
+                save(AlbumCache(assets: c.assets, token: newToken ?? token, savedAt: Date()), to: cacheURL)
+                Log.status("photos: album unchanged, served from cache (\(c.assets.count) items)")
+                return items
+            }
+        }
+        let hadCache = cache != nil
         let box = PartialBox()
         let assets = try await photos.assets(in: album, library: lib) { batch, _ in
             guard !hadCache else { return }
             let all = box.append(batch)
             Task { @MainActor in partial(all.map { Catalog.shared.photoItem($0, account: account) }) }
         }
-        if useDiskCache, let d = try? JSONEncoder().encode(assets) { try? d.write(to: cacheURL, options: .atomic) }
+        if useDiskCache { save(AlbumCache(assets: assets, token: photos.syncToken(library: lib), savedAt: Date()), to: cacheURL) }
         return assets.map { photoItem($0, account: account) }
     }
 
-    func invalidate(_ loc: Location) { memory[loc] = nil }
+    func save(_ c: AlbumCache, to url: URL) { if let d = try? JSONEncoder().encode(c) { try? d.write(to: url, options: .atomic) } }
+
+    /// Apply our own photo edits to every cached listing of that library (no re-download).
+    func patchPhotos(account: String, library: String, updated: [PhotoAsset], removed: Set<String> = []) {
+        let byID = Dictionary(updated.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        for loc in Array(memory.keys) {
+            guard case .album(let a, let l, let id) = loc, a == account, l == library, var items = memory[loc] else { continue }
+            if id == "smart:Recently Deleted" || id == "smart:Favorites" || id == "smart:Hidden" { memory[loc] = nil; forceNext.insert(loc); continue }
+            items.removeAll { $0.photo.map { removed.contains($0.id) } ?? false }
+            items = items.map { it in
+                guard let p = it.photo, let u = byID[p.id] else { return it }
+                return photoItem(u, account: account)
+            }
+            memory[loc] = items
+        }
+        let dir = cacheFile(account: account, library: library, album: "x").deletingLastPathComponent()
+        for f in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] {
+            guard f.lastPathComponent.hasPrefix((library + "-").replacingOccurrences(of: ":", with: "_")),
+                  let d = try? Data(contentsOf: f), var c = try? JSONDecoder().decode(AlbumCache.self, from: d) else { continue }
+            let name = f.lastPathComponent
+            if name.contains("Recently Deleted") || name.contains("Favorites") || name.contains("Hidden") { c.savedAt = .distantPast; save(c, to: f); continue }
+            c.assets.removeAll { removed.contains($0.id) }
+            c.assets = c.assets.map { byID[$0.id] ?? $0 }
+            save(c, to: f)
+        }
+    }
+
+    /// Our own change (or ⌘R): the next listing goes to the server, skipping caches.
+    func invalidate(_ loc: Location) {
+        memory[loc] = nil
+        memoryAt[loc] = nil
+        forceNext.insert(loc)
+    }
 }
 
 final class PartialBox: @unchecked Sendable {

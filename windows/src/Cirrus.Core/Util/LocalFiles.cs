@@ -190,8 +190,11 @@ public sealed class WindowsRecycleBin : IRecycler
         if (!OperatingSystem.IsWindows()) return false;
         try
         {
-            using var global = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer");
-            if (global?.GetValue("NoRecycleFiles") is int nr && nr != 0) return false;
+            foreach (var hive in new[] { Registry.CurrentUser, Registry.LocalMachine })
+            {
+                using var policy = hive.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer");
+                if (policy?.GetValue("NoRecycleFiles") is int nr && nr != 0) return false;   // "don't move files to the Recycle Bin" policy
+            }
             var guid = VolumeInfo.Win.VolumeGuid(root);
             if (guid is null) return false;
             using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\BitBucket\Volume\" + guid);

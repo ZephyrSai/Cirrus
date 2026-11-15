@@ -11,6 +11,24 @@ public final class WebPhotos: PhotosBackend, @unchecked Sendable {
     static let pageLimit = 200
     private let lock = NSLock()
     private var libs: [String: PhotoLibraryRef] = [:]
+    private var tokens: [String: String] = [:]   // library → latest CloudKit syncToken seen
+
+    func noteToken(_ r: JSON, library: String) {
+        if let t = r["syncToken"].string, !t.isEmpty { lock.withLock { tokens[library] = t } }
+    }
+
+    public func syncToken(library: PhotoLibraryRef) -> String? { lock.withLock { tokens[library.id] } }
+
+    /// CloudKit change feed: no records since `token` ⇒ every cached listing for the library is current.
+    public func hasChanges(since token: String, library: PhotoLibraryRef) async throws -> (changed: Bool, token: String?) {
+        let lib = self.library(library.id)
+        let body: JSON = ["zones": [["zoneID": zoneID(lib), "syncToken": .string(token), "desiredKeys": ["isDeleted"]]]]
+        let r = try await call(lib.area, "changes/zone", body)
+        let zone = r["zones"][0]
+        let newToken = zone["syncToken"].string
+        if let t = newToken { lock.withLock { tokens[library.id] = t } }
+        return (!(zone["records"].array.isEmpty && zone["moreComing"].bool != true), newToken)
+    }
 
     public init(session: ICloudSession, appleID: String) {
         self.session = session
@@ -191,6 +209,7 @@ public final class WebPhotos: PhotosBackend, @unchecked Sendable {
                 inFlight += 1
                 group.addTask {
                     let r = try await self.call(lib.area, "records/query", self.listQuery(album, lib: lib, startRank: idx * stride))
+                    self.noteToken(r, library: lib.id)
                     let recs = r["records"].array
                     return (idx, Self.parse(recs, library: lib.id), recs.count)
                 }

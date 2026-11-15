@@ -34,7 +34,8 @@ static class Thumbnails
         if (item.Thumbnail is not null) return;
         var key = item.Key + "@" + px;
         lock (Lock) if (Memory.TryGetValue(key, out var hit)) { item.Thumbnail = hit; return; }
-        if (!(item.Photo is not null || (item.LocalPath is { } lp && !item.IsContainer && Decodable.Contains(Path.GetExtension(lp)) && (item.Size ?? 0) < 60_000_000
+        var drivePreview = item.Node is { IsFolder: false } n0 && Settings.Current.DrivePreviews && Decodable.Contains(Path.GetExtension(n0.Name)) && n0.Size is > 0 and < 20_000_000;
+        if (!(item.Photo is not null || drivePreview || (item.LocalPath is { } lp && !item.IsContainer && Decodable.Contains(Path.GetExtension(lp)) && (item.Size ?? 0) < 60_000_000
               && item.Cloud != LocalFiles.CloudState.CloudOnly))) return;
         await Gate.WaitAsync(ct);
         try
@@ -45,6 +46,22 @@ static class Thumbnails
             {
                 var data = await backend.ThumbnailAsync(asset, px, ct);
                 if (data is not null) img = await Task.Run(() => Decode(new MemoryStream(data), px), ct);
+            }
+            else if (drivePreview && item.Node is { } node && AccountManager.Shared.Account(item.AccountID)?.Drive is { } drive)
+            {
+                // Read-only: downloads the image into Cirrus' preview cache (keyed by item and etag).
+                var cached = Path.Combine(Paths.CacheDir("previews"), Hash(item.Key + "|" + node.Etag + "|" + node.Size) + Path.GetExtension(node.Name));
+                if (!File.Exists(cached))
+                {
+                    var tmp = Paths.TempFile(node.Name);
+                    try
+                    {
+                        await drive.DownloadAsync(node, tmp, null, ct);
+                        File.Move(tmp, cached, overwrite: true);
+                    }
+                    finally { try { Directory.Delete(Path.GetDirectoryName(tmp)!, true); } catch { } }   // our own scratch folder
+                }
+                img = await Task.Run(() => { using var fs = File.OpenRead(cached); return Decode(fs, px); }, ct);
             }
             else if (item.LocalPath is { } path)
                 img = await Task.Run(() => { using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite); return Decode(fs, px); }, ct);
@@ -61,6 +78,8 @@ static class Thumbnails
         catch (Exception e) { Log.Debug("thumbnail failed: " + e.GetType().Name); }
         finally { Gate.Release(); }
     }
+
+    static string Hash(string s) => Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(s)))[..24];
 
     /// <summary>Decodes at reduced size and applies the EXIF orientation. Frozen, so any thread can use it.</summary>
     public static ImageSource? Decode(Stream s, int px)

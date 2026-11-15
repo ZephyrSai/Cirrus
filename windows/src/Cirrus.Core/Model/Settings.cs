@@ -17,6 +17,8 @@ public sealed class Settings
     public bool ShowStatusBar { get; set; } = true;
     public bool ShowPathBar { get; set; } = true;
     public bool SquarePhotoGrid { get; set; } = true;
+    /// <summary>Icon view downloads small iCloud Drive images (≤ 20 MB) into the cache to show previews.</summary>
+    public bool DrivePreviews { get; set; } = true;
     public double IconSize { get; set; } = 64;
     public double PhotoSize { get; set; } = 120;
     public string ViewMode { get; set; } = "details";
