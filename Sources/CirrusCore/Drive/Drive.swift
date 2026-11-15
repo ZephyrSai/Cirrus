@@ -149,6 +149,7 @@ public final class WebDrive: DriveBackend, @unchecked Sendable {
     }
 
     public func upload(_ file: URL, name: String, into folderID: String, modified: Date?, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> DriveNode {
+        try SafetyPolicy.checkWrite()
         let zone = Self.parts(folderID).zone
         let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int64) ?? 0
         if size > 50_000_000_000 { throw ICloudError.server("“\(name)” is \(size.byteString), larger than iCloud Drive’s 50 GB file limit.") }
@@ -185,6 +186,7 @@ public final class WebDrive: DriveBackend, @unchecked Sendable {
     }
 
     public func createFolder(_ name: String, in folderID: String) async throws -> DriveNode {
+        try SafetyPolicy.checkWrite()
         let r = try await session.request(try await drivews() + "/createFolders",
             json: ["destinationDrivewsId": .string(folderID),
                    "folders": [["clientId": .string("FOLDER::UNKNOWN_ZONE::TempId-" + UUID().uuidString), "name": .string(name)]]],
@@ -216,6 +218,7 @@ public final class WebDrive: DriveBackend, @unchecked Sendable {
     }
 
     public func rename(_ node: DriveNode, to name: String) async throws -> DriveNode {
+        try SafetyPolicy.checkWrite()
         var target = node
         for attempt in 0..<2 {
             let r = try await itemOp("/renameItems", items: [target], itemExtra: { _ in ["name": .string(name)] })
@@ -228,6 +231,7 @@ public final class WebDrive: DriveBackend, @unchecked Sendable {
     }
 
     public func move(_ nodes: [DriveNode], to folderID: String) async throws {
+        try SafetyPolicy.checkWrite()
         let r = try await itemOp("/moveItems", items: nodes, extra: ["destinationDrivewsId": .string(folderID)])
         try await checkStatuses(r) { conflicts in
             let fixed = nodes.compactMap { n -> DriveNode? in guard let e = conflicts[n.id] else { return nil }; var m = n; m.etag = e; return m }
@@ -237,6 +241,7 @@ public final class WebDrive: DriveBackend, @unchecked Sendable {
     }
 
     public func trash(_ nodes: [DriveNode]) async throws {
+        try SafetyPolicy.checkWrite()
         let r = try await itemOp("/moveItemsToTrash", items: nodes)
         try await checkStatuses(r) { conflicts in
             let fixed = nodes.compactMap { n -> DriveNode? in guard let e = conflicts[n.id] else { return nil }; var m = n; m.etag = e; return m }
@@ -252,11 +257,13 @@ public final class WebDrive: DriveBackend, @unchecked Sendable {
     }
 
     public func restore(_ nodes: [DriveNode]) async throws {
+        try SafetyPolicy.checkWrite()
         let r = try await itemOp("/putBackItemsFromTrash", items: nodes)
         try await checkStatuses(r) { _ in throw ICloudError.conflict }
     }
 
     public func deleteForever(_ nodes: [DriveNode]) async throws {
+        try SafetyPolicy.checkWrite()
         let r = try await itemOp("/deleteItems", items: nodes)
         try await checkStatuses(r) { _ in throw ICloudError.conflict }
     }

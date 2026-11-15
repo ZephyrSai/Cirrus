@@ -5,6 +5,7 @@
 #   CONFIG=debug|release       (default release)
 #   OUTPUT=build               output folder
 #   BUNDLE_ID=...              (default io.github.zephyrsai.cirrus)
+#   TESTER=1                   start in read-only iCloud mode (for handing to testers)
 set -euo pipefail
 cd "${0:A:h}/.."
 CONFIG=${CONFIG:-release}
@@ -57,6 +58,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSDocumentsFolderUsageDescription</key><string>Cirrus browses your Documents like Finder.</string>
   <key>NSDownloadsFolderUsageDescription</key><string>Cirrus saves downloads from iCloud to your Downloads folder.</string>
   <key>NSUserNotificationAlertStyle</key><string>banner</string>
+  <key>CirrusTesterBuild</key><$([[ "${TESTER:-0}" == "1" ]] && echo true || echo false)/>
 </dict></plist>
 PLIST
 codesign --force --sign "$SIGN" --timestamp=none "$APP"

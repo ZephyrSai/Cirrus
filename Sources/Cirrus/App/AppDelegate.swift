@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Prefs.register()
+        SafetyPolicy.readOnlyICloud = Prefs.readOnlyICloud || ProcessInfo.processInfo.environment["CIRRUS_READ_ONLY"] != nil
         if !SingleInstance.claim() { NSApp.terminate(nil); return }
         NSApp.setActivationPolicy(Debug.headless ? .accessory : .regular)
         NSApp.mainMenu = MainMenu.build(self)

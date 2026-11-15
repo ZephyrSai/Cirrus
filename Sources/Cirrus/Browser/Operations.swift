@@ -166,6 +166,7 @@ final class Ops {
         }
         switch dest {
         case .local(let dir):
+            do { try SafetyPolicy.checkLocalWrite(dir) } catch { displayError(error, title: "iCloud is read-only", window: window); return }
             guard let names = await resolveNames(files.map(\.lastPathComponent), in: dest, window: window) else { return }
             for f in files {
                 guard let entry = names[f.lastPathComponent], let target = entry else { continue }
@@ -202,8 +203,12 @@ final class Ops {
                 if isDir {
                     TransferManager.shared.enqueue(finalName, detail: "Uploading folder to \(dest.title)", direction: .upload, group: group, quotaKey: "icloud:" + acct.id) { t in
                         let folder: DriveNode
-                        if let old, old.isFolder, !replace { folder = old } else {
-                            if replace, let old { try await drive.trash([old]) }
+                        var retire: DriveNode?
+                        if let old, old.isFolder, !replace { folder = old } else if replace, let old {
+                            // Build the replacement beside the old folder; retire the old one only after it uploads.
+                            folder = try await drive.createFolder(".cirrus-upload-\(UUID().uuidString.prefix(8))-" + finalName, in: folderID)
+                            retire = old
+                        } else {
                             folder = try await drive.createFolder(finalName, in: folderID)
                         }
                         let runner = SyncRunner(a: LocalSide(root: f, excludes: SyncOptions().excludes), b: DriveSide(drive: drive, rootID: folder.id, label: finalName, excludes: []))
@@ -212,6 +217,10 @@ final class Ops {
                         t.report(0, plan.bytes)
                         let (rep, _) = try await runner.run(plan, a: sa, b: sb) { p in t.report(p.bytesDone, p.bytesTotal); t.setDetail("\(p.filesDone) of \(p.filesTotal) items") }
                         if !rep.failed.isEmpty { throw ICloudError.server("\(rep.failed.count) items failed: \(rep.failed.first ?? "")") }
+                        if let retire {
+                            try await drive.trash([retire])
+                            _ = try await drive.rename(folder, to: finalName)
+                        }
                         if move { try? LocalFiles.safeTrash(f, root: nil) }
                         await MainActor.run { Ops.shared.refresh(dest) }
                     }
@@ -219,9 +228,9 @@ final class Ops {
                     let size = (try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
                     TransferManager.shared.enqueue(finalName, detail: "Uploading to \(dest.title)", direction: .upload, total: size, group: group, quotaKey: "icloud:" + acct.id) { t in
                         try await LocalFiles.ensureDownloaded(f)
-                        if replace, let old { try await drive.trash([old]) }
                         let mtime = try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-                        _ = try await drive.upload(f, name: finalName, into: folderID, modified: mtime) { d, tot in t.report(d, tot) }
+                        // Upload first; only then retire the old copy (safeReplace).
+                        _ = try await drive.safeReplace(f, name: finalName, in: folderID, existing: replace ? old : nil, modified: mtime) { d, tot in t.report(d, tot) }
                         if move { try? LocalFiles.safeTrash(f, root: nil) }
                         await MainActor.run { Ops.shared.refresh(dest) }
                     }
@@ -556,8 +565,7 @@ final class Ops {
                 guard r == .alertFirstButtonReturn else { return }
                 let parent = node.parentID ?? drive.rootID
                 TransferManager.shared.enqueue(node.name, detail: "Uploading changes", direction: .upload, total: (try? entry.url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0) { t in
-                    try await drive.trash([node])
-                    let n = try await drive.upload(entry.url, name: node.name, into: parent, modified: m) { d, tot in t.report(d, tot) }
+                    let n = try await drive.safeReplace(entry.url, name: node.name, in: parent, existing: node, modified: m) { d, tot in t.report(d, tot) }
                     await MainActor.run {
                         if let idx = Ops.shared.openedFiles.firstIndex(where: { $0.url == entry.url }) {
                             var it = Ops.shared.openedFiles[idx].item
@@ -577,6 +585,7 @@ final class Ops {
     func newFolder(in loc: Location, window: NSWindow?) async -> String? {
         switch loc {
         case .local(let p):
+            do { try SafetyPolicy.checkLocalWrite(URL(fileURLWithPath: p)) } catch { displayError(error, title: "iCloud is read-only", window: window); return nil }
             let taken = Set(((try? FileManager.default.contentsOfDirectory(atPath: p)) ?? []).map { $0.lowercased() })
             let name = Self.uniqueName("untitled folder", taken: taken)
             do { try FileManager.default.createDirectory(at: URL(fileURLWithPath: p).appendingPathComponent(name), withIntermediateDirectories: false); refresh(loc); return name }
@@ -609,6 +618,7 @@ final class Ops {
         do {
             switch item.payload {
             case .file(let u):
+                try SafetyPolicy.checkLocalWrite(u)
                 let dst = u.deletingLastPathComponent().appendingPathComponent(name)
                 try FileManager.default.moveItem(at: u, to: dst)
                 let undo = window?.undoManager
@@ -627,6 +637,9 @@ final class Ops {
     func trash(_ items: [Item], in loc: Location, window: NSWindow?) async {
         guard !items.isEmpty else { return }
         let local = items.compactMap(\.localURL)
+        if let u = local.first, SafetyPolicy.isICloudPath(u), SafetyPolicy.readOnlyICloud {
+            displayError(SafetyPolicy.ReadOnlyError(), title: "iCloud is read-only", window: window); return
+        }
         if !local.isEmpty {
             var moved = [(URL, URL)]()
             for u in local {

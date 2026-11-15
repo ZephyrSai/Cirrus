@@ -1,3 +1,4 @@
+import CirrusCore
 import Foundation
 
 enum Prefs {
@@ -7,6 +8,8 @@ enum Prefs {
             "showHidden": false, "foldersOnTop": true, "exportLive": true, "exportEdited": false, "iconSize": 64.0, "photoSize": 120.0,
             "maxTransfers": 4, "groupPhotosByMonth": true, "showStatusBar": true, "showPathBar": true, "menuBarIcon": true,
             "openRemoteEdits": true, "squarePhotoGrid": true,
+            // Tester builds (TESTER=1) start in read-only mode so nothing in iCloud can be changed until the tester opts in.
+            "readOnlyICloud": (Bundle.main.object(forInfoDictionaryKey: "CirrusTesterBuild") as? Bool) ?? false,
         ])
     }
     static var showHidden: Bool { get { d.bool(forKey: "showHidden") } set { d.set(newValue, forKey: "showHidden") } }
@@ -15,6 +18,10 @@ enum Prefs {
     static var exportEdited: Bool { get { d.bool(forKey: "exportEdited") } set { d.set(newValue, forKey: "exportEdited") } }
     static var groupPhotosByMonth: Bool { get { d.bool(forKey: "groupPhotosByMonth") } set { d.set(newValue, forKey: "groupPhotosByMonth") } }
     static var squarePhotoGrid: Bool { get { d.bool(forKey: "squarePhotoGrid") } set { d.set(newValue, forKey: "squarePhotoGrid") } }
+    static var readOnlyICloud: Bool {
+        get { d.bool(forKey: "readOnlyICloud") }
+        set { d.set(newValue, forKey: "readOnlyICloud"); SafetyPolicy.readOnlyICloud = newValue }
+    }
     static var menuBarIcon: Bool { get { d.bool(forKey: "menuBarIcon") } set { d.set(newValue, forKey: "menuBarIcon") } }
     static var favorites: [String] {
         get {

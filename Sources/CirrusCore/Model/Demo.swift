@@ -125,6 +125,7 @@ public final class DemoDrive: DriveBackend, @unchecked Sendable {
     }
 
     public func upload(_ file: URL, name: String, into folderID: String, modified: Date?, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> DriveNode {
+        try SafetyPolicy.checkWrite()
         await pause()
         let dest = url(folderID).appendingPathComponent(name)
         let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int64) ?? 0
@@ -139,6 +140,7 @@ public final class DemoDrive: DriveBackend, @unchecked Sendable {
     }
 
     public func createFolder(_ name: String, in folderID: String) async throws -> DriveNode {
+        try SafetyPolicy.checkWrite()
         await pause()
         let u = url(folderID).appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: u, withIntermediateDirectories: false)
@@ -146,6 +148,7 @@ public final class DemoDrive: DriveBackend, @unchecked Sendable {
     }
 
     public func rename(_ n: DriveNode, to name: String) async throws -> DriveNode {
+        try SafetyPolicy.checkWrite()
         await pause()
         let src = url(n.id)
         let dst = src.deletingLastPathComponent().appendingPathComponent(name)
@@ -154,6 +157,7 @@ public final class DemoDrive: DriveBackend, @unchecked Sendable {
     }
 
     public func move(_ nodes: [DriveNode], to folderID: String) async throws {
+        try SafetyPolicy.checkWrite()
         await pause()
         for n in nodes {
             let src = url(n.id)
@@ -162,6 +166,7 @@ public final class DemoDrive: DriveBackend, @unchecked Sendable {
     }
 
     public func trash(_ nodes: [DriveNode]) async throws {
+        try SafetyPolicy.checkWrite()
         await pause()
         for n in nodes {
             let src = url(n.id)
@@ -183,6 +188,7 @@ public final class DemoDrive: DriveBackend, @unchecked Sendable {
     }
 
     public func restore(_ nodes: [DriveNode]) async throws {
+        try SafetyPolicy.checkWrite()
         for n in nodes {
             let name = rel(n.id)
             let src = trashDir.appendingPathComponent(name)
@@ -196,6 +202,7 @@ public final class DemoDrive: DriveBackend, @unchecked Sendable {
     }
 
     public func deleteForever(_ nodes: [DriveNode]) async throws {
+        try SafetyPolicy.checkWrite()
         for n in nodes {
             let name = rel(n.id)
             try? FileManager.default.removeItem(at: trashDir.appendingPathComponent(name))
@@ -346,12 +353,13 @@ public final class DemoPhotos: PhotosBackend, @unchecked Sendable {
         return store.assets.filter { ids.contains($0.id) }
     }
 
-    public func setFavorite(_ assets: [PhotoAsset], _ value: Bool) async throws -> [PhotoAsset] { mutate(assets) { $0.isFavorite = value } }
-    public func setHidden(_ assets: [PhotoAsset], _ value: Bool) async throws -> [PhotoAsset] { mutate(assets) { $0.isHidden = value } }
-    public func delete(_ assets: [PhotoAsset]) async throws { _ = mutate(assets) { $0.isDeleted = true } }
-    public func restore(_ assets: [PhotoAsset]) async throws { _ = mutate(assets) { $0.isDeleted = false } }
+    public func setFavorite(_ assets: [PhotoAsset], _ value: Bool) async throws -> [PhotoAsset] { try SafetyPolicy.checkWrite(); return mutate(assets) { $0.isFavorite = value } }
+    public func setHidden(_ assets: [PhotoAsset], _ value: Bool) async throws -> [PhotoAsset] { try SafetyPolicy.checkWrite(); return mutate(assets) { $0.isHidden = value } }
+    public func delete(_ assets: [PhotoAsset]) async throws { try SafetyPolicy.checkWrite(); _ = mutate(assets) { $0.isDeleted = true } }
+    public func restore(_ assets: [PhotoAsset]) async throws { try SafetyPolicy.checkWrite(); _ = mutate(assets) { $0.isDeleted = false } }
 
     public func importFiles(_ files: [URL], into album: PhotoAlbum?, library: PhotoLibraryRef, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
+        try SafetyPolicy.checkWrite()
         var n: Int64 = 0
         for g in LivePairing.group(files) {
             let id = "DEMO-" + UUID().uuidString.prefix(8)
@@ -381,6 +389,7 @@ public final class DemoPhotos: PhotosBackend, @unchecked Sendable {
     }
 
     public func add(_ assets: [PhotoAsset], to album: PhotoAlbum, library: PhotoLibraryRef) async throws {
+        try SafetyPolicy.checkWrite()
         lock.withLock {
             var ids = store.membership[album.id] ?? []
             for a in assets where !ids.contains(a.id) { ids.append(a.id) }
@@ -390,6 +399,7 @@ public final class DemoPhotos: PhotosBackend, @unchecked Sendable {
     }
 
     public func createAlbum(_ name: String, in library: PhotoLibraryRef) async throws -> PhotoAlbum {
+        try SafetyPolicy.checkWrite()
         let a = PhotoAlbum(id: "album:" + UUID().uuidString.prefix(8), name: name, kind: .album, count: 0)
         lock.withLock { store.albums.append(a) }
         save()

@@ -352,20 +352,23 @@ public final class WebPhotos: PhotosBackend, @unchecked Sendable {
     }
 
     public func setFavorite(_ assets: [PhotoAsset], _ value: Bool) async throws -> [PhotoAsset] {
-        try await modifyAssets(assets, fields: ["isFavorite": .int(value ? 1 : 0)])
+        try SafetyPolicy.checkWrite()
+        return try await modifyAssets(assets, fields: ["isFavorite": .int(value ? 1 : 0)])
     }
 
     public func setHidden(_ assets: [PhotoAsset], _ value: Bool) async throws -> [PhotoAsset] {
-        try await modifyAssets(assets, fields: ["isHidden": .int(value ? 1 : 0)])
+        try SafetyPolicy.checkWrite()
+        return try await modifyAssets(assets, fields: ["isHidden": .int(value ? 1 : 0)])
     }
 
     /// Moves to Recently Deleted (recoverable for 30 days), like icloudpd's delete.
-    public func delete(_ assets: [PhotoAsset]) async throws { _ = try await modifyAssets(assets, fields: ["isDeleted": .int(1)]) }
+    public func delete(_ assets: [PhotoAsset]) async throws { try SafetyPolicy.checkWrite(); _ = try await modifyAssets(assets, fields: ["isDeleted": .int(1)]) }
 
-    public func restore(_ assets: [PhotoAsset]) async throws { _ = try await modifyAssets(assets, fields: ["isDeleted": .int(0)]) }
+    public func restore(_ assets: [PhotoAsset]) async throws { try SafetyPolicy.checkWrite(); _ = try await modifyAssets(assets, fields: ["isDeleted": .int(0)]) }
 
     public func importFiles(_ files: [URL], into album: PhotoAlbum?, library: PhotoLibraryRef,
                             progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
+        try SafetyPolicy.checkWrite()
         guard let base = await session.webserviceURL("uploadimagews"), let dsid = await session.dsid else {
             throw ICloudError.serviceUnavailable("iCloud Photos upload")
         }
@@ -387,6 +390,7 @@ public final class WebPhotos: PhotosBackend, @unchecked Sendable {
     }
 
     public func add(_ assets: [PhotoAsset], to album: PhotoAlbum, library: PhotoLibraryRef) async throws {
+        try SafetyPolicy.checkWrite()
         guard album.kind == .album else { throw ICloudError.server("Photos can only be added to regular albums.") }
         let lib = self.library(library.id)
         let albumRecord = album.id.replacingOccurrences(of: "album:", with: "")
@@ -407,6 +411,7 @@ public final class WebPhotos: PhotosBackend, @unchecked Sendable {
     }
 
     public func createAlbum(_ name: String, in library: PhotoLibraryRef) async throws -> PhotoAlbum {
+        try SafetyPolicy.checkWrite()
         let lib = self.library(library.id)
         let record = UUID().uuidString.uppercased()
         let op: JSON = ["operationType": "create",

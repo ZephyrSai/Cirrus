@@ -395,6 +395,7 @@ public final class LocalSide: SyncSide, @unchecked Sendable {
     }
 
     public func store(_ rel: String, from file: URL, mtime: Date, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
+        try SafetyPolicy.checkLocalWrite(root)
         let dest = url(rel)
         try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
         try LocalFiles.atomicCopy(file, to: dest)
@@ -403,11 +404,12 @@ public final class LocalSide: SyncSide, @unchecked Sendable {
     }
 
     public func makeDir(_ rel: String) async throws {
+        try SafetyPolicy.checkLocalWrite(root)
         try FileManager.default.createDirectory(at: url(rel), withIntermediateDirectories: true)
         lock.withLock { actual[rel] = rel }
     }
 
-    public func trash(_ rel: String) async throws { try LocalFiles.safeTrash(url(rel), root: root) }
+    public func trash(_ rel: String) async throws { try SafetyPolicy.checkLocalWrite(root); try LocalFiles.safeTrash(url(rel), root: root) }
 }
 
 public final class DriveSide: SyncSide, @unchecked Sendable {
@@ -456,8 +458,9 @@ public final class DriveSide: SyncSide, @unchecked Sendable {
     public func store(_ rel: String, from file: URL, mtime: Date, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
         let parent = (rel as NSString).deletingLastPathComponent
         let fid = try await folderID(parent)
-        if let existing = node(rel), !existing.isFolder { try await drive.trash([existing]) }
-        let n = try await drive.upload(file, name: (rel as NSString).lastPathComponent, into: fid, modified: mtime, progress: progress)
+        let existing = node(rel)
+        let n = try await drive.safeReplace(file, name: (rel as NSString).lastPathComponent, in: fid, existing: existing?.isFolder == false ? existing : nil,
+                                            modified: mtime, progress: progress)
         lock.withLock { nodes[rel] = n }
     }
 

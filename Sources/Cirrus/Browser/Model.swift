@@ -190,7 +190,18 @@ final class Catalog {
         case .computer:
             break
         }
+        if SafetyPolicy.readOnlyICloud && isICloud(loc) {
+            c.canCreateFolder = false; c.acceptsDrops = false; c.canRename = false; c.canTrash = false; c.readOnly = true
+        }
         return c
+    }
+
+    func isICloud(_ loc: Location) -> Bool {
+        switch loc {
+        case .drive, .driveTrash, .photos, .album: return true
+        case .local(let p): return SafetyPolicy.isICloudPath(URL(fileURLWithPath: p))
+        default: return false
+        }
     }
 
     // MARK: Path

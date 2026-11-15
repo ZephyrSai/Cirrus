@@ -113,53 +113,98 @@ private func write(_ s: String, _ u: URL, mtime: Double? = nil) {
     try? FileManager.default.removeItem(at: SyncState.url(job))
 }
 
-@Test func driveSideMirrorThroughDemoBackend() async throws {
-    setenv("CIRRUS_DEMO_FAST", "1", 1)
-    setenv("CIRRUS_PROFILE", "tests", 1)
-    let drive = DemoDrive.shared
-    let src = tempDir("src")
-    write("hello", src.appendingPathComponent("Sub/hello.txt"), mtime: 1_500_000)
-    write("x", src.appendingPathComponent("top.txt"), mtime: 1_500_000)
-    let folder = try await drive.createFolder("SyncTest-\(UUID().uuidString.prefix(5))", in: drive.rootID)
-    let a = LocalSide(root: src, excludes: [])
-    let b = DriveSide(drive: drive, rootID: folder.id, label: "iCloud Drive", excludes: [])
-    let runner = SyncRunner(a: a, b: b)
-    var (ma, mb) = try await runner.scan { _ in }
-    var (rep, _) = try await runner.run(SyncPlanner.plan(mode: .mirror, a: ma, b: mb, state: nil), a: ma, b: mb) { _ in }
-    #expect(rep.copied == 2 && rep.failed.isEmpty)
-    let listed = try await drive.walk(folder.id)
-    #expect(Set(listed.map(\.path)) == ["Sub", "Sub/hello.txt", "top.txt"])
-    #expect(listed.first { $0.path == "Sub/hello.txt" }?.node.modified.map { abs($0.timeIntervalSince1970 - 1_500_000) < 2 } == true)
-    try FileManager.default.removeItem(at: src.appendingPathComponent("top.txt"))
-    (ma, mb) = try await runner.scan { _ in }
-    (rep, _) = try await runner.run(SyncPlanner.plan(mode: .mirror, a: ma, b: mb, state: nil), a: ma, b: mb) { _ in }
-    #expect(rep.trashed == 1)
-    let trash = try await drive.listTrash()
-    #expect(trash.contains { $0.name == "top.txt" })
-    try await drive.trash([folder])
-}
+/// Tests that touch the shared demo backends or the global safety switch run one at a time.
+@Suite(.serialized) struct DemoBackendTests {
+    @Test func driveSideMirrorThroughDemoBackend() async throws {
+        setenv("CIRRUS_DEMO_FAST", "1", 1)
+        setenv("CIRRUS_PROFILE", "tests", 1)
+        let drive = DemoDrive.shared
+        let src = tempDir("src")
+        write("hello", src.appendingPathComponent("Sub/hello.txt"), mtime: 1_500_000)
+        write("x", src.appendingPathComponent("top.txt"), mtime: 1_500_000)
+        let folder = try await drive.createFolder("SyncTest-\(UUID().uuidString.prefix(5))", in: drive.rootID)
+        let a = LocalSide(root: src, excludes: [])
+        let b = DriveSide(drive: drive, rootID: folder.id, label: "iCloud Drive", excludes: [])
+        let runner = SyncRunner(a: a, b: b)
+        var (ma, mb) = try await runner.scan { _ in }
+        var (rep, _) = try await runner.run(SyncPlanner.plan(mode: .mirror, a: ma, b: mb, state: nil), a: ma, b: mb) { _ in }
+        #expect(rep.copied == 2 && rep.failed.isEmpty)
+        let listed = try await drive.walk(folder.id)
+        #expect(Set(listed.map(\.path)) == ["Sub", "Sub/hello.txt", "top.txt"])
+        #expect(listed.first { $0.path == "Sub/hello.txt" }?.node.modified.map { abs($0.timeIntervalSince1970 - 1_500_000) < 2 } == true)
+        try FileManager.default.removeItem(at: src.appendingPathComponent("top.txt"))
+        (ma, mb) = try await runner.scan { _ in }
+        (rep, _) = try await runner.run(SyncPlanner.plan(mode: .mirror, a: ma, b: mb, state: nil), a: ma, b: mb) { _ in }
+        #expect(rep.trashed == 1)
+        let trash = try await drive.listTrash()
+        #expect(trash.contains { $0.name == "top.txt" })
+        try await drive.trash([folder])
+    }
 
-@Test func photoExportIsIncrementalAndDated() async throws {
-    setenv("CIRRUS_DEMO_FAST", "1", 1)
-    setenv("CIRRUS_PROFILE", "tests", 1)
-    let photos = DemoPhotos.shared
-    let lib = try await photos.libraries()[0]
-    let dest = tempDir("export")
-    var opts = SyncOptions()
-    opts.albumFolders = true
-    let ex = PhotoExporter(backend: photos, library: lib, album: nil, destination: dest, options: opts)
-    let ev = try await ex.evaluate { _ in }
-    #expect(ev.assetCount > 10)
-    #expect(ev.pending.count == ev.files.count)
-    let rep = try await ex.run(ev) { _ in }
-    #expect(rep.failed.isEmpty)
-    let first = ev.files.first { $0.kind == .original }!
-    let attrs = try FileManager.default.attributesOfItem(atPath: dest.appendingPathComponent(first.rel).path)
-    #expect(abs((attrs[.modificationDate] as! Date).timeIntervalSince(first.asset.created!)) < 2)
-    #expect(ev.files.contains { $0.kind == .liveVideo && $0.rel.hasSuffix(".MOV") })
-    #expect(FileManager.default.fileExists(atPath: dest.appendingPathComponent("Photos manifest.csv").path))
-    #expect(FileManager.default.fileExists(atPath: dest.appendingPathComponent("Albums/Travel").path))
-    let ev2 = try await PhotoExporter(backend: photos, library: lib, album: nil, destination: dest, options: opts).evaluate { _ in }
-    #expect(ev2.pending.isEmpty)
-    #expect(Set(ev2.files.map(\.rel)) == Set(ev.files.map(\.rel)))
+    @Test func photoExportIsIncrementalAndDated() async throws {
+        setenv("CIRRUS_DEMO_FAST", "1", 1)
+        setenv("CIRRUS_PROFILE", "tests", 1)
+        let photos = DemoPhotos.shared
+        let lib = try await photos.libraries()[0]
+        let dest = tempDir("export")
+        var opts = SyncOptions()
+        opts.albumFolders = true
+        let ex = PhotoExporter(backend: photos, library: lib, album: nil, destination: dest, options: opts)
+        let ev = try await ex.evaluate { _ in }
+        #expect(ev.assetCount > 10)
+        #expect(ev.pending.count == ev.files.count)
+        let rep = try await ex.run(ev) { _ in }
+        #expect(rep.failed.isEmpty)
+        let first = ev.files.first { $0.kind == .original }!
+        let attrs = try FileManager.default.attributesOfItem(atPath: dest.appendingPathComponent(first.rel).path)
+        #expect(abs((attrs[.modificationDate] as! Date).timeIntervalSince(first.asset.created!)) < 2)
+        #expect(ev.files.contains { $0.kind == .liveVideo && $0.rel.hasSuffix(".MOV") })
+        #expect(FileManager.default.fileExists(atPath: dest.appendingPathComponent("Photos manifest.csv").path))
+        #expect(FileManager.default.fileExists(atPath: dest.appendingPathComponent("Albums/Travel").path))
+        let ev2 = try await PhotoExporter(backend: photos, library: lib, album: nil, destination: dest, options: opts).evaluate { _ in }
+        #expect(ev2.pending.isEmpty)
+        #expect(Set(ev2.files.map(\.rel)) == Set(ev.files.map(\.rel)))
+    }
+
+    @Test func readOnlyModeBlocksEveryICloudWrite() async throws {
+        setenv("CIRRUS_DEMO_FAST", "1", 1)
+        setenv("CIRRUS_PROFILE", "tests", 1)
+        let drive = DemoDrive.shared, photos = DemoPhotos.shared
+        let before = try await drive.list(drive.rootID).count
+        SafetyPolicy.readOnlyICloud = true
+        defer { SafetyPolicy.readOnlyICloud = false }
+        let f = FileManager.default.temporaryDirectory.appendingPathComponent("ro-\(UUID().uuidString.prefix(5)).txt")
+        try Data("x".utf8).write(to: f)
+        await #expect(throws: SafetyPolicy.ReadOnlyError.self) { _ = try await drive.upload(f, name: "nope.txt", into: drive.rootID, modified: nil) { _, _ in } }
+        await #expect(throws: SafetyPolicy.ReadOnlyError.self) { _ = try await drive.createFolder("nope", in: drive.rootID) }
+        let any = try await drive.list(drive.rootID)[0]
+        await #expect(throws: SafetyPolicy.ReadOnlyError.self) { try await drive.trash([any]) }
+        await #expect(throws: SafetyPolicy.ReadOnlyError.self) { _ = try await drive.rename(any, to: "renamed") }
+        let lib = try await photos.libraries()[0]
+        let asset = try await photos.assets(in: PhotoAlbum(id: "smart:All Photos", name: "All", kind: .smart), library: lib) { _, _ in }[0]
+        await #expect(throws: SafetyPolicy.ReadOnlyError.self) { try await photos.delete([asset]) }
+        await #expect(throws: SafetyPolicy.ReadOnlyError.self) { _ = try await photos.setFavorite([asset], true) }
+        // Reads and backups still work.
+        #expect(try await drive.list(drive.rootID).count == before)
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("ro-export-\(UUID().uuidString.prefix(5))")
+        try await photos.export(asset, resource: .original, to: out.appendingPathComponent("a.jpg")) { _, _ in }
+        #expect(FileManager.default.fileExists(atPath: out.appendingPathComponent("a.jpg").path))
+    }
+
+    @Test func safeReplaceUploadsBeforeRetiringOldCopy() async throws {
+        setenv("CIRRUS_DEMO_FAST", "1", 1)
+        setenv("CIRRUS_PROFILE", "tests", 1)
+        let drive = DemoDrive.shared
+        let folder = try await drive.createFolder("Replace-\(UUID().uuidString.prefix(5))", in: drive.rootID)
+        let v1 = FileManager.default.temporaryDirectory.appendingPathComponent("v1-\(UUID().uuidString.prefix(4)).txt")
+        let v2 = FileManager.default.temporaryDirectory.appendingPathComponent("v2-\(UUID().uuidString.prefix(4)).txt")
+        try Data("old".utf8).write(to: v1); try Data("new!".utf8).write(to: v2)
+        let old = try await drive.upload(v1, name: "doc.txt", into: folder.id, modified: nil) { _, _ in }
+        let new = try await drive.safeReplace(v2, name: "doc.txt", in: folder.id, existing: old, modified: nil) { _, _ in }
+        #expect(new.name == "doc.txt" && new.size == 4)
+        let names = try await drive.list(folder.id).map(\.name)
+        #expect(names == ["doc.txt"])
+        #expect(try await drive.listTrash().contains { $0.name == "doc.txt" && $0.size == 3 })
+        try await drive.trash([folder])
+    }
 }

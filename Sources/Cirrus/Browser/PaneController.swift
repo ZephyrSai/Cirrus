@@ -505,6 +505,10 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         if text == nil, location.accountID == "mac", location.isPhotoGrid || { if case .photos = location { return true }; return false }(), NativePhotos.authorization == .denied {
             text = "Cirrus can’t read your Photos library. Allow access in System Settings › Privacy & Security › Photos."; button = "Open Settings"
         }
+        if text == nil, SafetyPolicy.readOnlyICloud, Catalog.shared.isICloud(location) {
+            text = "Read-only mode: you can browse, download and back up, but Cirrus won’t change anything in iCloud."
+            button = "Settings…"
+        }
         banner.isHidden = text == nil
         bannerText.stringValue = text ?? ""
         bannerButton.title = button ?? ""
@@ -515,6 +519,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         switch bannerButton.title {
         case "Sign In…": (NSApp.delegate as? AppDelegate)?.signIn(appleID: location.account?.appleID, window: view.window)
         case "Open Settings": NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Photos")!)
+        case "Settings…": (NSApp.delegate as? AppDelegate)?.showPreferences(nil)
         default: reload()
         }
     }

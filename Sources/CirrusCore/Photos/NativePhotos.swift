@@ -215,12 +215,14 @@ public final class NativePhotos: NSObject, PhotosBackend, PHPhotoLibraryChangeOb
     }
 
     public func setFavorite(_ assets: [PhotoAsset], _ value: Bool) async throws -> [PhotoAsset] {
+        try SafetyPolicy.checkWrite()
         let phs = phAssets(assets)
         try await change { for a in phs { PHAssetChangeRequest(for: a).isFavorite = value } }
         return assets.map { var x = $0; x.isFavorite = value; return x }
     }
 
     public func setHidden(_ assets: [PhotoAsset], _ value: Bool) async throws -> [PhotoAsset] {
+        try SafetyPolicy.checkWrite()
         let phs = phAssets(assets)
         try await change { for a in phs { PHAssetChangeRequest(for: a).isHidden = value } }
         return assets.map { var x = $0; x.isHidden = value; return x }
@@ -228,6 +230,7 @@ public final class NativePhotos: NSObject, PhotosBackend, PHPhotoLibraryChangeOb
 
     /// macOS shows its own confirmation; deleted items go to Recently Deleted in Photos.
     public func delete(_ assets: [PhotoAsset]) async throws {
+        try SafetyPolicy.checkWrite()
         let phs = phAssets(assets)
         try await change { PHAssetChangeRequest.deleteAssets(phs as NSArray) }
     }
@@ -238,6 +241,7 @@ public final class NativePhotos: NSObject, PhotosBackend, PHPhotoLibraryChangeOb
 
     public func importFiles(_ files: [URL], into album: PhotoAlbum?, library: PhotoLibraryRef,
                             progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
+        try SafetyPolicy.checkWrite()
         try await ensureAuthorized()
         let groups = LivePairing.group(files)
         let col = album.flatMap { collection($0) }
@@ -263,12 +267,14 @@ public final class NativePhotos: NSObject, PhotosBackend, PHPhotoLibraryChangeOb
     }
 
     public func add(_ assets: [PhotoAsset], to album: PhotoAlbum, library: PhotoLibraryRef) async throws {
+        try SafetyPolicy.checkWrite()
         guard let col = collection(album) else { throw ICloudError.notFound }
         let phs = phAssets(assets)
         try await change { PHAssetCollectionChangeRequest(for: col)?.addAssets(phs as NSArray) }
     }
 
     public func createAlbum(_ name: String, in library: PhotoLibraryRef) async throws -> PhotoAlbum {
+        try SafetyPolicy.checkWrite()
         var placeholder: String?
         try await change { placeholder = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: name).placeholderForCreatedAssetCollection.localIdentifier }
         guard let id = placeholder else { throw ICloudError.server("Couldn’t create the album.") }

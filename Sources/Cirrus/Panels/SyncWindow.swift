@@ -433,7 +433,7 @@ final class EndpointBox: NSObject { let e: SyncEndpoint; init(_ e: SyncEndpoint)
 @MainActor
 final class PreferencesWindowController: NSWindowController {
     init() {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 420), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 520), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         w.title = "Cirrus Settings"
         super.init(window: w)
         let d = UserDefaults.standard
@@ -450,7 +450,12 @@ final class PreferencesWindowController: NSWindowController {
         concurrency.action = #selector(concurrencyChanged(_:))
         let login = NSButton(checkboxWithTitle: "Open Cirrus at login (for scheduled syncs and backups)", target: self, action: #selector(loginToggled(_:)))
         login.state = SMAppServiceStatus.isEnabled ? .on : .off
+        let readOnly = NSButton(checkboxWithTitle: "Read-only iCloud: never change anything in iCloud (browse, download and back up only)", target: self, action: #selector(readOnlyToggled(_:)))
+        readOnly.state = Prefs.readOnlyICloud ? .on : .off
         let views: [NSView] = [
+            header("Safety"),
+            readOnly,
+            note("Deletions always go to the Trash or iCloud’s Recently Deleted, never straight to deletion. Read-only mode also blocks uploads, renames, moves and photo edits."),
             header("General"),
             box("Show hidden files", "showHidden"),
             box("Keep folders on top when sorting by name", "foldersOnTop"),
@@ -485,6 +490,19 @@ final class PreferencesWindowController: NSWindowController {
         if k == "showHidden" { Catalog.shared.memory.removeAll() }
         for wc in (NSApp.delegate as? AppDelegate)?.windows ?? [] { for p in wc.panes { p.reload() } }
     }
+    @objc func readOnlyToggled(_ b: NSButton) {
+        if b.state == .off {
+            let a = NSAlert()
+            a.messageText = "Allow Cirrus to change iCloud?"
+            a.informativeText = "Uploads, renames, moves, deletions (to Recently Deleted) and photo edits will be allowed. Backups and downloads work either way."
+            a.addButton(withTitle: "Allow Changes"); a.addButton(withTitle: "Keep Read-Only")
+            if a.runModal() != .alertFirstButtonReturn { b.state = .on; return }
+        }
+        Prefs.readOnlyICloud = b.state == .on
+        Catalog.shared.memory.removeAll()
+        for wc in (NSApp.delegate as? AppDelegate)?.windows ?? [] { for p in wc.panes { p.reload() } }
+    }
+
     @objc func menuBarToggled(_ b: NSButton) { UserDefaults.standard.set(b.state == .on, forKey: "menuBarIcon"); (NSApp.delegate as? AppDelegate)?.updateStatusItem() }
     @objc func loginToggled(_ b: NSButton) { AppDelegate.setLaunchAtLogin(b.state == .on) }
     @objc func concurrencyChanged(_ p: NSPopUpButton) {
