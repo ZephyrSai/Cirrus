@@ -551,7 +551,7 @@ public actor ICloudSession {
             for (k, v) in headers where k != "Content-Type" { req.setValue(v, forHTTPHeaderField: k) }
             req.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
             let delegate = ProgressDelegate(expected: expectedSize ?? 0, progress: progress)
-            let (tmp, resp) = try await http.download(for: req, delegate: delegate)
+            let (tmp, resp) = try await Self.withNetworkRetry { try await self.http.download(for: req, delegate: delegate) }
             guard let h = resp as? HTTPURLResponse else { throw ICloudError.http(0, "No response") }
             if [301, 302, 303, 307, 308, 330].contains(h.statusCode), let loc = h.value(forHTTPHeaderField: "Location") {
                 try? FileManager.default.removeItem(at: tmp)
@@ -591,13 +591,30 @@ public actor ICloudSession {
             let size = (try? FileManager.default.attributesOfItem(atPath: bodyFile.path)[.size] as? Int64) ?? 0
             let delegate = ProgressDelegate(expected: size, progress: progress)
             defer { if cleanup { try? FileManager.default.removeItem(at: bodyFile) } }
-            let (data, resp) = try await http.upload(for: req, fromFile: bodyFile, delegate: delegate)
+            let (data, resp) = try await Self.withNetworkRetry { try await self.http.upload(for: req, fromFile: bodyFile, delegate: delegate) }
             guard let h = resp as? HTTPURLResponse else { throw ICloudError.http(0, "No response") }
             absorb(h)
             if (h.statusCode == 401 || h.statusCode == 421) && !reauthed { reauthed = true; try await reauthenticate(); continue }
             let json = (try? JSON(data: data)) ?? .null
             guard (200..<300).contains(h.statusCode) else { throw ICloudError.http(h.statusCode, Self.errorMessage(json) ?? "Upload failed") }
             return json
+        }
+    }
+}
+
+extension ICloudSession {
+    /// Retries transient network failures (Wi-Fi drop, sleep/wake, timeouts) with back-off.
+    static func withNetworkRetry<T>(_ op: () async throws -> T) async throws -> T {
+        var attempt = 0
+        while true {
+            do { return try await op() } catch let e as URLError {
+                let transient: Set<URLError.Code> = [.networkConnectionLost, .notConnectedToInternet, .timedOut, .cannotConnectToHost,
+                                                     .dnsLookupFailed, .cannotFindHost, .secureConnectionFailed, .internationalRoamingOff]
+                if e.code == .cancelled { throw ICloudError.cancelled }
+                guard transient.contains(e.code), attempt < 4 else { throw e }
+                attempt += 1
+                try await Task.sleep(nanoseconds: UInt64(pow(2, Double(attempt))) * 1_000_000_000)
+            }
         }
     }
 }

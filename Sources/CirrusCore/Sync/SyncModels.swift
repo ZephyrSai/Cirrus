@@ -141,6 +141,9 @@ public struct SyncState: Codable {
 }
 
 public struct RunProgress: Sendable {
+    public init(phase: String, filesDone: Int, filesTotal: Int, bytesDone: Int64, bytesTotal: Int64) {
+        self.phase = phase; self.filesDone = filesDone; self.filesTotal = filesTotal; self.bytesDone = bytesDone; self.bytesTotal = bytesTotal
+    }
     public var phase: String
     public var filesDone: Int
     public var filesTotal: Int
@@ -149,6 +152,7 @@ public struct RunProgress: Sendable {
 }
 
 public struct RunReport: Sendable {
+    public init() {}
     public var copied = 0
     public var copiedBack = 0
     public var trashed = 0

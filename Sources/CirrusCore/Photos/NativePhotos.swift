@@ -21,10 +21,7 @@ public final class NativePhotos: NSObject, PhotosBackend, PHPhotoLibraryChangeOb
         guard status == .authorized || status == .limited else {
             throw ICloudError.server("Cirrus doesn’t have access to Photos. Allow it in System Settings › Privacy & Security › Photos.")
         }
-        lock.lock()
-        let shouldRegister = !observing
-        observing = true
-        lock.unlock()
+        let shouldRegister: Bool = lock.withLock { let r = !observing; observing = true; return r }
         if shouldRegister { PHPhotoLibrary.shared().register(self) }
     }
 
@@ -117,7 +114,7 @@ public final class NativePhotos: NSObject, PhotosBackend, PHPhotoLibraryChangeOb
             if batch.count == 500 { page(batch, total); batch.removeAll(keepingCapacity: true) }
         }
         if !batch.isEmpty { page(batch, total) }
-        lock.lock(); assetCache.merge(cache) { $1 }; lock.unlock()
+        lock.withLock { assetCache.merge(cache) { $1 } }
         return out
     }
 

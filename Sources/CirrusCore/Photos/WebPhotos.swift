@@ -85,7 +85,7 @@ public final class WebPhotos: PhotosBackend, @unchecked Sendable {
         }
         if found.isEmpty { found = [PhotoLibraryRef(id: "PrimarySync", name: "Personal Library", isShared: false)] }
         found.sort { !$0.isShared && $1.isShared }
-        lock.lock(); for l in found { libs[l.id] = l }; lock.unlock()
+        lock.withLock { for l in found { libs[l.id] = l } }
         return found
     }
 

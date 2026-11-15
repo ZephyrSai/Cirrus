@@ -8,6 +8,8 @@ public final class Transfer: Identifiable, @unchecked Sendable {
     public let title: String
     public let direction: Direction
     public let group: String?
+    /// Capacity bucket this transfer consumes ("icloud:<account>" or "vol:<path>") for preflight checks.
+    public var quotaKey: String?
     private let lock = NSLock()
     private var _detail: String
     private var _total: Int64
@@ -15,7 +17,9 @@ public final class Transfer: Identifiable, @unchecked Sendable {
     private var _state: State = .queued
     private var _speed: Double = 0
     private var lastSample: (Date, Int64)?
-    public var resultURL: URL?
+    private var _resultURL: URL?
+    /// Where the result landed (for “Show in Finder”). Thread-safe: parallel workers set it.
+    public var resultURL: URL? { get { lock.withLock { _resultURL } } set { lock.withLock { _resultURL = newValue } } }
     public private(set) var startedAt: Date?
     public private(set) var finishedAt: Date?
     let work: @Sendable (Transfer) async throws -> Void
@@ -86,8 +90,9 @@ public final class TransferManager {
 
     @discardableResult
     public func enqueue(_ title: String, detail: String = "", direction: Transfer.Direction, total: Int64 = 0, group: String? = nil,
-                        work: @escaping @Sendable (Transfer) async throws -> Void) -> Transfer {
+                        quotaKey: String? = nil, work: @escaping @Sendable (Transfer) async throws -> Void) -> Transfer {
         let t = Transfer(title: title, detail: detail, direction: direction, total: total, group: group, work: work)
+        t.quotaKey = quotaKey
         t.manager = self
         transfers.append(t)
         pump()
@@ -96,6 +101,25 @@ public final class TransferManager {
     }
 
     public var active: [Transfer] { transfers.filter { !$0.isFinished } }
+
+    /// Bytes still to be written into a capacity bucket by queued/running transfers.
+    public func pendingBytes(_ quotaKey: String) -> Int64 {
+        active.filter { $0.quotaKey == quotaKey }.reduce(0) { $0 + max(0, $1.total - $1.completed) }
+    }
+
+    private var activity: NSObjectProtocol?
+
+    /// Keep the Mac awake (idle sleep only) while anything is transferring.
+    func updateActivity() {
+        let busy = !active.isEmpty || !runningJobs.isEmpty
+        if busy && activity == nil {
+            activity = ProcessInfo.processInfo.beginActivity(options: [.idleSystemSleepDisabled, .userInitiated], reason: "Cirrus is transferring files")
+        } else if !busy, let a = activity {
+            ProcessInfo.processInfo.endActivity(a)
+            activity = nil
+        }
+    }
+    public var runningJobs = Set<UUID>() { didSet { updateActivity() } }
     public var running: [Transfer] { transfers.filter { $0.state == .running } }
 
     public var overall: (done: Int64, total: Int64, count: Int) {
@@ -139,6 +163,7 @@ public final class TransferManager {
 
     private func retryNow(_ t: Transfer) {
         let n = Transfer(title: t.title, detail: t.detail, direction: t.direction, total: t.total, group: t.group, work: t.work)
+        n.quotaKey = t.quotaKey
         n.manager = self
         if let i = transfers.firstIndex(where: { $0.id == t.id }) { transfers[i] = n } else { transfers.append(n) }
         pump(); post()
@@ -167,7 +192,7 @@ public final class TransferManager {
         }
     }
 
-    func post() { NotificationCenter.default.post(name: Self.changed, object: self) }
+    func post() { updateActivity(); NotificationCenter.default.post(name: Self.changed, object: self) }
 
     /// Wait until every transfer in a group has finished (used by sync/backup runs).
     public func waitForGroup(_ group: String) async {

@@ -151,6 +151,7 @@ public final class WebDrive: DriveBackend, @unchecked Sendable {
     public func upload(_ file: URL, name: String, into folderID: String, modified: Date?, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> DriveNode {
         let zone = Self.parts(folderID).zone
         let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int64) ?? 0
+        if size > 50_000_000_000 { throw ICloudError.server("“\(name)” is \(size.byteString), larger than iCloud Drive’s 50 GB file limit.") }
         let mime = UTType(filenameExtension: (name as NSString).pathExtension)?.preferredMIMEType ?? "application/octet-stream"
         let docs = try await docws()
         let create = try await session.request(docs + "/ws/\(zone)/upload/web",

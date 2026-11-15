@@ -23,8 +23,13 @@ enum DemoArt {
         let ns = NSGraphicsContext(cgContext: ctx, flipped: false)
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = ns
-        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: CGFloat(height) / 9, weight: .bold), .foregroundColor: NSColor.white]
-        NSAttributedString(string: label, attributes: attrs).draw(at: CGPoint(x: CGFloat(width) * 0.06, y: CGFloat(height) * 0.08))
+        // Centered so square thumbnails (center crop) never clip the caption.
+        let shadow = NSShadow(); shadow.shadowBlurRadius = CGFloat(height) / 60; shadow.shadowColor = NSColor.black.withAlphaComponent(0.35)
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: CGFloat(min(width, height)) / 10, weight: .bold),
+                                                    .foregroundColor: NSColor.white, .shadow: shadow]
+        let text = NSAttributedString(string: label, attributes: attrs)
+        let size = text.size()
+        text.draw(at: CGPoint(x: (CGFloat(width) - size.width) / 2, y: CGFloat(height) * 0.40 - size.height / 2))
         NSGraphicsContext.restoreGraphicsState()
         guard let img = ctx.makeImage() else { return nil }
         let rep = NSBitmapImageRep(cgImage: img)
@@ -214,9 +219,14 @@ public final class DemoPhotos: PhotosBackend, @unchecked Sendable {
     let lock = NSLock()
     var store: Store
 
+    static let artVersion = 2
+
     init() {
         dir = Paths.cacheDir("demo").appendingPathComponent("photos", isDirectory: true)
+        let marker = dir.appendingPathComponent("art-v\(Self.artVersion)")
+        if !FileManager.default.fileExists(atPath: marker.path) { try? FileManager.default.removeItem(at: dir) }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: marker.path, contents: nil)
         let file = dir.appendingPathComponent("store.json")
         if let d = try? Data(contentsOf: file), let s = try? JSONDecoder().decode(Store.self, from: d) { store = s; return }
         store = Store(assets: [], albums: [], membership: [:])
@@ -291,7 +301,7 @@ public final class DemoPhotos: PhotosBackend, @unchecked Sendable {
             PhotoAlbum(id: "smart:Hidden", name: "Hidden", kind: .smart, symbol: "eye.slash"),
             PhotoAlbum(id: "smart:Recently Deleted", name: "Recently Deleted", kind: .smart, symbol: "trash"),
         ]
-        lock.lock(); out += store.albums; lock.unlock()
+        out += lock.withLock { store.albums }
         for i in out.indices where out[i].kind != .folder { out[i].count = members(out[i]).count }
         return out
     }
@@ -360,10 +370,10 @@ public final class DemoPhotos: PhotosBackend, @unchecked Sendable {
                                added: Date(), width: Int(img?.size.width ?? 0), height: Int(img?.size.height ?? 0), duration: nil,
                                isVideo: PhotoFormats.videoUTIs.contains(UTTypeHelper.identifier(for: g.primary)), isLive: g.pairedVideo != nil,
                                isFavorite: false, isHidden: false, isDeleted: false, isEdited: false, uti: nil, resources: res)
-            lock.lock()
-            store.assets.insert(a, at: 0)
-            if let album, album.kind == .album { store.membership[album.id, default: []].append(id) }
-            lock.unlock()
+            lock.withLock {
+                store.assets.insert(a, at: 0)
+                if let album, album.kind == .album { store.membership[album.id, default: []].append(id) }
+            }
             n += 1
             progress(n, Int64(files.count))
         }
@@ -371,17 +381,17 @@ public final class DemoPhotos: PhotosBackend, @unchecked Sendable {
     }
 
     public func add(_ assets: [PhotoAsset], to album: PhotoAlbum, library: PhotoLibraryRef) async throws {
-        lock.lock()
-        var ids = store.membership[album.id] ?? []
-        for a in assets where !ids.contains(a.id) { ids.append(a.id) }
-        store.membership[album.id] = ids
-        lock.unlock()
+        lock.withLock {
+            var ids = store.membership[album.id] ?? []
+            for a in assets where !ids.contains(a.id) { ids.append(a.id) }
+            store.membership[album.id] = ids
+        }
         save()
     }
 
     public func createAlbum(_ name: String, in library: PhotoLibraryRef) async throws -> PhotoAlbum {
         let a = PhotoAlbum(id: "album:" + UUID().uuidString.prefix(8), name: name, kind: .album, count: 0)
-        lock.lock(); store.albums.append(a); lock.unlock()
+        lock.withLock { store.albums.append(a) }
         save()
         return a
     }
