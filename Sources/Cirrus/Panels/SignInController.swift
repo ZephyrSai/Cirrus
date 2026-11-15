@@ -8,7 +8,7 @@ final class SignInController: NSWindowController, NSTextFieldDelegate {
     var onFinish: ((String?) -> Void)?
     let appleField = NSTextField()
     let passField = NSSecureTextField()
-    let remember = NSButton(checkboxWithTitle: "Remember password in Keychain (unlocked with Touch ID or your Mac password when the session expires)", target: nil, action: nil)
+    let remember = NSButton(checkboxWithTitle: "Remember password (unlocks with Touch ID when the session expires)", target: nil, action: nil)
     let codeField = NSTextField()
     let phonePopup = NSPopUpButton()
     let smsButton = NSButton(title: "Text Me a Code Instead", target: nil, action: nil)
@@ -43,6 +43,29 @@ final class SignInController: NSWindowController, NSTextFieldDelegate {
     }
 
     let savedButton = NSButton(title: "", target: nil, action: nil)
+    let fillButton = NSButton(title: "Fill from Passwords…", target: nil, action: nil)
+
+    /// Opens the system Passwords AutoFill picker for the Apple ID field. macOS only suggests
+    /// logins inline for apps tied to the website, so this triggers Edit › AutoFill › Passwords… directly.
+    @objc func fillFromPasswords() {
+        window?.makeFirstResponder(appleField.stringValue.isEmpty ? appleField : passField)
+        func find(_ menu: NSMenu?) -> (NSMenu, Int)? {
+            guard let menu else { return nil }
+            for (i, item) in menu.items.enumerated() {
+                if item.title.hasPrefix("Passwords"), menu.supermenu != nil, item.action != nil { return (menu, i) }
+                if let r = find(item.submenu) { return r }
+            }
+            return nil
+        }
+        NSApp.mainMenu?.items.first { $0.title == "Edit" }?.submenu?.update()
+        if let (menu, i) = find(NSApp.mainMenu?.items.first { $0.title == "Edit" }?.submenu) {
+            menu.performActionForItem(at: i)
+        } else if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Passwords") {
+            NSWorkspace.shared.open(app)
+            status.textColor = .secondaryLabelColor
+            status.stringValue = "Copy your Apple ID password from the Passwords app, then paste it here."
+        }
+    }
 
     /// Re-sign-in using the password saved in Keychain, released by Touch ID / Mac password.
     @objc func useSaved() {
@@ -78,7 +101,14 @@ final class SignInController: NSWindowController, NSTextFieldDelegate {
         credsBox.orientation = .vertical
         credsBox.alignment = .leading
         credsBox.spacing = 8
-        for v in [appleField, passField, remember] as [NSView] { credsBox.addArrangedSubview(v) }
+        fillButton.bezelStyle = .push
+        fillButton.controlSize = .small
+        fillButton.image = NSImage(systemSymbolName: "key.fill", accessibilityDescription: nil)
+        fillButton.imagePosition = .imageLeading
+        fillButton.target = self
+        fillButton.action = #selector(fillFromPasswords)
+        fillButton.toolTip = "Pick your Apple ID login from the Passwords app (same as Edit › AutoFill › Passwords…)"
+        for v in [appleField, passField, NSStackView(views: [fillButton, NSView()]), remember] as [NSView] { credsBox.addArrangedSubview(v) }
         for f in [appleField, passField] { f.widthAnchor.constraint(equalToConstant: 400).isActive = true }
         codeField.placeholderString = "6-digit code"
         codeField.contentType = .oneTimeCode   // codes texted to this Mac's Messages appear as an AutoFill suggestion

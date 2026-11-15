@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Cross-platform engine: iCloud web auth (SRP/2FA/ADP), Drive, Photos, sync, backup, safety.
+       Builds and unit-tests on macOS/Linux; Windows-only pieces (Recycle Bin, DPAPI, volume
+       queries) are guarded with OperatingSystem.IsWindows(). -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Cirrus.Core</RootNamespace>
+    <AssemblyName>Cirrus.Core</AssemblyName>
+    <NoWarn>$(NoWarn);SYSLIB1054;CA1416</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Cirrus.Core.Tests" />
+  </ItemGroup>
+</Project>

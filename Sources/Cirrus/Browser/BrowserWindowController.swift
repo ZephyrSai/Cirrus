@@ -69,7 +69,7 @@ final class BrowserWindowController: NSWindowController, NSToolbarDelegate, NSWi
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 740), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                          backing: .buffered, defer: false)
         w.minSize = NSSize(width: 640, height: 420)
-        w.tabbingMode = .preferred
+        w.tabbingMode = .automatic   // follows System Settings › Desktop & Dock › Prefer tabs; ⌘T always makes a tab
         w.tabbingIdentifier = "CirrusBrowser"
         w.toolbarStyle = .unified
         w.titleVisibility = .visible

@@ -139,6 +139,19 @@ enum Debug {
                 p.outline.selectRowIndexes([1], byExtendingSelection: false)
                 lastWindow = w
             }
+        case "newtab":
+            b?.newWindowForTab(nil)
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            if let nb = app.activeBrowser { offscreen(nb.window); if let l = location(arg) { nb.activePane?.navigate(to: l); await waitLoaded(nb.activePane) } }
+        case "tabs":
+            let w = (app.activeBrowser ?? app.windows.last)?.window
+            log("tabs=\(w?.tabbedWindows?.count ?? 1) windows=\(app.windows.count) titles=\((w?.tabbedWindows ?? [w].compactMap { $0 }).map(\.title))")
+        case "dumpmenu":
+            for top in NSApp.mainMenu?.items ?? [] where arg.isEmpty || top.title == arg {
+                top.submenu?.update()
+                if let sm = top.submenu { sm.delegate?.menuNeedsUpdate?(sm) }
+                log("menu \(top.title): " + (top.submenu?.items.map { i in i.isSeparatorItem ? "—" : (i.title + (i.submenu != nil ? " ▸[" + (i.submenu!.items.map(\.title).joined(separator: ", ")) + "]" : "")) }.joined(separator: " | ") ?? ""))
+            }
         case "quit": NSApp.terminate(nil)
         default: log("unknown step \(cmd)")
         }

@@ -52,7 +52,7 @@ enum MainMenu {
             item("Eject", #selector(PaneController.ejectSelection(_:)), "e"), sep(),
             item("Sign In with Apple ID…", #selector(AppDelegate.signInMenu(_:)), target: app),
         ])
-        _ = top("Edit", [
+        let editMenu = top("Edit", [
             item("Undo", Selector(("undo:")), "z"),
             item("Redo", Selector(("redo:")), "z", [.command, .shift]), sep(),
             item("Copy", #selector(PaneController.copy(_:)), "c"),
@@ -64,6 +64,7 @@ enum MainMenu {
             item("Hide Photo", #selector(PaneController.toggleHidden(_:)), "l"), sep(),
             item("Filter…", #selector(AppDelegate.focusSearch(_:)), "f", target: app),
         ])
+        editMenu.delegate = MenuDeduper.shared
         let view = top("View", [
             item("as Icons", #selector(PaneController.setIconView(_:)), "1"),
             item("as List", #selector(PaneController.setListView(_:)), "2"), sep(),
@@ -113,4 +114,25 @@ enum MainMenu {
 
 extension NSMenuItem {
     func tagged(_ t: Int) -> NSMenuItem { tag = t; return self }
+}
+
+/// AppKit inserts Dictation / Emoji / AutoFill items into the Edit menu itself and sometimes does it
+/// more than once; drop repeated entries whenever the menu opens.
+@MainActor
+final class MenuDeduper: NSObject, NSMenuDelegate {
+    static let shared = MenuDeduper()
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        var seen = Set<String>()
+        var lastWasSeparator = false
+        for item in menu.items {
+            if item.isSeparatorItem {
+                if lastWasSeparator { menu.removeItem(item) }
+                lastWasSeparator = true
+                continue
+            }
+            lastWasSeparator = false
+            let key = item.title + "|" + (item.action.map(NSStringFromSelector) ?? "")
+            if !seen.insert(key).inserted { menu.removeItem(item) }
+        }
+    }
 }
