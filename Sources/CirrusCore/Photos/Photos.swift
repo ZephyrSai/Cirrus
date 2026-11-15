@@ -1,0 +1,150 @@
+import CoreGraphics
+import Foundation
+import ImageIO
+
+public struct PhotoLibraryRef: Hashable, Codable, Sendable {
+    public var id: String           // CloudKit zone (PrimarySync, SharedSync-…) or "local"
+    public var name: String
+    public var isShared: Bool
+    public var area: String = "private"
+    public var ownerRecordName: String?
+    public var zoneType: String?
+    public init(id: String, name: String, isShared: Bool) { self.id = id; self.name = name; self.isShared = isShared }
+}
+
+public struct PhotoAlbum: Hashable, Codable, Sendable {
+    public enum Kind: String, Codable, Sendable { case smart, album, folder, shared }
+    public var id: String            // stable within a library: "smart:All Photos", "album:<record>", "folder:<record>"
+    public var name: String
+    public var kind: Kind
+    public var parentID: String?
+    public var count: Int?
+    public var symbol: String
+    public var isDeletedBin: Bool { id == "smart:Recently Deleted" }
+    public var isAllPhotos: Bool { id == "smart:All Photos" }
+    public init(id: String, name: String, kind: Kind, parentID: String? = nil, count: Int? = nil, symbol: String = "rectangle.stack") {
+        self.id = id; self.name = name; self.kind = kind; self.parentID = parentID; self.count = count; self.symbol = symbol
+    }
+}
+
+public struct PhotoResource: Hashable, Codable, Sendable {
+    public enum Kind: String, Codable, Sendable, CaseIterable { case original, liveVideo, edited, alternate, thumbnail, medium }
+    public var kind: Kind
+    public var filename: String
+    public var size: Int64
+    public var key: String           // CloudKit field name (web) or PHAssetResourceType raw value (native)
+    public var recordName: String    // record that owns the field (web)
+    public var url: String?          // signed download URL (web, expires)
+    public var uti: String?
+}
+
+public struct PhotoAsset: Hashable, Codable, Sendable {
+    public var id: String            // CPLAsset record name (web) / PHAsset localIdentifier (native)
+    public var masterID: String?
+    public var changeTag: String?
+    public var library: String
+    public var filename: String
+    public var size: Int64
+    public var created: Date?
+    public var added: Date?
+    public var width: Int
+    public var height: Int
+    public var duration: Double?
+    public var isVideo: Bool
+    public var isLive: Bool
+    public var isFavorite: Bool
+    public var isHidden: Bool
+    public var isDeleted: Bool = false
+    public var isEdited: Bool = false
+    public var uti: String?
+    public var resources: [PhotoResource]
+
+    public static func == (a: PhotoAsset, b: PhotoAsset) -> Bool {
+        a.id == b.id && a.isFavorite == b.isFavorite && a.isHidden == b.isHidden && a.changeTag == b.changeTag
+    }
+    public func hash(into h: inout Hasher) { h.combine(id) }
+
+    public func resource(_ kind: PhotoResource.Kind) -> PhotoResource? { resources.first { $0.kind == kind } }
+
+    /// Bytes for a full-fidelity export (original + live video + alternate RAW + edited if requested).
+    public func exportSize(includeLive: Bool, includeEdited: Bool, includeRAW: Bool) -> Int64 {
+        var s = resource(.original)?.size ?? size
+        if includeLive { s += resource(.liveVideo)?.size ?? 0 }
+        if includeEdited { s += resource(.edited)?.size ?? 0 }
+        if includeRAW { s += resource(.alternate)?.size ?? 0 }
+        return s
+    }
+}
+
+public struct PhotoCapabilities: OptionSet, Sendable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+    public static let favorite = PhotoCapabilities(rawValue: 1)
+    public static let hide = PhotoCapabilities(rawValue: 2)
+    public static let delete = PhotoCapabilities(rawValue: 4)
+    public static let restore = PhotoCapabilities(rawValue: 8)
+    public static let importFiles = PhotoCapabilities(rawValue: 16)
+    public static let albums = PhotoCapabilities(rawValue: 32)
+    public static let createAlbum = PhotoCapabilities(rawValue: 64)
+}
+
+public protocol PhotosBackend: AnyObject, Sendable {
+    var capabilities: PhotoCapabilities { get }
+    /// Stable key used for caches and sync state (e.g. "web:appleid" / "native").
+    var cacheKey: String { get }
+    func libraries() async throws -> [PhotoLibraryRef]
+    func albums(in library: PhotoLibraryRef) async throws -> [PhotoAlbum]
+    /// Streams pages (newest pages first where possible) and returns the complete list.
+    func assets(in album: PhotoAlbum, library: PhotoLibraryRef,
+                page: @escaping @Sendable (_ batch: [PhotoAsset], _ expectedTotal: Int?) -> Void) async throws -> [PhotoAsset]
+    func thumbnail(_ asset: PhotoAsset, maxPixel: Int) async throws -> CGImage?
+    func export(_ asset: PhotoAsset, resource: PhotoResource.Kind, to destination: URL,
+                progress: @escaping @Sendable (Int64, Int64) -> Void) async throws
+    func setFavorite(_ assets: [PhotoAsset], _ value: Bool) async throws -> [PhotoAsset]
+    func setHidden(_ assets: [PhotoAsset], _ value: Bool) async throws -> [PhotoAsset]
+    func delete(_ assets: [PhotoAsset]) async throws
+    func restore(_ assets: [PhotoAsset]) async throws
+    func importFiles(_ files: [URL], into album: PhotoAlbum?, library: PhotoLibraryRef,
+                     progress: @escaping @Sendable (Int64, Int64) -> Void) async throws
+    func add(_ assets: [PhotoAsset], to album: PhotoAlbum, library: PhotoLibraryRef) async throws
+    func createAlbum(_ name: String, in library: PhotoLibraryRef) async throws -> PhotoAlbum
+}
+
+public enum PhotoFormats {
+    public static let utiExtensions: [String: String] = [
+        "public.jpeg": "jpg", "public.png": "png", "public.heic": "heic", "public.heif": "heif", "public.tiff": "tiff",
+        "public.mpeg-4": "mp4", "com.apple.quicktime-movie": "mov", "com.compuserve.gif": "gif", "com.adobe.raw-image": "dng",
+        "com.canon.cr2-raw-image": "cr2", "com.canon.cr3-raw-image": "cr3", "com.nikon.raw-image": "nef", "com.sony.arw-raw-image": "arw",
+        "public.avif": "avif", "org.webmproject.webp": "webp", "com.apple.m4v-video": "m4v", "public.avi": "avi",
+        "com.fuji.raw-image": "raf", "com.panasonic.rw2-raw-image": "rw2", "com.olympus.raw-image": "orf", "com.pentax.raw-image": "pef",
+        "com.nikon.nrw-raw-image": "nrw", "com.canon.crw-raw-image": "crw", "public.image": "heic",
+    ]
+    public static let videoUTIs: Set<String> = ["public.mpeg-4", "com.apple.quicktime-movie", "com.apple.m4v-video", "public.avi", "public.mpeg-2-video"]
+
+    public static func importable(_ url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        return ["jpg", "jpeg", "png", "heic", "heif", "tif", "tiff", "gif", "dng", "cr2", "cr3", "nef", "arw", "raf", "rw2", "orf",
+                "webp", "avif", "mov", "mp4", "m4v"].contains(ext)
+    }
+
+    public static func cgImage(from data: Data, maxPixel: Int) -> CGImage? {
+        guard let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let opts: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+                                     kCGImageSourceCreateThumbnailWithTransform: true]
+        return CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary)
+    }
+}
+
+/// Small on-disk cache for remote thumbnails.
+public enum ThumbnailDiskCache {
+    static let queue = DispatchQueue(label: "cirrus.thumbcache", attributes: .concurrent)
+    public static func url(_ backend: String, _ id: String, _ px: Int) -> URL {
+        let safe = (backend + "_" + id).replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
+        let bucket = safe.utf8.reduce(UInt32(5381)) { ($0 &* 33) &+ UInt32($1) } % 64 // stable across launches
+        let dir = Paths.cacheDir("thumbs").appendingPathComponent(String(bucket), isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("\(safe.prefix(180))-\(px).jpg")
+    }
+    public static func read(_ backend: String, _ id: String, _ px: Int) -> Data? { try? Data(contentsOf: url(backend, id, px)) }
+    public static func write(_ data: Data, _ backend: String, _ id: String, _ px: Int) { try? data.write(to: url(backend, id, px), options: .atomic) }
+}
