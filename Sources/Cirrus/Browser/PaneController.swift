@@ -3,7 +3,7 @@ import CirrusCore
 import Quartz
 import UniformTypeIdentifiers
 
-enum ViewMode: Int { case icons, list }
+enum ViewMode: Int { case icons, list, columns }
 enum SortKey: String { case name, date, size, kind }
 
 final class NoGapFlowLayout: NSCollectionViewFlowLayout {
@@ -25,7 +25,20 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     var viewMode: ViewMode = .icons
     var sortKey: SortKey = .name
     var ascending = true
-    var filter = "" { didSet { if filter != oldValue { applyItems(allItems, preserve: true) } } }
+    var filter = "" { didSet { if filter != oldValue { filterChanged() } } }
+    // Subfolder / tag search (results replace the listing until the search ends)
+    var searchResults: [Item]?
+    var searchWhere = [String: String]()
+    var searchStatus: String?
+    var searchTask: Task<Void, Never>?
+    var searchDebounce: Timer?
+    var tagQuery: String?
+    var sizeResort: Timer?
+    // Spring-loaded folders
+    var springTimer: Timer?
+    var springKey: String?
+    /// Search and tag results show as a list; the column view comes back when the search ends.
+    var modeBeforeSearch: ViewMode?
     var loadGeneration = 0
     var loadTask: Task<Void, Never>?
     var isLoading = false
@@ -53,6 +66,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     let emptyLabel = NSTextField(labelWithString: "")
     let spinner = NSProgressIndicator()
     let contentBox = NSView()
+    var columns: ColumnController!
 
     init(location: Location) {
         self.location = location
@@ -108,13 +122,14 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         table.draggingDestinationFeedbackStyle = .regular
         table.autosaveName = "CirrusList"
         table.autosaveTableColumns = true
-        for (id, title, width) in [("name", "Name", 300.0), ("date", "Date Modified", 170.0), ("size", "Size", 90.0), ("kind", "Kind", 150.0)] {
+        for (id, title, width) in [("name", "Name", 300.0), ("date", "Date Modified", 170.0), ("size", "Size", 90.0), ("kind", "Kind", 150.0), ("where", "Where", 220.0)] {
             let c = NSTableColumn(identifier: .init(id))
             c.title = title
             c.width = width
             c.minWidth = 60
             c.sortDescriptorPrototype = NSSortDescriptor(key: id, ascending: id != "date")
             if id == "size" { c.headerCell.alignment = .right }
+            if id == "where" { c.sortDescriptorPrototype = nil; c.isHidden = true }
             table.addTableColumn(c)
         }
         tableScroll.documentView = table
@@ -166,7 +181,8 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         let divider1 = NSBox(); divider1.boxType = .separator
         let divider2 = NSBox(); divider2.boxType = .separator
         for v in [banner, contentBox, divider1, pathBar, divider2, statusBar] as [NSView] { v.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(v) }
-        for v in [gridScroll, tableScroll, emptyLabel, spinner] as [NSView] { v.translatesAutoresizingMaskIntoConstraints = false; contentBox.addSubview(v) }
+        columns = ColumnController(pane: self, location: location)
+        for v in [gridScroll, tableScroll, columns.browser, emptyLabel, spinner] as [NSView] { v.translatesAutoresizingMaskIntoConstraints = false; contentBox.addSubview(v) }
         NSLayoutConstraint.activate([
             banner.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
             banner.leadingAnchor.constraint(equalTo: root.leadingAnchor), banner.trailingAnchor.constraint(equalTo: root.trailingAnchor),
@@ -182,7 +198,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
             statusBar.leadingAnchor.constraint(equalTo: root.leadingAnchor), statusBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             statusBar.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
-        for s in [gridScroll, tableScroll] {
+        for s in [gridScroll, tableScroll, columns.browser] as [NSView] {
             NSLayoutConstraint.activate([s.topAnchor.constraint(equalTo: contentBox.topAnchor), s.bottomAnchor.constraint(equalTo: contentBox.bottomAnchor),
                                          s.leadingAnchor.constraint(equalTo: contentBox.leadingAnchor), s.trailingAnchor.constraint(equalTo: contentBox.trailingAnchor)])
         }
@@ -236,6 +252,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     func navigate(to loc: Location, record: Bool = true) {
         if record && loc != location { backStack.append(location); forwardStack.removeAll() }
         let changed = loc != location
+        endSearch(reloadList: false)
         location = loc
         filter = ""
         endRename(commit: false)
@@ -248,6 +265,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         let photo = location.isPhotoGrid
         let savedMode = UserDefaults.standard.object(forKey: "viewMode-" + modeKey) as? Int
         viewMode = ViewMode(rawValue: savedMode ?? (photo ? 0 : 0)) ?? .icons
+        if photo && viewMode == .columns { viewMode = .icons }
         if photo { sortKey = .date; ascending = false } else if changed {
             sortKey = SortKey(rawValue: UserDefaults.standard.string(forKey: "sortKey") ?? "name") ?? .name
             ascending = UserDefaults.standard.object(forKey: "sortAscending") as? Bool ?? true
@@ -275,17 +293,32 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     func showMode() {
         gridScroll.isHidden = viewMode != .icons
         tableScroll.isHidden = viewMode != .list
+        columns.browser.isHidden = viewMode != .columns
+        if viewMode == .columns { columns.setRoot(location) }
         browser?.syncToolbar()
     }
 
+    /// Column view: clicking into a column makes that folder the current one (title, path bar, New Folder,
+    /// Paste) without rebuilding the columns.
+    func columnFolderChanged(_ loc: Location) {
+        guard loc != location else { return }
+        location = loc
+        rebuildPathBar()
+        watchLocalFolder()
+        reload()
+        browser?.paneDidNavigate(self)
+    }
+
     func setViewMode(_ m: ViewMode) {
+        if m == .columns && location.isPhotoGrid { NSSound.beep(); browser?.syncToolbar(); return }
+        modeBeforeSearch = nil
         let keys = selectedKeys
         viewMode = m
         UserDefaults.standard.set(m.rawValue, forKey: "viewMode-" + modeKey)
         showMode()
         reloadViews()
-        select(keys: keys)
-        view.window?.makeFirstResponder(m == .icons ? grid : table)
+        if m != .columns { select(keys: keys) }
+        view.window?.makeFirstResponder(m == .icons ? grid : (m == .list ? table : columns.browser))
     }
 
     func goBack() { guard let l = backStack.popLast() else { return }; forwardStack.append(location); navigate(to: l, record: false) }
@@ -302,6 +335,12 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
 
     func rebuildPathBar() {
         for v in pathBar.arrangedSubviews { pathBar.removeArrangedSubview(v); v.removeFromSuperview() }
+        if let t = tagQuery {
+            let l = NSTextField(labelWithString: "Files tagged “\(t)” in your home folder")
+            l.font = .systemFont(ofSize: 11); l.textColor = .secondaryLabelColor
+            pathBar.addArrangedSubview(l)
+            return
+        }
         let comps = Catalog.shared.pathComponents(location)
         for (i, c) in comps.enumerated() {
             let b = NSButton(title: c.0, target: self, action: #selector(pathClicked(_:)))
@@ -350,6 +389,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
                 guard let self, gen == self.loadGeneration else { return }
                 self.isLoading = false
                 self.applyItems(items, preserve: true)
+                if self.searchResults != nil { self.rerunSearch() }
                 self.rebuildPathBar()
                 self.browser?.paneDidNavigate(self)
                 if scrollTop { self.scrollToTop() }
@@ -366,19 +406,23 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
 
     func scrollToTop() {
         gridScroll.contentView.scroll(to: .zero)
-        tableScroll.contentView.scroll(to: .zero)
+        // A table's top sits above y = 0 (under its header): scrolling to zero hid the first row.
+        if table.numberOfRows > 0 { table.scrollRowToVisible(0) }
+        else { tableScroll.contentView.scroll(to: NSPoint(x: 0, y: -(table.headerView?.frame.height ?? 0))) }
+        tableScroll.reflectScrolledClipView(tableScroll.contentView)
     }
 
     func applyItems(_ items: [Item], preserve: Bool) {
         let keys = preserve ? selectedKeys : []
         allItems = items
-        var list = items
-        if !filter.isEmpty { list = list.filter { $0.name.localizedCaseInsensitiveContains(filter) } }
+        var list = searchResults ?? items
+        if searchResults == nil, !filter.isEmpty { list = list.filter { $0.name.localizedCaseInsensitiveContains(filter) } }
+        table.tableColumns.first { $0.identifier.rawValue == "where" }?.isHidden = searchResults == nil
         list.sort(by: comparator())
         shown = list
         buildSections()
         reloadViews()
-        if !keys.isEmpty { select(keys: keys) }
+        if !keys.isEmpty && viewMode != .columns { select(keys: keys) }
         updateEmptyState()
         updateStatus()
         updateBanner()
@@ -388,13 +432,15 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
 
     func comparator() -> (Item, Item) -> Bool {
         let key = sortKey, asc = ascending, foldersOnTop = Prefs.foldersOnTop && !location.isPhotoGrid
+        let sizes = Dictionary(uniqueKeysWithValues: (key == .size ? (searchResults ?? allItems) : []).map { ($0.key, sortSize($0)) })
+        let sizeOf = { (i: Item) -> Int64 in sizes[i.key] ?? i.size ?? -1 }
         return { a, b in
             if foldersOnTop && a.isContainer != b.isContainer { return a.isContainer }
             var r: ComparisonResult
             switch key {
             case .name: r = a.name.localizedStandardCompare(b.name)
             case .date: r = (a.modified ?? .distantPast) == (b.modified ?? .distantPast) ? .orderedSame : ((a.modified ?? .distantPast) < (b.modified ?? .distantPast) ? .orderedAscending : .orderedDescending)
-            case .size: r = (a.size ?? -1) == (b.size ?? -1) ? .orderedSame : ((a.size ?? -1) < (b.size ?? -1) ? .orderedAscending : .orderedDescending)
+            case .size: let sa = sizeOf(a), sb = sizeOf(b); r = sa == sb ? .orderedSame : (sa < sb ? .orderedAscending : .orderedDescending)
             case .kind: r = a.kindText.localizedStandardCompare(b.kindText)
             }
             if r == .orderedSame { r = a.name.localizedStandardCompare(b.name); return r == .orderedAscending }
@@ -480,10 +526,13 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     }
 
     func updateEmptyState() {
+        if viewMode == .columns { emptyLabel.isHidden = true; spinner.stopAnimation(nil); return }
         if isLoading && shown.isEmpty { emptyLabel.stringValue = "Loading…"; spinner.startAnimation(nil); emptyLabel.isHidden = false; return }
         spinner.stopAnimation(nil)
         if let e = lastError, shown.isEmpty { emptyLabel.stringValue = (e as? LocalizedError)?.errorDescription.map { _ in "Couldn’t load this location" } ?? "Couldn’t load"; emptyLabel.isHidden = false; return }
         emptyLabel.isHidden = !shown.isEmpty
+        if let t = tagQuery { emptyLabel.stringValue = searchResults == nil ? "Searching…" : "No files tagged “\(t)”"; return }
+        if searchTask != nil && shown.isEmpty { emptyLabel.stringValue = "Searching…"; emptyLabel.isHidden = false; return }
         emptyLabel.stringValue = filter.isEmpty ? (caps.isTrash ? "Recently Deleted is empty" : "No items") : "No results for “\(filter)”"
     }
 
@@ -542,6 +591,9 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         } else if case .local(let p) = location, let free = VolumeInfo.freeSpace(at: URL(fileURLWithPath: p)) {
             s += ", \(free.byteString) available"
         }
+        if let t = tagQuery, searchResults != nil { s = "\(shown.count) file\(shown.count == 1 ? "" : "s") tagged “\(t)”" + (sel.isEmpty ? "" : " — \(sel.count) selected") }
+        else if searchResults != nil && sel.isEmpty { s = "\(shown.count) result\(shown.count == 1 ? "" : "s") in this folder and subfolders" }
+        if let st = searchStatus { s = st + (searchResults != nil ? " — " + s : "") }
         statusLabel.stringValue = s
     }
 
@@ -576,10 +628,11 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     var selectedIndexes: IndexSet {
         viewMode == .icons ? IndexSet(grid.selectionIndexPaths.compactMap { flat($0) }) : table.selectedRowIndexes
     }
-    var selectedItems: [Item] { selectedIndexes.compactMap { $0 < shown.count ? shown[$0] : nil } }
+    var selectedItems: [Item] { viewMode == .columns ? columns.selectedItems : selectedIndexes.compactMap { $0 < shown.count ? shown[$0] : nil } }
     var selectedKeys: Set<String> { Set(selectedItems.map(\.key)) }
 
     func select(keys: Set<String>) {
+        if viewMode == .columns { columns.select(keys: keys); return }
         let idx = IndexSet(shown.indices.filter { keys.contains(shown[$0].key) })
         grid.selectionIndexPaths = Set(idx.compactMap { indexPath(forFlat: $0) })
         table.selectRowIndexes(idx, byExtendingSelection: false)
@@ -644,6 +697,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
                         dropOperation opPtr: UnsafeMutablePointer<NSCollectionView.DropOperation>) -> NSDragOperation {
         let ip = ipPtr.pointee as IndexPath
         var target = location
+        springHover(opPtr.pointee == .on ? flat(ip) : nil)
         if opPtr.pointee == .on, let i = flat(ip), shown[i].isContainer {
             target = dropTarget(forFlat: i)
             let op = DragDrop.operation(info, to: target)
@@ -680,8 +734,9 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         tf.alignment = id == "size" ? .right : .left
         switch id {
         case "date": tf.stringValue = item.modified.map { Self.dateText($0) } ?? "--"
-        case "size": tf.stringValue = item.isContainer ? (item.count.map { "\($0) item\($0 == 1 ? "" : "s")" } ?? "--") : (item.size.map { $0.byteString } ?? "--")
+        case "size": tf.stringValue = item.isContainer ? folderSizeText(item) : (item.size.map { $0.byteString } ?? "--")
         case "kind": tf.stringValue = item.kindText
+        case "where": tf.stringValue = searchWhere[item.key] ?? ""
         default: break
         }
         return tf
@@ -713,6 +768,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? { row < shown.count ? writer(shown[row]) : nil }
 
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation op: NSTableView.DropOperation) -> NSDragOperation {
+        springHover(op == .on && row >= 0 ? row : nil)
         if op == .on, row < shown.count, shown[row].isContainer {
             let o = DragDrop.operation(info, to: dropTarget(forFlat: row))
             if !o.isEmpty { return o }
@@ -755,6 +811,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         case 51 where mods == [.command], 117 where mods == [.command]: moveToTrash(nil); return true
         default: break
         }
+        if viewMode == .columns { return false }
         if mods.isEmpty || mods == [.shift], let chars = event.characters, chars.count == 1, let c = chars.first, c.isLetter || c.isNumber {
             if Date().timeIntervalSince(typeSelectTime) > 1 { typeSelectBuffer = "" }
             typeSelectBuffer += String(c).lowercased()
@@ -781,6 +838,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     /// ⌘R: skip every cache for this view (album list included) and ask the server.
     @objc func refresh(_ sender: Any?) {
         Catalog.shared.invalidate(location)
+        if viewMode == .columns { Catalog.shared.invalidate(columns.root.location); columns.refresh(location) }
         var acctLib: (String, String)?
         if case .photos(let a, let lib, _) = location { acctLib = (a, lib) }
         if case .album(let a, let lib, _) = location { acctLib = (a, lib) }
@@ -804,6 +862,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     var pendingRename: String?
 
     @objc func renameSelection(_ sender: Any?) {
+        if selectedItems.count > 1 && selectedItems.allSatisfy({ canRename($0) }) { batchRename(sender); return }
         guard let item = selectedItems.first, selectedItems.count == 1, canRename(item) else { NSSound.beep(); return }
         beginRename(item)
     }
@@ -1005,12 +1064,18 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
 
     @objc func setIconView(_ sender: Any?) { setViewMode(.icons) }
     @objc func setListView(_ sender: Any?) { setViewMode(.list) }
+    @objc func setColumnView(_ sender: Any?) { setViewMode(.columns) }
     @objc func sortBy(_ sender: NSMenuItem) {
         guard let k = SortKey(rawValue: sender.identifier?.rawValue ?? "") else { return }
         setSort(k, ascending: k == sortKey ? !ascending : k != .date)
     }
 
     override func selectAll(_ sender: Any?) {
+        if viewMode == .columns {
+            let col = max(0, columns.browser.selectedColumn)
+            if let n = columns.browser.parentForItems(inColumn: col) as? ColumnNode, let c = n.children { columns.browser.selectRowIndexes(IndexSet(c.indices), inColumn: col) }
+            itemViewSelectionChanged(); return
+        }
         grid.selectionIndexPaths = Set(shown.indices.compactMap { indexPath(forFlat: $0) })
         table.selectAll(nil)
         itemViewSelectionChanged()
@@ -1024,7 +1089,14 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         case #selector(goForwardAction(_:)): return !forwardStack.isEmpty
         case #selector(goUpAction(_:)): return Catalog.shared.parent(of: location) != nil
         case #selector(newFolder(_:)): item.title = caps.newFolderTitle; return caps.canCreateFolder
-        case #selector(renameSelection(_:)): return sel.count == 1 && canRename(sel[0])
+        case #selector(renameSelection(_:)):
+            item.title = sel.count > 1 ? "Rename \(sel.count) Items…" : "Rename"
+            return !sel.isEmpty && sel.allSatisfy { canRename($0) }
+        case #selector(batchRename(_:)): return sel.count > 1 && sel.allSatisfy { canRename($0) }
+        case #selector(newFile(_:)): return caps.canCreateFolder && (location.localURL != nil || { if case .drive = location { return true }; return false }())
+        case #selector(makeAlias(_:)): return sel.contains { $0.localURL != nil } && caps.canCreateFolder
+        case #selector(openInTerminal(_:)): return location.localURL != nil || sel.contains { $0.isContainer && $0.localURL != nil }
+        case #selector(editTags(_:)), #selector(toggleTag(_:)): return sel.contains { $0.localURL != nil }
         case #selector(moveToTrash(_:)): return !sel.isEmpty && !caps.isTrash && (caps.canTrash || sel.contains { $0.isPhoto })
         case #selector(copy(_:)): return !sel.isEmpty
         case #selector(paste(_:)), #selector(pasteMove(_:)): return caps.acceptsDrops
@@ -1037,6 +1109,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
             return sel.contains(where: \.isPhoto)
         case #selector(setIconView(_:)): item.state = viewMode == .icons ? .on : .off; return true
         case #selector(setListView(_:)): item.state = viewMode == .list ? .on : .off; return true
+        case #selector(setColumnView(_:)): item.state = viewMode == .columns ? .on : .off; return !location.isPhotoGrid
         case #selector(selectAll(_:)): return !shown.isEmpty
         case #selector(showInFinder(_:)), #selector(copyPath(_:)): return location.localURL != nil || sel.contains { $0.localURL != nil }
         default: return true
@@ -1047,6 +1120,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
 
     func beginRename(_ item: Item) {
         endRename(commit: false)
+        if viewMode == .columns { renameWithAlert(item); return }
         guard let i = shown.firstIndex(of: item) else { return }
         var frame: NSRect
         var host: NSView
@@ -1127,7 +1201,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! { qlURLs[index] as NSURL }
     func previewPanel(_ panel: QLPreviewPanel!, handle event: NSEvent!) -> Bool {
         if event.type == .keyDown, [123, 124, 125, 126].contains(event.keyCode) {
-            (viewMode == .icons ? grid as NSView : table).keyDown(with: event)
+            (viewMode == .icons ? grid as NSView : (viewMode == .list ? table : columns.browser)).keyDown(with: event)
             return true
         }
         return false

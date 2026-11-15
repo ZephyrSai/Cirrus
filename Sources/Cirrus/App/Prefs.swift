@@ -8,6 +8,7 @@ enum Prefs {
             "showHidden": false, "foldersOnTop": true, "exportLive": true, "exportEdited": false, "iconSize": 64.0, "photoSize": 120.0,
             "maxTransfers": 4, "groupPhotosByMonth": true, "showStatusBar": true, "showPathBar": true, "menuBarIcon": true,
             "openRemoteEdits": true, "squarePhotoGrid": true, "drivePreviews": true,
+            "searchSubfolders": true, "calculateSizes": false, "showPreviewPane": false,
             // Tester builds (TESTER=1) start in read-only mode so nothing in iCloud can be changed until the tester opts in.
             "readOnlyICloud": (Bundle.main.object(forInfoDictionaryKey: "CirrusTesterBuild") as? Bool) ?? false,
         ])
@@ -22,6 +23,9 @@ enum Prefs {
         get { d.bool(forKey: "readOnlyICloud") }
         set { d.set(newValue, forKey: "readOnlyICloud"); SafetyPolicy.readOnlyICloud = newValue }
     }
+    static var searchSubfolders: Bool { get { d.bool(forKey: "searchSubfolders") } set { d.set(newValue, forKey: "searchSubfolders") } }
+    static var calculateSizes: Bool { get { d.bool(forKey: "calculateSizes") } set { d.set(newValue, forKey: "calculateSizes") } }
+    static var showPreviewPane: Bool { get { d.bool(forKey: "showPreviewPane") } set { d.set(newValue, forKey: "showPreviewPane") } }
     static var menuBarIcon: Bool { get { d.bool(forKey: "menuBarIcon") } set { d.set(newValue, forKey: "menuBarIcon") } }
     static var favorites: [String] {
         get {

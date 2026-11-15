@@ -51,8 +51,17 @@ final class BrowserWindowController: NSWindowController, NSToolbarDelegate, NSWi
                                                  NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Forward")!],
                                         trackingMode: .momentary, target: nil, action: nil)
     let viewControl = NSSegmentedControl(images: [NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: "Icons")!,
-                                                  NSImage(systemSymbolName: "list.bullet", accessibilityDescription: "List")!],
+                                                  NSImage(systemSymbolName: "list.bullet", accessibilityDescription: "List")!,
+                                                  NSImage(systemSymbolName: "rectangle.split.3x1", accessibilityDescription: "Columns")!],
                                          trackingMode: .selectOne, target: nil, action: nil)
+    let preview = PreviewPaneController()
+    lazy var previewItem: NSSplitViewItem = {
+        let i = NSSplitViewItem(inspectorWithViewController: preview)
+        i.minimumThickness = 230
+        i.maximumThickness = 440
+        i.canCollapse = true
+        return i
+    }()
     let indicator = TransferIndicator()
     var searchItem: NSSearchToolbarItem?
     lazy var transfersPopover: NSPopover = {
@@ -89,6 +98,8 @@ final class BrowserWindowController: NSWindowController, NSToolbarDelegate, NSWi
         let contentItem = NSSplitViewItem(viewController: paneSplit)
         contentItem.minimumThickness = 400
         split.addSplitViewItem(contentItem)
+        previewItem.isCollapsed = !Prefs.showPreviewPane
+        split.addSplitViewItem(previewItem)
         split.splitView.autosaveName = "CirrusSidebar"
         w.contentViewController = split
         w.setContentSize(NSSize(width: 1180, height: 740))
@@ -148,12 +159,14 @@ final class BrowserWindowController: NSWindowController, NSToolbarDelegate, NSWi
         if let u = p.location.localURL { window?.standardWindowButton(.documentIconButton)?.image = NSWorkspace.shared.icon(forFile: u.path) }
         sidebar.select(p.location)
         syncToolbar()
+        updatePreview()
         if let d = try? JSONEncoder().encode(p.location) { UserDefaults.standard.set(d, forKey: "lastLocation") }
         if InfoPanel.shared.isVisible { InfoPanel.shared.show(items: p.selectedItems, location: p.location, bringToFront: false) }
     }
 
     func selectionChanged(in p: PaneController) {
         guard p === activePane else { return }
+        updatePreview()
         if InfoPanel.shared.isVisible { InfoPanel.shared.show(items: p.selectedItems, location: p.location, bringToFront: false) }
     }
 
@@ -162,7 +175,12 @@ final class BrowserWindowController: NSWindowController, NSToolbarDelegate, NSWi
         navControl.setEnabled(!p.backStack.isEmpty, forSegment: 0)
         navControl.setEnabled(!p.forwardStack.isEmpty, forSegment: 1)
         viewControl.selectedSegment = p.viewMode.rawValue
-        if let s = searchItem, s.searchField.stringValue != p.filter { s.searchField.stringValue = p.filter }
+        viewControl.setEnabled(!p.location.isPhotoGrid, forSegment: 2)
+        if let s = searchItem {
+            if s.searchField.stringValue != p.filter { s.searchField.stringValue = p.filter }
+            s.searchField.placeholderString = p.searchesSubfolders ? "Search" : "Filter"
+            s.searchField.toolTip = p.searchesSubfolders ? "Searches this folder and its subfolders (View › Search Includes Subfolders)" : "Filters what's shown here"
+        }
     }
 
     func updateIndicator() {
@@ -217,6 +235,7 @@ final class BrowserWindowController: NSWindowController, NSToolbarDelegate, NSWi
             m.addItem(withTitle: "Square Photo Grid", action: #selector(toggleSquareGrid(_:)), keyEquivalent: "").target = self
             m.addItem(withTitle: "Keep Folders on Top", action: #selector(toggleFoldersOnTop(_:)), keyEquivalent: "").target = self
             m.addItem(withTitle: "Show Hidden Files", action: #selector(toggleHiddenFiles(_:)), keyEquivalent: "").target = self
+            m.addItem(withTitle: "Calculate All Sizes", action: #selector(toggleCalculateSizes(_:)), keyEquivalent: "").target = self
             m.delegate = self
             item.menu = m
             item.showsIndicator = false
@@ -299,6 +318,28 @@ final class BrowserWindowController: NSWindowController, NSToolbarDelegate, NSWi
         for p in panes { p.reload() }
     }
 
+    @objc func togglePreviewPane(_ sender: Any?) {
+        Prefs.showPreviewPane.toggle()
+        previewItem.animator().isCollapsed = !Prefs.showPreviewPane
+        updatePreview()
+    }
+
+    func updatePreview() {
+        guard !previewItem.isCollapsed, let p = activePane else { return }
+        preview.show(p.selectedItems, location: p.location)
+    }
+
+    @objc func toggleCalculateSizes(_ sender: Any?) {
+        Prefs.calculateSizes.toggle()
+        for p in panes { p.applyItems(p.allItems, preserve: true) }
+    }
+
+    @objc func toggleSearchSubfolders(_ sender: Any?) {
+        Prefs.searchSubfolders.toggle()
+        syncToolbar()
+        activePane?.filterChanged()
+    }
+
     @objc func toggleDualPane(_ sender: Any?) {
         if isDualPane {
             guard let keep = activePane else { return }
@@ -352,6 +393,7 @@ extension BrowserWindowController: NSMenuDelegate {
                 if mi.action == #selector(toggleSquareGrid(_:)) { mi.state = Prefs.squarePhotoGrid ? .on : .off }
                 if mi.action == #selector(toggleFoldersOnTop(_:)) { mi.state = Prefs.foldersOnTop ? .on : .off }
                 if mi.action == #selector(toggleHiddenFiles(_:)) { mi.state = Prefs.showHidden ? .on : .off }
+                if mi.action == #selector(toggleCalculateSizes(_:)) { mi.state = Prefs.calculateSizes ? .on : .off }
             }
             return
         }
@@ -386,5 +428,22 @@ extension BrowserWindowController: NSMenuDelegate {
         let add = NSMenuItem(title: "Sign In with Apple ID…", action: #selector(AppDelegate.signInMenu(_:)), keyEquivalent: "")
         add.target = app
         menu.addItem(add)
+    }
+}
+
+extension BrowserWindowController: NSMenuItemValidation {
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(togglePreviewPane(_:)): item.title = previewItem.isCollapsed ? "Show Preview" : "Hide Preview"
+        case #selector(toggleCalculateSizes(_:)): item.state = Prefs.calculateSizes ? .on : .off
+        case #selector(toggleSearchSubfolders(_:)): item.state = Prefs.searchSubfolders ? .on : .off
+        case #selector(toggleHiddenFiles(_:)): item.state = Prefs.showHidden ? .on : .off
+        case #selector(toggleGrouping(_:)): item.state = Prefs.groupPhotosByMonth ? .on : .off
+        case #selector(toggleSquareGrid(_:)): item.state = Prefs.squarePhotoGrid ? .on : .off
+        case #selector(toggleFoldersOnTop(_:)): item.state = Prefs.foldersOnTop ? .on : .off
+        case #selector(toggleDualPane(_:)): item.state = isDualPane ? .on : .off
+        default: break
+        }
+        return true
     }
 }

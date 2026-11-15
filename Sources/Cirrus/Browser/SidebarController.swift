@@ -134,6 +134,10 @@ final class SidebarController: NSViewController, NSOutlineViewDataSource, NSOutl
         }
         out.append(locs)
 
+        let tags = SidebarNode(.section, "Tags")
+        for t in FinderTag.standard { tags.children.append(SidebarNode(.action("tag:" + t.name), t.name, "circle.fill", tint: t.nsColor)) }
+        out.append(tags)
+
         let sync = SidebarNode(.section, "Sync & Backup")
         sync.children.append(SidebarNode(.action("backup"), "Back Up iCloud…", "externaldrive.badge.icloud", tint: .systemGreen))
         sync.children.append(SidebarNode(.action("migrate"), "Move to or from Google…", "arrow.left.arrow.right.square", tint: .systemBlue))
@@ -274,6 +278,7 @@ final class SidebarController: NSViewController, NSOutlineViewDataSource, NSOutl
             if a == "backup" { app?.showBackup(nil) }
             else if a == "migrate" { app?.showMigration(nil) }
             else if a == "newsync" { app?.showSync(nil) }
+            else if a.hasPrefix("tag:") { browser?.activePane?.showTag(String(a.dropFirst(4))) }
             else if a.hasPrefix("signin") { app?.signIn(appleID: a.hasPrefix("signin:") ? String(a.dropFirst(7)) : nil, window: view.window) }
         case .job(let id):
             app?.showSync(id)

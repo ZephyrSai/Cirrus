@@ -53,10 +53,12 @@ struct Item: Hashable {
     var symbol: String?
     var isHiddenFile = false
     var account: String? = nil
+    /// Finder tags (local files): name and Finder label colour index (0 = none).
+    var tags: [FinderTag] = []
 
     static func == (a: Item, b: Item) -> Bool {
         a.key == b.key && a.name == b.name && a.size == b.size && a.modified == b.modified && a.cloud == b.cloud
-            && a.photo?.isFavorite == b.photo?.isFavorite && a.photo?.isHidden == b.photo?.isHidden && a.count == b.count
+            && a.photo?.isFavorite == b.photo?.isFavorite && a.photo?.isHidden == b.photo?.isHidden && a.count == b.count && a.tags == b.tags
     }
     func hash(into h: inout Hasher) { h.combine(key) }
 
@@ -435,9 +437,12 @@ final class Catalog {
         }
         var size: Int64? = isDir ? nil : Int64(v?.fileSize ?? 0)
         if cloud == .cloudOnly && u != url, let n = NSDictionary(contentsOf: u)?["NSURLFileSizeKey"] as? NSNumber { size = n.int64Value }
-        return Item(key: "file:" + url.path, name: isDir ? (v?.localizedName ?? name) : name, isContainer: isDir, size: size,
-                    modified: v?.contentModificationDate, created: v?.creationDate, typeID: v?.typeIdentifier, payload: .file(url),
-                    target: isDir ? .local(url.path) : nil, cloud: cloud, isHiddenFile: name.hasPrefix(".") || v?.isHidden == true)
+        var item = Item(key: "file:" + url.path, name: isDir ? (v?.localizedName ?? name) : name, isContainer: isDir, size: size,
+                        modified: v?.contentModificationDate, created: v?.creationDate, typeID: v?.typeIdentifier, payload: .file(url),
+                        target: isDir ? .local(url.path) : nil, cloud: cloud, isHiddenFile: name.hasPrefix(".") || v?.isHidden == true)
+        // Read straight from Finder's attribute: tagNames comes back empty when fetched with the iCloud keys.
+        item.tags = FinderTag.read(u)
+        return item
     }
 
     func driveItem(_ n: DriveNode, account: String) -> Item {

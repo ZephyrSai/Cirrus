@@ -19,6 +19,9 @@ enum ContextMenu {
 
         if items.isEmpty {
             if caps.canCreateFolder { add(item(caps.newFolderTitle, #selector(PaneController.newFolder(_:)), symbol: caps.newFolderTitle == "New Album" ? "rectangle.stack.badge.plus" : "folder.badge.plus")) }
+            if caps.canCreateFolder && (loc.localURL != nil || { if case .drive = loc { return true }; return false }()) {
+                add(item("New File", #selector(PaneController.newFile(_:)), symbol: "doc.badge.plus"))
+            }
             if caps.acceptsDrops {
                 let isPhotos: Bool = { switch loc { case .photos, .album: return true; default: return false } }()
                 if loc.isRemote { add(item(isPhotos ? "Import Photos and Videos…" : "Upload Files…", #selector(PaneController.uploadHere(_:)), symbol: "square.and.arrow.up")) }
@@ -27,12 +30,16 @@ enum ContextMenu {
             sep()
             add(item("Refresh", #selector(PaneController.refresh(_:)), symbol: "arrow.clockwise"))
             add(item("Get Info", #selector(PaneController.getInfo(_:)), symbol: "info.circle"))
-            if loc.localURL != nil { add(item("Show in Finder", #selector(PaneController.showInFinder(_:)), symbol: "folder")) }
+            if loc.localURL != nil {
+                add(item("Show in Finder", #selector(PaneController.showInFinder(_:)), symbol: "folder"))
+                add(item("Open in Terminal", #selector(PaneController.openInTerminal(_:)), symbol: "terminal"))
+            }
             sep()
             let view = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
             let sub = NSMenu()
-            for (t, s) in [("as Icons", #selector(PaneController.setIconView(_:))), ("as List", #selector(PaneController.setListView(_:)))] {
-                let m = NSMenuItem(title: t, action: s, keyEquivalent: ""); m.target = pane; m.state = (s == #selector(PaneController.setIconView(_:))) == (pane.viewMode == .icons) ? .on : .off; sub.addItem(m)
+            for (t, s, mode) in [("as Icons", #selector(PaneController.setIconView(_:)), ViewMode.icons), ("as List", #selector(PaneController.setListView(_:)), .list),
+                                 ("as Columns", #selector(PaneController.setColumnView(_:)), .columns)] {
+                let m = NSMenuItem(title: t, action: s, keyEquivalent: ""); m.target = pane; m.state = pane.viewMode == mode ? .on : .off; sub.addItem(m)
             }
             sub.addItem(.separator())
             for (k, t) in [(SortKey.name, "Name"), (.date, "Date"), (.size, "Size"), (.kind, "Kind")] {
@@ -116,8 +123,10 @@ enum ContextMenu {
         }
         sep()
         if items.count == 1 && pane.canRename(items[0]) { add(item("Rename", #selector(PaneController.renameSelection(_:)), symbol: "pencil")) }
+        if items.count > 1 && items.allSatisfy({ pane.canRename($0) }) { add(item("Rename \(items.count) Items…", #selector(PaneController.batchRename(_:)), symbol: "pencil.line")) }
         if items.contains(where: { $0.localURL != nil }) && caps.canCreateFolder {
             add(item("Duplicate", #selector(PaneController.duplicate(_:)), symbol: "plus.square.on.square", key: "d"))
+            add(item("Make Alias", #selector(PaneController.makeAlias(_:)), symbol: "arrowshape.turn.up.right", key: "a", mods: [.command, .control]))
             add(item(items.count == 1 ? "Compress “\(items[0].name)”" : "Compress \(items.count) Items", #selector(PaneController.compress(_:)), symbol: "archivebox"))
         }
         if caps.canTrash || items.contains(where: \.isPhoto) {
@@ -132,9 +141,11 @@ enum ContextMenu {
             menu.addItem(.separator())
             add(t)
         }
+        if items.contains(where: { $0.localURL != nil }) && !caps.readOnly { menu.addItem(.separator()); menu.addItem(tagsMenu(items, pane: pane)) }
         sep()
         add(item("Get Info", #selector(PaneController.getInfo(_:)), symbol: "info.circle", key: "i"))
         add(item("Copy", #selector(PaneController.copy(_:)), symbol: "doc.on.doc", key: "c"))
+        if items.contains(where: { $0.isContainer && $0.localURL != nil }) { add(item("Open in Terminal", #selector(PaneController.openInTerminal(_:)), symbol: "terminal")) }
         if items.contains(where: { $0.localURL != nil }) {
             add(item("Copy Path", #selector(PaneController.copyPath(_:)), symbol: "link", key: "c", mods: [.command, .option]))
             add(item("Show in Finder", #selector(PaneController.showInFinder(_:)), symbol: "folder", key: "r"))
@@ -152,6 +163,35 @@ enum ContextMenu {
             menu.addItem(share)
         }
         return menu
+    }
+
+    /// Finder's colour tags, with a check mark when every selected item has the tag.
+    static func tagsMenu(_ items: [Item], pane: PaneController) -> NSMenuItem {
+        let local = items.filter { $0.localURL != nil }
+        let m = NSMenuItem(title: "Tags", action: nil, keyEquivalent: "")
+        m.image = NSImage(systemSymbolName: "tag", accessibilityDescription: nil)
+        let sub = NSMenu()
+        var names = FinderTag.standard
+        for t in local.flatMap(\.tags) where !names.contains(where: { $0.name == t.name }) { names.append(t) }
+        for t in names {
+            let i = NSMenuItem(title: t.name, action: #selector(PaneController.toggleTag(_:)), keyEquivalent: "")
+            i.representedObject = t.name
+            i.target = pane
+            i.state = !local.isEmpty && local.allSatisfy { $0.tags.contains { $0.name == t.name } } ? .on : (local.contains { $0.tags.contains { $0.name == t.name } } ? .mixed : .off)
+            let dot = NSImage(size: NSSize(width: 12, height: 12), flipped: false) { r in
+                (t.nsColor ?? .clear).setFill(); NSBezierPath(ovalIn: r.insetBy(dx: 1, dy: 1)).fill()
+                NSColor.secondaryLabelColor.setStroke(); let p = NSBezierPath(ovalIn: r.insetBy(dx: 1, dy: 1)); p.lineWidth = t.nsColor == nil ? 1 : 0; p.stroke()
+                return true
+            }
+            i.image = dot
+            sub.addItem(i)
+        }
+        sub.addItem(.separator())
+        let edit = NSMenuItem(title: "Edit Tags…", action: #selector(PaneController.editTags(_:)), keyEquivalent: "")
+        edit.target = pane
+        sub.addItem(edit)
+        m.submenu = sub
+        return m
     }
 
     static func isInNativeDrive(_ u: URL) -> Bool {

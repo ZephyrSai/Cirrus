@@ -83,7 +83,53 @@ enum Debug {
         case "open":
             let t0 = Date()
             if let l = location(arg) { pane?.navigate(to: l); await waitLoaded(pane); log("open \(arg): \(String(format: "%.1f", Date().timeIntervalSince(t0) - 0.7))s") } else { log("unknown location \(arg)") }
-        case "view": pane?.setViewMode(arg == "list" ? .list : .icons)
+        case "view": pane?.setViewMode(arg == "list" ? .list : (arg == "columns" ? .columns : .icons))
+        // Finder features
+        case "preview": b?.togglePreviewPane(nil)
+        case "sizes": b?.toggleCalculateSizes(nil)
+        case "newfile": pane?.newFile(nil); try? await Task.sleep(nanoseconds: 1_200_000_000); if let p = pane, let f = p.renameField { p.endRename(commit: false); _ = f }
+        case "alias": pane?.makeAlias(nil)
+        case "tag":   // tag:Red — toggle a tag on the selection
+            let mi = NSMenuItem(); mi.representedObject = arg; pane?.toggleTag(mi)
+        case "showtag": pane?.showTag(arg); try? await Task.sleep(nanoseconds: 2_500_000_000)
+        case "search":   // search:<text> — what typing in the search field does
+            pane?.filter = arg
+            for _ in 0..<100 { try? await Task.sleep(nanoseconds: 100_000_000); if pane?.searchResults != nil && pane?.searchTask == nil { break } }
+            log("search \(arg): \(pane?.shown.count ?? -1) results; \(pane?.statusLabel.stringValue ?? "")")
+        case "batchrename":   // batchrename:add:<suffix> | batchrename:format:<name> | batchrename:replace:<find>><with>
+            if let p = pane {
+                var o = BatchRenameOptions()
+                let kv = arg.split(separator: ":", maxSplits: 1).map(String.init)
+                switch kv.first {
+                case "add": o.mode = .add; o.addText = kv.count > 1 ? kv[1] : ""
+                case "format": o.mode = .format; o.customFormat = kv.count > 1 ? kv[1] : "Item"
+                default:
+                    o.mode = .replace
+                    let fr = (kv.count > 1 ? kv[1] : "").split(separator: ">", omittingEmptySubsequences: false).map(String.init)
+                    o.find = fr.first ?? ""; o.replaceWith = fr.count > 1 ? fr[1] : ""
+                }
+                let items = p.selectedItems
+                let plan = items.enumerated().map { ($0.element, o.newName($0.element.name, index: $0.offset)) }
+                await Ops.shared.batchRename(plan, in: p.location, window: p.view.window)
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                log("batchrename: " + p.shown.map(\.name).sorted().joined(separator: ", "))
+            }
+        case "batchsheet": pane?.batchRename(nil); try? await Task.sleep(nanoseconds: 500_000_000)
+        case "columnselect":   // columnselect:<name> — click an item in the deepest column showing it
+            if let c = pane?.columns {
+                for col in stride(from: c.browser.lastColumn, through: 0, by: -1) {
+                    guard let n = c.browser.parentForItems(inColumn: col) as? ColumnNode, let kids = n.children,
+                          let row = kids.firstIndex(where: { $0.item?.name == arg }) else { continue }
+                    c.browser.selectRow(row, inColumn: col)
+                    c.selectionChanged()
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                let pv = c.preview.view
+                log("preview: loaded=\(c.preview.isViewLoaded) frame=\(pv.frame) window=\(pv.window != nil) title=\(c.preview.titleLabel.stringValue)")
+                log("columns: last=\(c.browser.lastColumn) folder=\(pane.map { Catalog.shared.title($0.location) } ?? "") selected=\(c.selectedItems.map(\.name))")
+            }
+        case "listnames": log("names: " + (pane?.shown.map { $0.name + ($0.tags.isEmpty ? "" : "[" + $0.tags.map(\.name).joined(separator: ",") + "]") } ?? []).joined(separator: ", "))
         case "dual": b?.toggleDualPane(nil); await waitLoaded(b?.activePane)
         case "focus": b?.focusOtherPane()
         case "select":

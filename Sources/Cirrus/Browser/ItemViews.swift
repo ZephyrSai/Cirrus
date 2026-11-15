@@ -31,6 +31,7 @@ final class IconCell: NSCollectionViewItem {
     let favorite = NSImageView()
     let duration = NSTextField(labelWithString: "")
     let selectionBG = NSView()
+    let tagDots = TagDotsView()
     var item: Item?
     var photoMode = false
     var loadToken = 0
@@ -55,7 +56,7 @@ final class IconCell: NSCollectionViewItem {
         duration.font = .monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
         duration.textColor = .white
         duration.shadow = favorite.shadow
-        for s in [selectionBG, thumb, label, badge, favorite, duration] { v.addSubview(s) }
+        for s in [selectionBG, thumb, label, badge, favorite, duration, tagDots] { v.addSubview(s) }
         view = v
     }
 
@@ -80,8 +81,10 @@ final class IconCell: NSCollectionViewItem {
             thumb.layer?.cornerRadius = 4
             selectionBG.frame = thumb.frame.insetBy(dx: -5, dy: -5)
             let fit = label.sizeThatFits(NSSize(width: b.width - 4, height: labelH))
-            let w = min(b.width - 4, fit.width + 8)
-            label.frame = NSRect(x: (b.width - w) / 2, y: max(0, labelH - fit.height) , width: w, height: min(labelH, fit.height))
+            let dotsW = tagDots.isHidden ? 0 : tagDots.intrinsicContentSize.width + 2
+            let w = min(b.width - 4 - dotsW, fit.width + 8)
+            label.frame = NSRect(x: (b.width - w + dotsW) / 2, y: max(0, labelH - fit.height) , width: w, height: min(labelH, fit.height))
+            tagDots.frame = NSRect(x: label.frame.minX - dotsW, y: label.frame.maxY - 13, width: dotsW, height: 11)
             badge.frame = NSRect(x: thumb.frame.maxX - 12, y: thumb.frame.minY - 2, width: 16, height: 16)
             favorite.frame = NSRect(x: thumb.frame.minX + 2, y: thumb.frame.minY + 2, width: 12, height: 11)
             duration.frame = .zero
@@ -92,6 +95,7 @@ final class IconCell: NSCollectionViewItem {
         self.item = item
         self.photoMode = photoMode
         label.stringValue = item.name
+        tagDots.colors = photoMode ? [] : item.tags.compactMap(\.nsColor)
         let fill = photoMode && item.isPhoto && Prefs.squarePhotoGrid
         thumb.fill = fill
         thumb.image = Thumbnails.shared.image(for: item, px: px)
@@ -250,12 +254,13 @@ final class NameCellView: NSTableCellView {
     let icon = ThumbView()
     let name = NSTextField(labelWithString: "")
     let status = NSImageView()
+    let tagDots = TagDotsView()
     var token = 0
     override init(frame: NSRect) {
         super.init(frame: frame)
         name.lineBreakMode = .byTruncatingMiddle
         name.font = .systemFont(ofSize: 13)
-        addSubview(icon); addSubview(name); addSubview(status)
+        addSubview(icon); addSubview(name); addSubview(status); addSubview(tagDots)
         textField = name
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -265,10 +270,15 @@ final class NameCellView: NSTableCellView {
         icon.frame = NSRect(x: 2, y: (h - 18) / 2, width: 18, height: 18)
         status.frame = NSRect(x: bounds.width - 18, y: (h - 14) / 2, width: 14, height: 14)
         let nh = name.intrinsicContentSize.height
-        name.frame = NSRect(x: 26, y: (h - nh) / 2, width: bounds.width - 26 - (status.isHidden ? 2 : 22), height: nh)
+        let dotsW = tagDots.isHidden ? 0 : tagDots.intrinsicContentSize.width + 4
+        let avail = bounds.width - 26 - (status.isHidden ? 2 : 22) - dotsW
+        let nameW = min(avail, ceil(name.cell?.cellSize.width ?? name.intrinsicContentSize.width) + 6)
+        name.frame = NSRect(x: 26, y: (h - nh) / 2, width: dotsW > 0 ? nameW : avail, height: nh)
+        tagDots.frame = NSRect(x: name.frame.maxX + 3, y: (h - 11) / 2, width: dotsW, height: 11)
     }
     func configure(_ item: Item) {
         name.stringValue = item.name
+        tagDots.colors = item.tags.compactMap(\.nsColor)
         icon.fill = item.isPhoto
         icon.layer?.cornerRadius = item.isPhoto ? 2 : 0
         icon.image = Thumbnails.shared.image(for: item, px: 64)
