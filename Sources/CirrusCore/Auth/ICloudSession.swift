@@ -82,6 +82,9 @@ public actor ICloudSession {
 
     struct Endpoints { let base: String; let setup: String; let auth: String }
 
+    /// Unit tests swap in a mock Apple server (URLProtocol subclasses).
+    nonisolated(unsafe) static var testProtocolClasses: [AnyClass]?
+
     public private(set) var state: SessionState
     public private(set) var needs2FA = false
     nonisolated let http: URLSession
@@ -100,6 +103,7 @@ public actor ICloudSession {
         config.timeoutIntervalForRequest = 60
         config.timeoutIntervalForResource = 60 * 60 * 24
         config.httpMaximumConnectionsPerHost = 8
+        if let mocks = ICloudSession.testProtocolClasses { config.protocolClasses = mocks }
         http = URLSession(configuration: config, delegate: NoRedirectDelegate(), delegateQueue: nil)
     }
 
@@ -282,18 +286,31 @@ public actor ICloudSession {
             body: jsonBody(["accountName": .string(appleID), "m1": .string(Data(client.M1).base64EncodedString()),
                             "m2": .string(Data(client.M2).base64EncodedString()), "c": .string(c), "rememberMe": true,
                             "trustTokens": .array(state.trustToken.map { [JSON.string($0)] } ?? [])])))
+        Log.info("auth: signin/complete → \(complete.http.statusCode)")
         switch complete.http.statusCode {
-        case 200:
+        case 200, 204:
             break
         case 409:
             needs2FA = true
         case 412:
+            // Password accepted; Apple wants the "repair" acknowledgement (terms / account notices) before continuing.
             let r = try await send(makeRequest(endpoints.auth + "/repair/complete", method: "POST", headers: authHeaders(), body: jsonBody([:])))
-            guard r.http.statusCode == 200 else { throw ICloudError.http(r.http.statusCode, "Apple asked to repair this account; sign in once at icloud.com.") }
+            guard (200..<300).contains(r.http.statusCode) else {
+                throw ICloudError.http(r.http.statusCode, Self.errorMessage(r.json) ?? "Apple asked to update this account; sign in once at icloud.com, then try again.")
+            }
+            Log.info("auth: repair acknowledged (\(r.http.statusCode))")
         case 401, 403:
             throw ICloudError.badCredentials
         default:
             throw ICloudError.http(complete.http.statusCode, Self.errorMessage(complete.json))
+        }
+        if !needs2FA {
+            do {
+                try await accountLogin()
+                return .signedIn
+            } catch ICloudError.twoFactorRequired {
+                needs2FA = true   // e.g. after the 412 repair path, Apple still wants a code
+            }
         }
         if needs2FA {
             let auth = try? await authState()
@@ -304,7 +321,6 @@ public actor ICloudSession {
             persist()
             return .needsCode(phones: auth?.phones ?? [], deviceAvailable: true)
         }
-        try await accountLogin()
         return .signedIn
     }
 
@@ -312,13 +328,13 @@ public actor ICloudSession {
         let q = ["frame_id": frameTag, "language": "en_US", "skVersion": "7", "iframeId": frameTag, "client_id": state.clientID,
                  "redirect_uri": endpoints.base, "response_type": "code", "response_mode": "web_message", "state": frameTag, "authVersion": "latest"]
         let r = try await send(makeRequest(endpoints.auth + "/authorize/signin", method: "GET", query: q, headers: ["Accept": "*/*"]))
-        guard r.http.statusCode == 200 else { throw ICloudError.http(r.http.statusCode, "Couldn’t reach Apple’s sign-in service.") }
+        guard (200..<300).contains(r.http.statusCode) else { throw ICloudError.http(r.http.statusCode, "Couldn’t reach Apple’s sign-in service.") }
     }
 
     func authFederate(_ accountName: String) async throws {
         let r = try await send(makeRequest(endpoints.auth + "/federate", method: "POST", query: ["isRememberMeEnabled": "true"], headers: authHeaders(),
                                            body: jsonBody(["accountName": .string(accountName), "rememberMe": true])))
-        guard r.http.statusCode == 200 else { throw ICloudError.http(r.http.statusCode, Self.errorMessage(r.json) ?? "Apple didn’t accept this Apple ID.") }
+        guard (200..<300).contains(r.http.statusCode) else { throw ICloudError.http(r.http.statusCode, Self.errorMessage(r.json) ?? "Apple didn’t accept this Apple ID.") }
     }
 
     struct AuthStateInfo { var phones: [TrustedPhone]; var noTrustedDevices: Bool }
