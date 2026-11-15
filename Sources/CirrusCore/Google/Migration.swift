@@ -272,7 +272,7 @@ public final class MigrationEngine: @unchecked Sendable {
         }
         if store.value.root == nil {
             // The local record can be missing (another Mac, cleared data): adopt this account's folder if Cirrus made one.
-            let mine = try await target.drive.children("root").filter { $0.isFolder && $0.appProperties[Self.sourceKey] == sourceTag }
+            let mine = try await target.drive.children("root").filter { $0.isFolder && Self.tag(of: $0) == sourceTag }
             if let f = mine.first {
                 progress("Matching files already in Google Drive…")
                 try await reconcile(root: f)
@@ -388,7 +388,13 @@ public final class MigrationEngine: @unchecked Sendable {
             }
             // Photos Cirrus brought in from Google Photos aren't sent back.
             if let back = albums.first(where: { $0.kind == .album && $0.name == options.fromGoogleAlbum }) {
-                let ids = Set(((try? await pb.assets(in: back, library: lib) { _, _ in }) ?? []).map(\.id))
+                // Fail closed: without this list Cirrus can't tell Google's photos from yours, and would send them back.
+                let list: [PhotoAsset]
+                do { list = try await pb.assets(in: back, library: lib) { _, _ in } } catch {
+                    if Self.isCancel(error) { throw error }
+                    throw SyncError.unavailable("Couldn’t read the “\(options.fromGoogleAlbum)” album (\(error.localizedDescription)), so Cirrus can’t tell which photos came from Google. Nothing was sent; select Check Space to try again.")
+                }
+                let ids = Set(list.map(\.id))
                 let before = assets.count
                 assets.removeAll { ids.contains($0.id) }
                 if before > assets.count {
@@ -423,7 +429,12 @@ public final class MigrationEngine: @unchecked Sendable {
             if options.albums {
                 for al in albums where al.kind == .album {
                     progress("Reading album “\(al.name)”…")
-                    let list = (try? await pb.assets(in: al, library: lib) { _, _ in }) ?? []
+                    let list: [PhotoAsset]
+                    do { list = try await pb.assets(in: al, library: lib) { _, _ in } } catch {
+                        if Self.isCancel(error) { throw error }
+                        ev.warnings.append("Couldn’t read the album “\(al.name)” (\(error.localizedDescription)), so it isn’t recreated this time.")
+                        continue
+                    }
                     addPlan("\(lib.id)|\(al.id)", al.name + suffix, list.compactMap { primary[$0.id] })
                 }
             }
@@ -579,16 +590,29 @@ public final class MigrationEngine: @unchecked Sendable {
 
     // MARK: Drive
 
+    /// Cirrus's tag on what it made in Google Drive: private (appProperties, this OAuth client only) and public
+    /// (properties, any client) — so the Google → iCloud direction recognizes it even after the client changes.
+    static func tag(of f: GDriveFile) -> String? { f.appProperties[sourceKey] ?? f.properties[sourceKey] }
+    var marker: [String: String] { [Self.sourceKey: sourceTag] }
+    static let folderDescription = "Copied from iCloud by Cirrus. Cirrus never copies this folder back into iCloud."
+
     func ensureRoot(_ ctx: RunContext) async throws -> String {
-        if let id = store.value.root { return id }
-        let tagged = try await target.drive.children("root").filter { $0.isFolder && $0.appProperties[Self.sourceKey] != nil }
-        if let mine = tagged.first(where: { $0.appProperties[Self.sourceKey] == sourceTag }) {
+        if let id = store.value.root {
+            // Folders made before the public marker existed get it now.
+            if let f = try await target.drive.get(id), f.properties[Self.sourceKey] == nil {
+                try await target.drive.setProperties(id, marker, description: Self.folderDescription)
+            }
+            return id
+        }
+        let tagged = try await target.drive.children("root").filter { $0.isFolder && Self.tag(of: $0) != nil }
+        if let mine = tagged.first(where: { Self.tag(of: $0) == sourceTag }) {
+            if mine.properties[Self.sourceKey] == nil { try await target.drive.setProperties(mine.id, marker, description: Self.folderDescription) }
             store.apply(.root(mine.id, mine.name))
             return mine.id
         }
         var name = options.folderName
         if tagged.contains(where: { $0.name == name }) { name += " (\(sources.title))" }
-        let f = try await target.drive.createFolder(name, parent: "root", appProperties: [Self.sourceKey: sourceTag])
+        let f = try await target.drive.createFolder(name, parent: "root", appProperties: marker, properties: marker, description: Self.folderDescription)
         store.apply(.root(f.id, f.name))
         ctx.mutate { $0.foldersCreated += 1 }
         return f.id
@@ -613,7 +637,7 @@ public final class MigrationEngine: @unchecked Sendable {
                 }
             }
             ctx.phase("Creating folder \(name)…")
-            let f = try await target.drive.createFolder(name, parent: parent)
+            let f = try await target.drive.createFolder(name, parent: parent, properties: marker)
             store.apply(.folder(rel, f.id))
             createdHere.insert(rel)
             ctx.mutate { $0.foldersCreated += 1 }
@@ -675,7 +699,7 @@ public final class MigrationEngine: @unchecked Sendable {
         ctx.phase("Uploading \(name) to Google Drive…")
 
         func fresh() async throws -> GDriveFile {
-            let s = try await target.drive.startUpload(name: name, parent: parent, size: size, modified: mtime)
+            let s = try await target.drive.startUpload(name: name, parent: parent, size: size, modified: mtime, properties: marker)
             store.apply(.driveUpload(item.rel, .init(url: s.url, total: size, mtime: item.mtime, started: s.started)))
             return try await target.drive.upload(local, session: s, resume: false, progress: onUp)
         }

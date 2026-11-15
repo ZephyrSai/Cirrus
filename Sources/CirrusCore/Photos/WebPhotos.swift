@@ -417,6 +417,14 @@ public final class WebPhotos: PhotosBackend, @unchecked Sendable {
 
     public func importFiles(_ files: [URL], into album: PhotoAlbum?, library: PhotoLibraryRef,
                             progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
+        let created = try await importReturningIDs(files, library: library, progress: progress)
+        if let album, album.kind == .album, !created.isEmpty {
+            let fake = created.map { PhotoAsset(id: $0, library: library.id, filename: "", size: 0, width: 0, height: 0, isVideo: false, isLive: false, isFavorite: false, isHidden: false, resources: []) }
+            try await add(fake, to: album, library: library)
+        }
+    }
+
+    public func importReturningIDs(_ files: [URL], library: PhotoLibraryRef, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> [String] {
         try SafetyPolicy.checkWrite()
         guard let base = await session.webserviceURL("uploadimagews"), let dsid = await session.dsid else {
             throw ICloudError.serviceUnavailable("iCloud Photos upload")
@@ -432,10 +440,7 @@ public final class WebPhotos: PhotosBackend, @unchecked Sendable {
             if let err = r["errors"][0]["errorMessage"].string ?? r["errors"][0]["message"].string { throw ICloudError.server(err) }
             created += r["records"].array.filter { $0["recordType"].string == "CPLAsset" }.compactMap { $0["recordName"].string }
         }
-        if let album, album.kind == .album, !created.isEmpty {
-            let fake = created.map { PhotoAsset(id: $0, library: library.id, filename: "", size: 0, width: 0, height: 0, isVideo: false, isLive: false, isFavorite: false, isHidden: false, resources: []) }
-            try await add(fake, to: album, library: library)
-        }
+        return created
     }
 
     public func add(_ assets: [PhotoAsset], to album: PhotoAlbum, library: PhotoLibraryRef) async throws {

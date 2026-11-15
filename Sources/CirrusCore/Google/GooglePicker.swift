@@ -79,10 +79,12 @@ public final class GooglePicker: @unchecked Sendable {
     /// "=d": the photo with its metadata (Google removes the location). "=dv": Google's high-quality
     /// transcode of a video, not the original. Base URLs last about an hour and need the access token.
     public func download(_ item: GooglePickedItem, to dest: URL) async throws {
-        guard let u = URL(string: item.baseURL + (item.isVideo ? "=dv" : "=d")) else { throw GoogleError.badResponse("Bad download link from Google Photos.") }
+        guard let u = URL(string: item.baseURL + (item.isVideo ? "=dv" : "=d")), GoogleRedirects.allowed(u) else {
+            throw GoogleError.badResponse("Google Photos gave a download link that isn’t a Google address, so Cirrus didn’t use it.")
+        }
         var req = URLRequest(url: u)
         req.setValue("*/*", forHTTPHeaderField: "Accept")
-        let r = try await api.send(req, idempotent: true)
+        let r = try await api.send(req, idempotent: true, followRedirects: true)
         try r.data.write(to: dest)
     }
 }

@@ -14,6 +14,9 @@ final class RecordingPhotos: PhotosBackend, @unchecked Sendable {
     var membership: [String: [String]] = [:]
     var importCalls: [[String]] = []
     var stored: [String: URL] = [:]
+    /// Uploads of files with these names fail; the next `failAdds` album adds fail.
+    var failUploadNamed: Set<String> = []
+    var failAdds = 0
     let cacheKey = "recording"
     var capabilities: PhotoCapabilities { [.favorite, .importFiles, .albums, .createAlbum] }
 
@@ -31,8 +34,14 @@ final class RecordingPhotos: PhotosBackend, @unchecked Sendable {
         throw ICloudError.notFound
     }
     func importFiles(_ files: [URL], into album: PhotoAlbum?, library: PhotoLibraryRef, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
+        let ids = try await importReturningIDs(files, library: library, progress: progress)
+        if let album { lock.withLock { membership[album.id, default: []].append(contentsOf: ids) } }
+    }
+    func importReturningIDs(_ files: [URL], library: PhotoLibraryRef, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> [String] {
         var names = [String]()
+        var ids = [String]()
         for f in files {
+            if lock.withLock({ failUploadNamed.contains(f.lastPathComponent) }) { throw ICloudError.server("The upload failed (test).") }
             let id = "R" + UUID().uuidString.prefix(8)
             let copy = dir.appendingPathComponent(id + "-" + f.lastPathComponent)
             try FileManager.default.copyItem(at: f, to: copy)
@@ -44,14 +53,17 @@ final class RecordingPhotos: PhotosBackend, @unchecked Sendable {
             lock.withLock {
                 assets.append(a)
                 stored[f.lastPathComponent + "#" + String(size)] = copy
-                if let album { membership[album.id, default: []].append(id) }
             }
             names.append(f.lastPathComponent)
+            ids.append(id)
         }
         lock.withLock { importCalls.append(names) }
         progress(Int64(files.count), Int64(files.count))
+        return ids
     }
     func add(_ list: [PhotoAsset], to album: PhotoAlbum, library: PhotoLibraryRef) async throws {
+        let fail: Bool = lock.withLock { if failAdds > 0 { failAdds -= 1; return true }; return false }
+        if fail { throw ICloudError.server("Adding to the album failed (test).") }
         lock.withLock { for a in list where !(membership[album.id] ?? []).contains(a.id) { membership[album.id, default: []].append(a.id) } }
     }
     func createAlbum(_ name: String, in library: PhotoLibraryRef) async throws -> PhotoAlbum {
@@ -106,8 +118,8 @@ extension GoogleServerTests {
     }
 
     func engine(_ api: GoogleAPI, takeout: [URL] = [], picked: [GooglePickedItem] = [], driveRoot: URL? = nil, photos: PhotosBackend? = nil,
-                state: URL, options: ImportOptions = ImportOptions(), readOnly: Bool = false, bin: TrashBin? = nil) -> ImportEngine {
-        let target = ImportEngine.Target(key: "test:icloud", title: "Test iCloud", drive: nil, nativeDriveRoot: driveRoot, photos: photos, isWeb: false)
+                state: URL, options: ImportOptions = ImportOptions(), readOnly: Bool = false, bin: TrashBin? = nil, web: Bool = false) -> ImportEngine {
+        let target = ImportEngine.Target(key: "test:icloud", title: "Test iCloud", drive: nil, nativeDriveRoot: driveRoot, photos: photos, isWeb: web)
         return ImportEngine(source: .init(api: api, takeout: takeout, picked: picked), target: target, options: options, stateDir: state,
                             stagingDir: state.appendingPathComponent("staging"), readOnly: { readOnly },
                             trash: { u, r in try (bin ?? TrashBin(state.appendingPathComponent("trash"))).trash(u, r) })
@@ -314,6 +326,117 @@ extension GoogleServerTests {
         #expect(bev.warnings.contains { $0.contains("“From iCloud” in Google Drive is left out") })
         #expect(bev.photoPending.map(\.fileName) == ["IMG_0042.JPG"])
         #expect(bev.warnings.contains { $0.contains("came from this iCloud account through Cirrus") })
+    }
+
+    // MARK: Audit regressions
+
+    @Test func eachUploadIsRecordedAtOnceAndOnlyTheAlbumAddIsRetried() async throws {
+        let api = try await connect()
+        let dir = GoogleMigrationTests.tempDir("partial")
+        let parts = try await TakeoutFixture.make(in: dir, format: "zip")
+        let rec = RecordingPhotos(dir: dir.appendingPathComponent("icloud"))
+        rec.failUploadNamed = ["IMG_0003.MP4"]   // a Live Photo's second half fails…
+        rec.failAdds = 2                          // …and adding to “From Google Photos” fails twice (the batch, then the retry)
+        let state = dir.appendingPathComponent("state")
+        var o = ImportOptions(); o.includeDrive = false
+        let r1 = try await engine(api, takeout: parts, photos: rec, state: state, options: o, web: true).run(
+            try await engine(api, takeout: parts, photos: rec, state: state, options: o, web: true).evaluate { _ in }) { _ in }
+        #expect(r1.photosImported == 9)
+        #expect(r1.failed.contains { $0.hasPrefix("IMG_0003.MP4") } && r1.failed.contains { $0.contains("From Google Photos") })
+        #expect(rec.importCalls.allSatisfy { $0.count == 1 })   // iCloud.com: one upload per file, each recorded as it lands
+        #expect(rec.members("From Google Photos").isEmpty)
+        // Next run: only the failed half is uploaded; the rest only gets its album add.
+        rec.failUploadNamed = []
+        let e2 = engine(api, takeout: parts, photos: rec, state: state, options: o, web: true)
+        let ev2 = try await e2.evaluate { _ in }
+        #expect(ev2.photoPending.map(\.fileName) == ["IMG_0003.MP4"])
+        let r2 = try await e2.run(ev2) { _ in }
+        #expect(r2.photosImported == 1 && r2.failed.isEmpty, "\(r2.failed)")
+        let uploads = rec.importCalls.flatMap { $0 }
+        // 9 then 1: nothing uploaded twice (the fixture's two different IMG_0004.JPG photos share a name).
+        #expect(uploads.count == 10 && Set(uploads).count == 9 && uploads.filter { $0 == "IMG_0003.HEIC" }.count == 1, "\(uploads.sorted())")
+        #expect(rec.members("From Google Photos").count == 10)
+        #expect(Set(rec.members("Lisbon trip").map(\.filename)) == ["IMG_0001.JPG", "IMG_0007.JPG"])
+        #expect(rec.assets.filter(\.isFavorite).map(\.filename) == ["IMG_0001.JPG"])
+    }
+
+    @Test func loopGuardSurvivesANewGoogleCloudProject() async throws {
+        let apiA = try await connect()
+        let dir = GoogleMigrationTests.tempDir("newclient")
+        let icloud = dir.appendingPathComponent("iCloud Drive")
+        try FileManager.default.createDirectory(at: icloud.appendingPathComponent("Docs"), withIntermediateDirectories: true)
+        try Data("mine".utf8).write(to: icloud.appendingPathComponent("Docs/a.txt"))
+        let state = dir.appendingPathComponent("state")
+        func forward() async throws {
+            let f = MigrationEngine(sources: .init(key: "test:icloud", title: "Test iCloud", drive: nil, nativeDriveRoot: icloud, photos: nil),
+                                    target: .init(api: apiA), options: MigrationOptions(), stateDir: state, stagingDir: state.appendingPathComponent("staging"))
+            _ = try await f.run(try await f.evaluate { _ in }) { _ in }
+        }
+        try await forward()
+        let root = try #require(FakeGoogleServer.state.file(named: "From iCloud"))
+        #expect(root.properties?["cirrusSource"] != nil && root.description?.contains("Cirrus") == true)
+        #expect(FakeGoogleServer.state.file(named: "a.txt")?.properties?["cirrusSource"] != nil)
+        // A folder from before the public marker gets it on the next run.
+        FakeGoogleServer.update { $0.files[root.id]?.properties = [:] }
+        try await forward()
+        #expect(FakeGoogleServer.state.files[root.id]?.properties?["cirrusSource"] != nil)
+        // The user moves to a new Cloud project: the new client can't read Cirrus's appProperties…
+        FakeGoogleServer.update { $0.clientID = "another-project.apps.googleusercontent.com" }
+        let oauthB = GoogleOAuth(client: GoogleOAuthClient(clientID: "another-project.apps.googleusercontent.com", clientSecret: "demo-secret"),
+                                 transport: [FakeGoogleServer.self])
+        let tokens = try await oauthB.authorize(scopes: Self.everything) { url in await FakeGoogleServer.approve(url) }
+        let refresh = try #require(tokens.refreshToken)
+        let apiB = GoogleAPI(accountID: FakeGoogleServer.state.userID, oauth: oauthB, scopes: tokens.scopes, transport: [FakeGoogleServer.self],
+                             initialTokens: tokens, refreshToken: { refresh })
+        let seen = try await GoogleDrive(api: apiB).listAll().first { $0.id == root.id }
+        #expect(seen?.appProperties.isEmpty == true && seen?.isCirrusCopy == true)
+        // …and the guard still holds, for the folder and for a file moved out of it.
+        let moved = try #require(FakeGoogleServer.state.file(named: "a.txt")).id
+        var o = ImportOptions(); o.includePhotos = false
+        let bev = try await engine(apiB, driveRoot: icloud, state: state, options: o).evaluate { _ in }
+        #expect(bev.drivePending.isEmpty)
+        #expect(bev.warnings.contains { $0.contains("“From iCloud” in Google Drive is left out") })
+        FakeGoogleServer.update { $0.files[moved]?.parents = [FakeGoogleServer.rootID] }
+        let bev2 = try await engine(apiB, driveRoot: icloud, state: state, options: o).evaluate { _ in }
+        #expect(bev2.drivePending.isEmpty && bev2.warnings.contains { $0.contains("moved out of “From iCloud”") })
+    }
+
+    @Test func downloadsFollowRedirectsOnlyWithinGoogle() async throws {
+        var s = FakeGoogleServer.State()
+        let bytes = Data((0..<100_000).map { UInt8($0 % 251) })
+        s.addUserFile("x.bin", data: bytes)
+        s.addUserDoc("Annual report", tooLarge: true)
+        let photo = DemoArt.jpeg(width: 200, height: 100, hue: 0.2, label: "R") ?? Data()
+        s.pickerLibrary = [.init(id: "r1", fileName: "PXL_r.jpg", mime: "image/jpeg", data: photo, created: Date(timeIntervalSince1970: 1_750_000_000), isVideo: false)]
+        s.redirectDownloadsTo = "doc-0s-docs.googleusercontent.com"
+        let api = try await connect(s)
+        let drive = GoogleDrive(api: api)
+        let dir = GoogleMigrationTests.tempDir("redirects")
+        let all = try await drive.listAll()
+        let x = try #require(all.first { $0.name == "x.bin" })
+        let doc = try #require(all.first { $0.name == "Annual report" })
+        // Bytes, a big Doc through its export link, and a picked photo all arrive via Google's other host…
+        try await drive.download(x, to: dir.appendingPathComponent("x.bin")) { _, _ in }
+        #expect(try Data(contentsOf: dir.appendingPathComponent("x.bin")) == bytes)
+        _ = try await drive.export(doc, as: GoogleDocFormat.office.target(for: doc.mimeType)!, to: dir.appendingPathComponent("r.docx"))
+        #expect(FakeGoogleServer.state.exportLinkUses == 1)
+        let picker = GooglePicker(api: api)
+        let session = try await picker.create()
+        FakeGoogleServer.pick(GooglePicker.browserURL(session))
+        let picked = try await picker.items(try await picker.waitForPick(session).id)
+        try await picker.download(picked[0], to: dir.appendingPathComponent("p.jpg"))
+        #expect(try Data(contentsOf: dir.appendingPathComponent("p.jpg")) == photo)
+        #expect(FakeGoogleServer.state.calls.contains { $0.hasPrefix("GET doc-0s-docs.googleusercontent.com") })
+        // …but a redirect anywhere else is refused, and the token never leaves Google.
+        FakeGoogleServer.update { $0.redirectDownloadsTo = "downloads.example.net" }
+        await #expect(throws: GoogleError.self) { try await drive.download(x, to: dir.appendingPathComponent("y.bin")) { _, _ in } }
+        let evil = GooglePickedItem(id: "e", fileName: "e.jpg", mimeType: "image/jpeg", baseURL: "https://downloads.example.net/p", created: nil, isVideo: false)
+        await #expect(throws: GoogleError.self) { try await picker.download(evil, to: dir.appendingPathComponent("e.jpg")) }
+        #expect(FakeGoogleServer.state.foreignRequests.isEmpty)
+        #expect(GoogleRedirects.allowed(URL(string: "https://lh3.googleusercontent.com/x")!))
+        #expect(!GoogleRedirects.allowed(URL(string: "http://lh3.googleusercontent.com/x")!))
+        #expect(!GoogleRedirects.allowed(URL(string: "https://googleusercontent.com.example.net/x")!))
+        #expect(!GoogleRedirects.allowed(URL(string: "https://notgoogle.com/x")!))
     }
 
     // MARK: Google Photos picker

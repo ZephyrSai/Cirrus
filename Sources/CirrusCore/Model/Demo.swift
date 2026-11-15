@@ -453,7 +453,16 @@ public final class DemoPhotos: PhotosBackend, @unchecked Sendable {
     public func restore(_ assets: [PhotoAsset]) async throws { try SafetyPolicy.checkWrite(); _ = mutate(assets) { $0.isDeleted = false } }
 
     public func importFiles(_ files: [URL], into album: PhotoAlbum?, library: PhotoLibraryRef, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
+        let ids = try await importReturningIDs(files, library: library, progress: progress)
+        if let album, album.kind == .album {
+            lock.withLock { store.membership[album.id, default: []].append(contentsOf: ids) }
+            save()
+        }
+    }
+
+    public func importReturningIDs(_ files: [URL], library: PhotoLibraryRef, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> [String] {
         try SafetyPolicy.checkWrite()
+        var ids = [String]()
         var n: Int64 = 0
         for g in LivePairing.group(files) {
             let id = "DEMO-" + UUID().uuidString.prefix(8)
@@ -472,14 +481,13 @@ public final class DemoPhotos: PhotosBackend, @unchecked Sendable {
                                added: Date(), width: Int(img?.size.width ?? 0), height: Int(img?.size.height ?? 0), duration: nil,
                                isVideo: PhotoFormats.videoUTIs.contains(UTTypeHelper.identifier(for: g.primary)), isLive: g.pairedVideo != nil,
                                isFavorite: false, isHidden: false, isDeleted: false, isEdited: false, uti: nil, resources: res)
-            lock.withLock {
-                store.assets.insert(a, at: 0)
-                if let album, album.kind == .album { store.membership[album.id, default: []].append(id) }
-            }
+            lock.withLock { store.assets.insert(a, at: 0) }
+            ids.append(id)
             n += 1
             progress(n, Int64(files.count))
         }
         save()
+        return ids
     }
 
     public func add(_ assets: [PhotoAsset], to album: PhotoAlbum, library: PhotoLibraryRef) async throws {

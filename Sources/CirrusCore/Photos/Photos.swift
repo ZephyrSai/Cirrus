@@ -111,6 +111,9 @@ public protocol PhotosBackend: AnyObject, Sendable {
     func restore(_ assets: [PhotoAsset]) async throws
     func importFiles(_ files: [URL], into album: PhotoAlbum?, library: PhotoLibraryRef,
                      progress: @escaping @Sendable (Int64, Int64) -> Void) async throws
+    /// Imports without touching any album and returns the new assets' ids (one per photo; a Live Photo's
+    /// still and video make one). Lets a caller record each upload the moment it succeeds. Empty = can't tell.
+    func importReturningIDs(_ files: [URL], library: PhotoLibraryRef, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> [String]
     func add(_ assets: [PhotoAsset], to album: PhotoAlbum, library: PhotoLibraryRef) async throws
     func createAlbum(_ name: String, in library: PhotoLibraryRef) async throws -> PhotoAlbum
     /// Requirements (not just extension methods) so calls through `any PhotosBackend` reach the real implementation.
@@ -129,6 +132,10 @@ public extension PhotosBackend {
     func hasChanges(since token: String, library: PhotoLibraryRef) async throws -> (changed: Bool, token: String?) { (true, nil) }
     func remember(_ libraries: [PhotoLibraryRef]) {}
     func librariesComplete() -> Bool { true }
+    func importReturningIDs(_ files: [URL], library: PhotoLibraryRef, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> [String] {
+        try await importFiles(files, into: nil, library: library, progress: progress)
+        return []
+    }
 }
 
 public enum PhotoFormats {

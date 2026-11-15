@@ -11,6 +11,7 @@ final class TestPhotos: PhotosBackend, @unchecked Sendable {
     var userAlbums: [PhotoAlbum] = []
     var membership: [String: [String]] = [:]
     var writes = 0
+    var failListing: Set<String> = []
     let cacheKey = "test"
     var capabilities: PhotoCapabilities { [] }
 
@@ -28,6 +29,7 @@ final class TestPhotos: PhotosBackend, @unchecked Sendable {
         [PhotoAlbum(id: "smart:All Photos", name: "All Photos", kind: .smart)] + lock.withLock { userAlbums }
     }
     func assets(in album: PhotoAlbum, library: PhotoLibraryRef, page: @escaping @Sendable ([PhotoAsset], Int?) -> Void) async throws -> [PhotoAsset] {
+        if lock.withLock({ failListing.contains(album.id) }) { throw ICloudError.http(503, "iCloud is busy (test)") }
         let list = lock.withLock { album.isAllPhotos ? assets : assets.filter { (membership[album.id] ?? []).contains($0.id) } }
         page(list, list.count)
         return list
@@ -361,6 +363,30 @@ extension GoogleServerTests {
         #expect(lib.writes == 0)
         // Google files Cirrus didn't create stay invisible to it.
         #expect(try await GoogleDrive(api: api).children("root").allSatisfy { $0.appProperties["cirrusSource"] != nil })
+    }
+
+    @Test func unreadableFromGooglePhotosAlbumStopsTheMove() async throws {
+        // Without that album's list, photos that came from Google would look new and be sent back.
+        let api = try await connect()
+        let lib = TestPhotos()
+        lib.assets = [TestPhotos.asset(1), TestPhotos.asset(2)]
+        lib.userAlbums = [PhotoAlbum(id: "album:fromgoogle", name: "From Google Photos", kind: .album)]
+        lib.membership = ["album:fromgoogle": ["A0002"]]
+        lib.failListing = ["album:fromgoogle"]
+        var o = MigrationOptions(); o.includeDrive = false
+        let e = engine(api, photos: lib, state: Self.tempDir("failclosed"), options: o)
+        do {
+            _ = try await e.evaluate { _ in }
+            Issue.record("expected Check Space to stop")
+        } catch {
+            #expect(error.localizedDescription.contains("“From Google Photos”") && error.localizedDescription.contains("Nothing was sent"))
+        }
+        #expect(FakeGoogleServer.state.batchCreateSizes.isEmpty && FakeGoogleServer.state.photoSessionsStarted == 0)
+        // Any other album that can't be read is only left out, with a note.
+        lib.failListing = ["album:trips"]
+        lib.userAlbums.append(PhotoAlbum(id: "album:trips", name: "Trips", kind: .album))
+        let ev = try await engine(api, photos: lib, state: Self.tempDir("failclosed2"), options: o).evaluate { _ in }
+        #expect(ev.warnings.contains { $0.contains("Couldn’t read the album “Trips”") })
     }
 
     @Test func notEnoughGoogleStorageBlocksTheRun() async throws {

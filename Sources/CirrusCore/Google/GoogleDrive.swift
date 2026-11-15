@@ -33,6 +33,8 @@ public struct GDriveFile: Sendable, Equatable {
     public var md5: String?
     public var trashed: Bool
     public var appProperties: [String: String]
+    /// Public properties: readable by any app (and any Cloud project) that can see the file.
+    public var properties: [String: String]
     public var isFolder: Bool { mimeType == GoogleDrive.folderMime }
 
     init(_ j: JSON) {
@@ -44,6 +46,7 @@ public struct GDriveFile: Sendable, Equatable {
         md5 = j["md5Checksum"].string
         trashed = j["trashed"].bool ?? false
         appProperties = j["appProperties"].object.compactMapValues(\.string)
+        properties = j["properties"].object.compactMapValues(\.string)
     }
 }
 
@@ -63,7 +66,7 @@ public final class GoogleDrive: @unchecked Sendable {
     public static let maxFileSize: Int64 = 5 * 1024 * 1024 * 1024 * 1024
     /// Google Drive: about 750 GB of uploads per user per day.
     public static let dailyUploadLimit: Int64 = 750_000_000_000
-    static let fileFields = "id,name,mimeType,size,modifiedTime,md5Checksum,trashed,appProperties"
+    static let fileFields = "id,name,mimeType,size,modifiedTime,md5Checksum,trashed,appProperties,properties"
 
     public let api: GoogleAPI
     /// Bytes per request; must be a multiple of 256 KiB.
@@ -111,10 +114,20 @@ public final class GoogleDrive: @unchecked Sendable {
         return out
     }
 
-    public func createFolder(_ name: String, parent: String, appProperties: [String: String] = [:]) async throws -> GDriveFile {
+    public func createFolder(_ name: String, parent: String, appProperties: [String: String] = [:], properties: [String: String] = [:],
+                             description: String? = nil) async throws -> GDriveFile {
         var body: [String: JSON] = ["name": .string(name), "mimeType": .string(Self.folderMime), "parents": .array([.string(parent)])]
         if !appProperties.isEmpty { body["appProperties"] = .object(appProperties.mapValues { .string($0) }) }
+        if !properties.isEmpty { body["properties"] = .object(properties.mapValues { .string($0) }) }
+        if let d = description { body["description"] = .string(d) }
         return GDriveFile(try await api.json("POST", Self.base + "/files", query: ["fields": Self.fileFields], body: .object(body), idempotent: false))
+    }
+
+    /// Adds public properties (and optionally a description) to a file Cirrus created.
+    public func setProperties(_ id: String, _ properties: [String: String], description: String? = nil) async throws {
+        var body: [String: JSON] = ["properties": .object(properties.mapValues { .string($0) })]
+        if let d = description { body["description"] = .string(d) }
+        _ = try await api.json("PATCH", Self.base + "/files/" + id, query: ["fields": "id,properties"], body: .object(body), idempotent: true)
     }
 
     /// Moves a file Cirrus created to Google Drive's trash (recoverable for 30 days). Cirrus never deletes permanently.
@@ -134,10 +147,12 @@ public final class GoogleDrive: @unchecked Sendable {
     }
 
     /// Opens a resumable upload session for a new file.
-    public func startUpload(name: String, parent: String, size: Int64, modified: Date?, appProperties: [String: String] = [:]) async throws -> DriveUploadSession {
+    public func startUpload(name: String, parent: String, size: Int64, modified: Date?, appProperties: [String: String] = [:],
+                            properties: [String: String] = [:]) async throws -> DriveUploadSession {
         var meta: [String: JSON] = ["name": .string(name), "parents": .array([.string(parent)])]
         if let m = modified { meta["modifiedTime"] = .string(Self.iso(m)) }
         if !appProperties.isEmpty { meta["appProperties"] = .object(appProperties.mapValues { .string($0) }) }
+        if !properties.isEmpty { meta["properties"] = .object(properties.mapValues { .string($0) }) }
         let req = try api.request("POST", Self.uploadBase + "/files", query: ["uploadType": "resumable", "fields": Self.fileFields], json: .object(meta),
                                   headers: ["X-Upload-Content-Type": Self.mimeType(for: name), "X-Upload-Content-Length": String(size)])
         // A lost response only leaves an unused session behind, so this is safe to retry.

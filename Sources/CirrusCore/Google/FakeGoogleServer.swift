@@ -22,6 +22,10 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
         public var byApp: Bool
         public var canDownload = true
         public var exportTooLarge = false
+        /// Public properties and description (any client sees them); appProperties belong to `appClient` only.
+        public var properties: [String: String]? = nil
+        public var description: String? = nil
+        public var appClient: String? = nil
         public var isNative: Bool { mimeType.hasPrefix("application/vnd.google-apps.") && mimeType != GoogleDrive.folderMime }
     }
     public struct MediaItem: Codable, Sendable { public var id: String; public var fileName: String; public var description: String?; public var size: Int64; public var md5: String }
@@ -34,7 +38,7 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
     }
     struct Blob: Codable { var md5: String; var size: Int64 }
     struct Code { var challenge: String; var redirect: String; var scopes: [String] }
-    struct DriveSession { var meta: JSON; var total: Int64; var data = Data(); var fileID: String? }
+    struct DriveSession { var meta: JSON; var total: Int64; var data = Data(); var fileID: String?; var client: String? = nil }
     struct PhotoSession { var total: Int64; var data = Data(); var token: String? }
     struct PickerSession { var items: [String] = []; var set = false }
 
@@ -58,7 +62,8 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
         public var albums: [String: Album] = [:]
         public var pickerLibrary: [PickerPhoto] = []
         var refreshTokens = [String: [String]]()        // refresh token → scopes
-        var accessTokens = [String: (Date, [String])]()
+        var refreshClients = [String: String]()         // refresh token → OAuth client
+        var accessTokens = [String: (Date, [String], String)]()   // expiry, scopes, client
         var codes = [String: Code]()
         var uploadTokens = [String: Blob]()
         var mediaByHash = [String: String]()
@@ -78,6 +83,8 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
         public var rangedGets = 0
         public var exportLinkUses = 0
         public var pickerSessionsDeleted = 0
+        /// Requests that reached a non-Google host, and whether they carried a bearer token.
+        public var foreignRequests: [(host: String, hadToken: Bool)] = []
         // Fault injection
         /// The Nth Drive chunk (1-based) arrives half-way, then the connection drops.
         public var dropDriveChunk: Int?
@@ -87,6 +94,8 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
         public var failDriveChunksAfter: Int?
         /// The Nth ranged download request loses its connection.
         public var dropDownloadAt: Int?
+        /// Downloads (Drive bytes, exports, export links, Photos base URLs) first answer 302 to this host.
+        public var redirectDownloadsTo: String?
         /// The next N Drive/Photos API calls get 429 with Retry-After: 0.
         public var rateLimitNext = 0
         /// Photos Library requests left today (nil = unlimited).
@@ -140,7 +149,10 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var _state = State()
     nonisolated(unsafe) static var persistURL: URL?
     public static let hosts: Set<String> = ["oauth2.googleapis.com", "accounts.google.com", "www.googleapis.com", "photoslibrary.googleapis.com",
-                                            "docs.google.com", "photospicker.googleapis.com", "lh3.googleusercontent.com"]
+                                            "docs.google.com", "photospicker.googleapis.com", "lh3.googleusercontent.com",
+                                            "doc-0s-docs.googleusercontent.com", "downloads.example.net"]
+    /// The OAuth client of the request being handled (set under the lock).
+    nonisolated(unsafe) static var requestClient: String?
 
     public static var state: State {
         get { lock.withLock { _state } }
@@ -247,6 +259,7 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
 
     enum Outcome {
         case reply(Int, [String: String], Data)
+        case redirect(Int, String)
         case drop
     }
 
@@ -261,6 +274,14 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
         switch outcome {
         case .drop:
             client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
+        case .redirect(let status, let location):
+            // Like a careless HTTP stack: the next request carries every header, the token included.
+            var next = req
+            next.url = URL(string: location)
+            let resp = HTTPURLResponse(url: req.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: ["Location": location, "Content-Length": "0"])!
+            client?.urlProtocol(self, wasRedirectedTo: next, redirectResponse: resp)
+            client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
         case .reply(let status, var headers, let data):
             if headers["Content-Type"] == nil { headers["Content-Type"] = "application/json; charset=UTF-8" }
             let resp = HTTPURLResponse(url: req.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
@@ -329,10 +350,14 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
         return d
     }
     static func fileJSON(_ f: File) -> JSON {
+        // appProperties are private to the OAuth client that wrote them.
+        let mine = f.appClient == nil || f.appClient == requestClient
         var o: [String: JSON] = ["kind": "drive#file", "id": .string(f.id), "name": .string(f.name), "mimeType": .string(f.mimeType),
                                  "parents": .array(f.parents.map { .string($0) }), "trashed": .bool(f.trashed),
-                                 "appProperties": .object(f.appProperties.mapValues { .string($0) }),
+                                 "appProperties": .object(mine ? f.appProperties.mapValues { .string($0) } : [:]),
+                                 "properties": .object((f.properties ?? [:]).mapValues { .string($0) }),
                                  "capabilities": ["canDownload": .bool(f.canDownload)]]
+        if let d = f.description { o["description"] = .string(d) }
         if f.mimeType != GoogleDrive.folderMime && !f.isNative { o["size"] = .string(String(f.size)) }
         if let m = f.md5 { o["md5Checksum"] = .string(m) }
         if let t = f.modifiedTime { o["modifiedTime"] = .string(t) }
@@ -344,7 +369,7 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
         return .object(o)
     }
 
-    static func bearer(_ r: URLRequest) -> (Date, [String])? {
+    static func bearer(_ r: URLRequest) -> (Date, [String], String)? {
         guard let h = r.value(forHTTPHeaderField: "Authorization"), h.hasPrefix("Bearer ") else { return nil }
         return _state.accessTokens[String(h.dropFirst(7))]
     }
@@ -356,11 +381,37 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
 
     // MARK: Routing
 
+    static func isDownload(_ method: String, _ url: URL) -> Bool {
+        guard method == "GET" else { return false }
+        let q = query(url)
+        if url.host == "lh3.googleusercontent.com" || url.host == "docs.google.com" { return q["via"] == nil }
+        return url.host == "www.googleapis.com" && q["via"] == nil && (q["alt"] == "media" || url.path.hasSuffix("/export"))
+    }
+
+    /// The second hop of a redirected download is served as if it were the original Google URL.
+    static func unbounce(_ url: URL) -> URL {
+        guard var c = URLComponents(url: url, resolvingAgainstBaseURL: false), let via = c.queryItems?.first(where: { $0.name == "via" })?.value else { return url }
+        c.host = via
+        return c.url ?? url
+    }
+
     static func handle(_ r: URLRequest, body: Data) -> Outcome {
         guard let url = r.url, let host = url.host else { return error(400, "Bad request") }
         let method = r.httpMethod ?? "GET"
         _state.calls.append("\(method) \(host)\(url.path)")
+        if host == "downloads.example.net" {
+            _state.foreignRequests.append((host, r.value(forHTTPHeaderField: "Authorization") != nil))
+            return .reply(200, ["Content-Type": "application/octet-stream"], Data("not Google".utf8))
+        }
         if host == "oauth2.googleapis.com" { return oauth(url.path, body) }
+        requestClient = bearer(r)?.2
+        // First hop of a redirected download: bounce to the configured host with the same path and query.
+        if let to = _state.redirectDownloadsTo, host != to, isDownload(method, url),
+           var c = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            c.host = to
+            c.queryItems = (c.queryItems ?? []) + [URLQueryItem(name: "via", value: host)]
+            if let u = c.url { return .redirect(302, u.absoluteString) }
+        }
         guard authorized(r) else { return error(401, "Request had invalid authentication credentials.", reason: "authError", statusText: "UNAUTHENTICATED") }
         if _state.rateLimitNext > 0 {
             _state.rateLimitNext -= 1
@@ -368,6 +419,8 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
                                                                                                              "errors": [["reason": "rateLimitExceeded"]]]])) ?? Data())
         }
         let out: Outcome
+        let served = unbounce(url)
+        if served != url { var again = r; again.url = served; return handle(again, body: body) }
         switch host {
         case "photoslibrary.googleapis.com":
             guard has(GoogleScopes.photosAppend, r) else { return insufficient() }
@@ -431,14 +484,15 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
             }
             let refresh = "1//fake-refresh-" + UUID().uuidString
             _state.refreshTokens[refresh] = c.scopes
-            _state.accessTokens[access] = (Date().addingTimeInterval(_state.accessTTL), c.scopes)
+            _state.refreshClients[refresh] = f["client_id"] ?? ""
+            _state.accessTokens[access] = (Date().addingTimeInterval(_state.accessTTL), c.scopes, f["client_id"] ?? "")
             persist()
             return json(200, ["access_token": .string(access), "expires_in": .number(_state.accessTTL), "refresh_token": .string(refresh),
                               "scope": .string(c.scopes.joined(separator: " ")), "token_type": "Bearer"])
         case "refresh_token":
             guard let t = f["refresh_token"], let scopes = _state.refreshTokens[t] else { return bad("invalid_grant", "Token has been expired or revoked.") }
             _state.refreshes += 1
-            _state.accessTokens[access] = (Date().addingTimeInterval(_state.accessTTL), scopes)
+            _state.accessTokens[access] = (Date().addingTimeInterval(_state.accessTTL), scopes, _state.refreshClients[t] ?? f["client_id"] ?? "")
             return json(200, ["access_token": .string(access), "expires_in": .number(_state.accessTTL),
                               "scope": .string(scopes.joined(separator: " ")), "token_type": "Bearer"])
         default:
@@ -491,9 +545,12 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
             let j = (try? JSON(data: body)) ?? .null
             let parents = j["parents"].array.compactMap(\.string).map(resolve)
             guard parents.count == 1, folderOK(parents[0]) else { return error(404, "File not found: parent.", reason: "notFound") }
-            let f = File(id: newID("f"), name: j["name"].string ?? "Untitled", mimeType: j["mimeType"].string ?? "application/octet-stream", parents: parents,
+            var f = File(id: newID("f"), name: j["name"].string ?? "Untitled", mimeType: j["mimeType"].string ?? "application/octet-stream", parents: parents,
                          size: 0, md5: nil, modifiedTime: j["modifiedTime"].string, trashed: false,
                          appProperties: j["appProperties"].object.compactMapValues(\.string), byApp: true)
+            f.properties = j["properties"].object.compactMapValues(\.string)
+            f.description = j["description"].string
+            f.appClient = requestClient
             _state.files[f.id] = f
             return json(200, fileJSON(f))
         }
@@ -528,6 +585,8 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
                 let j = (try? JSON(data: body)) ?? .null
                 if let t = j["trashed"].bool { f.trashed = t }
                 if let n = j["name"].string { f.name = n }
+                if case .object(let props) = j["properties"] { f.properties = (f.properties ?? [:]).merging(props.compactMapValues(\.string)) { $1 } }
+                if let d = j["description"].string { f.description = d }
                 _state.files[id] = f
                 return json(200, fileJSON(f))
             case "DELETE":
@@ -552,7 +611,7 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
                 let sid = newID("u")
                 var m = meta
                 if case .object(var o) = m { o["parents"] = .array(parents.map { .string($0) }); m = .object(o) }
-                _state.driveSessions[sid] = DriveSession(meta: m, total: total)
+                _state.driveSessions[sid] = DriveSession(meta: m, total: total, client: requestClient)
                 _state.driveSessionsStarted += 1
                 return .reply(200, ["Location": "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=\(sid)"], Data())
             }
@@ -572,9 +631,11 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
             if let id = s.fileID, let f = _state.files[id] { return json(200, fileJSON(f)) }
             let meta = s.meta
             let name = meta["name"].string ?? "Untitled"
-            let f = File(id: newID("f"), name: name, mimeType: r.value(forHTTPHeaderField: "X-Upload-Content-Type") ?? GoogleDrive.mimeType(for: name),
+            var f = File(id: newID("f"), name: name, mimeType: r.value(forHTTPHeaderField: "X-Upload-Content-Type") ?? GoogleDrive.mimeType(for: name),
                          parents: meta["parents"].array.compactMap(\.string), size: s.total, md5: md5(s.data),
                          modifiedTime: meta["modifiedTime"].string, trashed: false, appProperties: meta["appProperties"].object.compactMapValues(\.string), byApp: true)
+            f.properties = meta["properties"].object.compactMapValues(\.string)
+            f.appClient = s.client
             _state.files[f.id] = f
             _state.usage += s.total
             s.fileID = f.id

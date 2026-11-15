@@ -95,7 +95,13 @@ public final class GoogleAPI: @unchecked Sendable {
     }
 
     /// One request with auth; refreshes and retries once on 401. Every status comes back as a Response.
-    func perform(_ request: URLRequest, body: Body = .none, progress: (@Sendable (Int64) -> Void)? = nil) async throws -> Response {
+    /// `followRedirects` (downloads only) follows 3xx to Google's own hosts over https; anything else is refused.
+    func perform(_ request: URLRequest, body: Body = .none, followRedirects: Bool = false,
+                 progress: (@Sendable (Int64) -> Void)? = nil) async throws -> Response {
+        // The bearer token only ever goes to Google.
+        guard let target = request.url, GoogleRedirects.allowed(target) else {
+            throw GoogleError.badResponse("Google pointed Cirrus at a server that isn’t Google’s, so Cirrus didn’t send your sign-in there.")
+        }
         var authRetry = false
         while true {
             var req = request
@@ -103,7 +109,7 @@ public final class GoogleAPI: @unchecked Sendable {
             let started = Date()
             let data: Data, resp: URLResponse
             do {
-                let delegate = progress.map { p in ProgressDelegate(expected: 0) { sent, _ in p(sent) } }
+                let delegate = GoogleTaskDelegate(followRedirects: followRedirects, progress: progress)
                 switch body {
                 case .none: (data, resp) = try await http.data(for: req, delegate: delegate)
                 case .data(let d): (data, resp) = try await http.upload(for: req, from: d, delegate: delegate)
@@ -117,6 +123,10 @@ public final class GoogleAPI: @unchecked Sendable {
             let line = "google \(req.httpMethod ?? "GET") \(req.url?.host ?? "")\(req.url?.path ?? "") → \(h.statusCode)"
             if (200..<300).contains(h.statusCode) || h.statusCode == 308 { Log.debug(line + String(format: " (%.2fs)", secs)) } else { Log.status(line) }
             if h.statusCode == 401 && !authRetry { authRetry = true; continue }
+            if [301, 302, 303, 307].contains(h.statusCode) {
+                // A redirect we didn't follow: not to an https Google host, or not a download.
+                throw GoogleError.badResponse("Google redirected Cirrus somewhere it doesn’t trust, so the download stopped.")
+            }
             return Response(data: data, http: h)
         }
     }
@@ -177,13 +187,13 @@ public final class GoogleAPI: @unchecked Sendable {
     }
 
     /// Request with retries. `idempotent` allows retrying after an ambiguous network failure.
-    func send(_ request: URLRequest, body: Body = .none, idempotent: Bool, minBackoff: Double = 0,
+    func send(_ request: URLRequest, body: Body = .none, idempotent: Bool, minBackoff: Double = 0, followRedirects: Bool = false,
               progress: (@Sendable (Int64) -> Void)? = nil) async throws -> Response {
         var attempt = 0
         while true {
             try Task.checkCancellation()
             let r: Response
-            do { r = try await perform(request, body: body, progress: progress) } catch let e as URLError {
+            do { r = try await perform(request, body: body, followRedirects: followRedirects, progress: progress) } catch let e as URLError {
                 guard Self.isTransient(e, ambiguousOK: idempotent), attempt < maxRetries else { throw e }
                 attempt += 1
                 try await sleep(delay(attempt: attempt, retryAfter: nil))
@@ -224,6 +234,42 @@ public final class GoogleAPI: @unchecked Sendable {
 
     func json(_ method: String, _ url: String, query: [String: String] = [:], body: JSON? = nil, idempotent: Bool, minBackoff: Double = 0) async throws -> JSON {
         try await send(try request(method, url, query: query, json: body), idempotent: idempotent, minBackoff: minBackoff).json
+    }
+}
+
+/// Where a bearer token may go: Google's own hosts, over https.
+public enum GoogleRedirects {
+    static let suffixes = ["googleapis.com", "google.com", "googleusercontent.com"]
+    public static func allowed(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased(), !host.isEmpty else { return false }
+        return suffixes.contains { host == $0 || host.hasSuffix("." + $0) }
+    }
+}
+
+/// Per-request delegate: upload progress, and the redirect policy. Downloads may follow 3xx to Google hosts
+/// (export links and Photos base URLs can bounce between them); nothing else is followed — Drive's
+/// "308 Resume Incomplete" must reach the uploader, and a redirect elsewhere would carry the token away.
+final class GoogleTaskDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    let followRedirects: Bool
+    let progress: (@Sendable (Int64) -> Void)?
+    init(followRedirects: Bool, progress: (@Sendable (Int64) -> Void)?) { self.followRedirects = followRedirects; self.progress = progress }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        progress?(totalBytesSent)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest) async -> URLRequest? {
+        guard followRedirects, let url = request.url, GoogleRedirects.allowed(url) else {
+            Log.status("google redirect refused (\(response.statusCode) to \(request.url?.host ?? "?"))")
+            return nil
+        }
+        var next = request
+        // The download still needs the token at Google's other host; URLSession may have dropped it.
+        if next.value(forHTTPHeaderField: "Authorization") == nil, let auth = task.originalRequest?.value(forHTTPHeaderField: "Authorization") {
+            next.setValue(auth, forHTTPHeaderField: "Authorization")
+        }
+        return next
     }
 }
 

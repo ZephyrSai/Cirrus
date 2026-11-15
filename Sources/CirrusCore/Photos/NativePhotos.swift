@@ -241,13 +241,22 @@ public final class NativePhotos: NSObject, PhotosBackend, PHPhotoLibraryChangeOb
 
     public func importFiles(_ files: [URL], into album: PhotoAlbum?, library: PhotoLibraryRef,
                             progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
+        let ids = try await importReturningIDs(files, library: library, progress: progress)
+        if let album, album.kind == .album, !ids.isEmpty {
+            try await add(ids.map { PhotoAsset(id: $0, library: library.id, filename: "", size: 0, width: 0, height: 0, isVideo: false, isLive: false,
+                                               isFavorite: false, isHidden: false, resources: []) }, to: album, library: library)
+        }
+    }
+
+    public func importReturningIDs(_ files: [URL], library: PhotoLibraryRef, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> [String] {
         try SafetyPolicy.checkWrite()
         try await ensureAuthorized()
         let groups = LivePairing.group(files)
-        let col = album.flatMap { collection($0) }
+        var ids = [String]()
         var done: Int64 = 0
         for g in groups {
             try Task.checkCancellation()
+            var placeholder: String?
             try await change {
                 let req = PHAssetCreationRequest.forAsset()
                 let opts = PHAssetResourceCreationOptions()
@@ -259,11 +268,13 @@ public final class NativePhotos: NSObject, PhotosBackend, PHPhotoLibraryChangeOb
                     vo.originalFilename = v.lastPathComponent
                     req.addResource(with: .pairedVideo, fileURL: v, options: vo)
                 }
-                if let col, let ph = req.placeholderForCreatedAsset { PHAssetCollectionChangeRequest(for: col)?.addAssets([ph] as NSArray) }
+                placeholder = req.placeholderForCreatedAsset?.localIdentifier
             }
+            if let p = placeholder { ids.append(p) }
             done += 1
             progress(done, Int64(groups.count))
         }
+        return ids
     }
 
     public func add(_ assets: [PhotoAsset], to album: PhotoAlbum, library: PhotoLibraryRef) async throws {

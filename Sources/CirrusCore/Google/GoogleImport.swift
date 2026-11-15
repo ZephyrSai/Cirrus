@@ -35,7 +35,7 @@ public struct GooglePickedItem: Codable, Sendable, Hashable {
 
 struct ImportManifest: Codable {
     struct DriveFile: Codable, Equatable { var rel: String; var version: String; var size: Int64 }
-    struct Photo: Codable, Equatable { var name: String; var size: Int64 }
+    struct Photo: Codable, Equatable { var name: String; var size: Int64; var id: String? = nil }   // id: the iCloud asset
     struct Album: Codable, Equatable { var id: String; var title: String; var added: Set<String> }
     var files: [String: DriveFile] = [:]     // Google file id → its copy in iCloud Drive
     var photos: [String: Photo] = [:]        // item key → the file iCloud Photos received
@@ -51,6 +51,7 @@ enum ImportOp: ManifestOperation {
     case album(String, ImportManifest.Album)
     case albumAdded(String, [String])
     case provenance(ImportManifest.Album?)
+    case provenanceAdded([String])
     case favorited([String])
 
     func apply(_ m: inout ImportManifest) {
@@ -60,6 +61,7 @@ enum ImportOp: ManifestOperation {
         case .album(let t, let a): m.albums[t] = a
         case .albumAdded(let t, let keys): m.albums[t]?.added.formUnion(keys)
         case .provenance(let a): m.provenance = a
+        case .provenanceAdded(let keys): m.provenance?.added.formUnion(keys)
         case .favorited(let keys): m.favorited.formUnion(keys)
         }
     }
@@ -269,13 +271,17 @@ public final class ImportEngine: @unchecked Sendable {
         let m = store.value
         // Walk from My Drive's root; things only “shared with me” have no path here and stay out.
         var frontier = [(rootID, "")]
+        var cirrusFiles = 0
+        defer {
+            if cirrusFiles > 0 { ev.warnings.append("\(cirrusFiles) file\(cirrusFiles == 1 ? "" : "s") Cirrus copied from iCloud (moved out of “From iCloud”) \(cirrusFiles == 1 ? "is" : "are") left out.") }
+        }
         while let (id, prefix) = frontier.popLast() {
             var used = Set<String>()
             let kids = (children[id] ?? []).sorted { ($0.name, $0.id) < ($1.name, $1.id) }
             for k in kids {
                 // Cirrus's own copy of iCloud (iCloud → Google) isn't brought back.
-                if k.isFolder, k.appProperties[MigrationEngine.sourceKey] != nil {
-                    ev.warnings.append("“\(k.name)” in Google Drive is left out: it’s Cirrus’s copy of iCloud Drive.")
+                if k.isCirrusCopy {
+                    if k.isFolder { ev.warnings.append("“\(k.name)” in Google Drive is left out: it’s Cirrus’s copy of iCloud Drive.") } else { cirrusFiles += 1 }
                     continue
                 }
                 var name = Self.safeName(k.name)
@@ -571,7 +577,7 @@ public final class ImportEngine: @unchecked Sendable {
     func provenanceAlbum(_ backend: PhotosBackend, library: PhotoLibraryRef) async throws -> PhotoAlbum? {
         if let p = store.value.provenance { return PhotoAlbum(id: p.id, name: p.title, kind: .album) }
         guard target.isWeb || backend.capabilities.contains(.createAlbum) else { return nil }
-        if let found = try? await backend.albums(in: library).first(where: { $0.kind == .album && $0.name == options.photosAlbumName }) {
+        if let found = try await backend.albums(in: library).first(where: { $0.kind == .album && $0.name == options.photosAlbumName }) {
             store.apply(.provenance(.init(id: found.id, title: found.name, added: [])))
             return found
         }
@@ -627,12 +633,15 @@ public final class ImportEngine: @unchecked Sendable {
         }
         let picker = GooglePicker(api: source.api)
         let extracted = files
+        let placed = PlacedBox()
         try await MigrationEngine.forEach(groups, limit: min(2, max(1, options.concurrency))) { group in
             if ctx.stopped != nil { return }
+            var recorded = Set<String>()
             do {
                 // Each group (a photo, or a Live Photo's two halves) gets its own folder so iCloud sees the original names.
                 let gdir = dir.appendingPathComponent(UUID().uuidString, isDirectory: true)
                 try FileManager.default.createDirectory(at: gdir, withIntermediateDirectories: true)
+                defer { try? FileManager.default.removeItem(at: gdir) }
                 var ready = [(PhotoItem, URL)]()
                 for item in group {
                     let dest = gdir.appendingPathComponent(Paths.safeName(item.fileName))
@@ -653,84 +662,152 @@ public final class ImportEngine: @unchecked Sendable {
                     }
                     ready.append((item, dest))
                 }
-                ctx.phase("Adding \(group[0].fileName) to iCloud Photos…")
-                let up = ByteMark()
-                let total = ready.reduce(0) { $0 + (MigrationEngine.size($1.1) ?? 0) }
-                try await backend.importFiles(ready.map(\.1), into: album, library: library) { d, t in
-                    // Backends report bytes or file counts; scale either onto this group's bytes.
-                    let frac = t > 0 ? Double(d) / Double(t) : 0
-                    ctx.addBytes(up.advance(to: Int64(frac * Double(total))))
+                // iCloud.com takes one file per upload, so each is recorded the moment it lands; this Mac's library
+                // (and the demo) create a Live Photo's two halves in one atomic step.
+                let calls: [[(PhotoItem, URL)]] = self.target.isWeb ? ready.map { [$0] } : [ready]
+                for call in calls {
+                    ctx.phase("Adding \(call[0].0.fileName) to iCloud Photos…")
+                    let up = ByteMark()
+                    let total = call.reduce(0) { $0 + (MigrationEngine.size($1.1) ?? 0) }
+                    let ids = try await backend.importReturningIDs(call.map(\.1), library: library) { d, t in
+                        // Backends report bytes or file counts; scale either onto this call's bytes.
+                        let frac = t > 0 ? Double(d) / Double(t) : 0
+                        ctx.addBytes(up.advance(to: Int64(frac * Double(total))))
+                    }
+                    ctx.addBytes(up.advance(to: total))
+                    for (i, (item, f)) in call.enumerated() {
+                        let id = ids.count == call.count ? ids[i] : ids.first   // a Live Photo's halves become one asset
+                        let size = MigrationEngine.size(f) ?? item.size
+                        self.store.apply(.photo(item.key, .init(name: f.lastPathComponent, size: size, id: id)))
+                        recorded.insert(item.key)
+                        if let id { placed.add(item.key, id) }
+                        stats.mutate { $0.photosImported += 1; $0.photosBytes += size }
+                    }
                 }
-                ctx.addBytes(up.advance(to: total))
-                for (item, f) in ready {
-                    let size = MigrationEngine.size(f) ?? item.size
-                    self.store.apply(.photo(item.key, .init(name: f.lastPathComponent, size: size)))
-                    stats.mutate { $0.photosImported += 1; $0.photosBytes += size }
-                }
-                try? FileManager.default.removeItem(at: gdir)
             } catch {
                 if MigrationEngine.isCancel(error) { throw CancellationError() }
                 if let s = Self.stops(error) { ctx.stop(s); return }
-                for item in group { ctx.fail(item.fileName, error) }
+                for item in group where !recorded.contains(item.key) { ctx.fail(item.fileName, error) }
             }
             for _ in group { ctx.doneFile() }
         }
+        // Then into “From Google Photos”. If that fails, the photos stay recorded and only this step is retried.
+        if let album { try await addToProvenance(placed.all, album: album, backend: backend, library: library, ctx: ctx) }
     }
 
-    /// Albums and favorites: find what was imported (by name and size in “From Google Photos”) and organize it.
+    final class PlacedBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var list = [(key: String, id: String)]()
+        func add(_ k: String, _ id: String) { lock.withLock { list.append((k, id)) } }
+        var all: [(key: String, id: String)] { lock.withLock { list } }
+    }
+
+    /// Enough of an asset for album adds, which need only its id.
+    static func stub(_ id: String, _ library: PhotoLibraryRef) -> PhotoAsset {
+        PhotoAsset(id: id, library: library.id, filename: "", size: 0, width: 0, height: 0, isVideo: false, isLive: false, isFavorite: false, isHidden: false, resources: [])
+    }
+
+    func addToProvenance(_ pairs: [(key: String, id: String)], album: PhotoAlbum, backend: PhotosBackend, library: PhotoLibraryRef,
+                         ctx: MigrationEngine.RunContext) async throws {
+        for chunk in pairs.chunked(100) {
+            var seen = Set<String>()
+            let ids = chunk.map(\.id).filter { seen.insert($0).inserted }
+            do {
+                try await backend.add(ids.map { Self.stub($0, library) }, to: album, library: library)
+                store.apply(.provenanceAdded(chunk.map(\.key)))
+            } catch {
+                if MigrationEngine.isCancel(error) || Self.stops(error) != nil { throw error }
+                ctx.fail("“\(album.name)” album", SyncError.unavailable("\(error.localizedDescription) The photos are in your library; the next run adds them to the album."))
+                return
+            }
+        }
+    }
+
+    /// Finishes what imports left: “From Google Photos” for anything an earlier add missed, then albums and favorites.
+    /// Uses the asset ids recorded at import (older records fall back to name and size inside “From Google Photos”).
     func organize(_ ev: Evaluation, ctx: MigrationEngine.RunContext, stats: ImportStats) async throws {
-        guard let backend = target.photos, ev.photosEnabled else { return }
-        let m0 = store.value
-        let pendingAlbums = ev.albums.filter { p in p.members.contains { m0.photos[$0] != nil && !(m0.albums[p.title]?.added.contains($0) ?? false) } }
-        let pendingFavs = options.favorites ? ev.photoItems.filter { $0.favorite && !$0.isCompanion && m0.photos[$0.key] != nil && !m0.favorited.contains($0.key) } : []
-        guard !pendingAlbums.isEmpty || !pendingFavs.isEmpty, let prov = m0.provenance else { return }
-        ctx.phase("Organizing albums…")
+        guard let backend = target.photos, ev.photosEnabled, let prov = store.value.provenance else { return }
         let libs = try await backend.libraries()
         guard let library = libs.first(where: { !$0.isShared }) ?? libs.first else { return }
-        let listed = try await backend.assets(in: PhotoAlbum(id: prov.id, name: prov.title, kind: .album), library: library) { _, _ in }
+        let provAlbum = PhotoAlbum(id: prov.id, name: prov.title, kind: .album)
+        let m0 = store.value
+        let notInProvenance = m0.photos.compactMap { k, p in p.id.map { (key: k, id: $0) } }.filter { !(m0.provenance?.added.contains($0.key) ?? false) }
+        if !notInProvenance.isEmpty {
+            ctx.phase("Adding photos to “\(prov.title)”…")
+            try await addToProvenance(notInProvenance.sorted { $0.key < $1.key }, album: provAlbum, backend: backend, library: library, ctx: ctx)
+        }
+        let m1 = store.value
+        let pendingAlbums = ev.albums.filter { p in p.members.contains { m1.photos[$0] != nil && !(m1.albums[p.title]?.added.contains($0) ?? false) } }
+        let pendingFavs = options.favorites ? ev.photoItems.filter { $0.favorite && !$0.isCompanion && m1.photos[$0.key] != nil && !m1.favorited.contains($0.key) } : []
+        guard !pendingAlbums.isEmpty || !pendingFavs.isEmpty else { return }
+        ctx.phase("Organizing albums…")
+        // Favorites need iCloud's own copy of each asset (with its change tag); so do records from before ids were kept.
+        let needsListing = !pendingFavs.isEmpty || m1.photos.values.contains { $0.id == nil }
+        var byID = [String: PhotoAsset]()
         var byName = [String: [PhotoAsset]]()
-        for a in listed { byName[a.filename.lowercased(), default: []].append(a) }
-        func find(_ key: String) -> PhotoAsset? {
+        if needsListing {
+            do {
+                for a in try await backend.assets(in: provAlbum, library: library, page: { _, _ in }) {
+                    byID[a.id] = a
+                    byName[a.filename.lowercased(), default: []].append(a)
+                }
+            } catch {
+                if MigrationEngine.isCancel(error) || Self.stops(error) != nil { throw error }
+                ctx.fail("Albums", SyncError.unavailable("Couldn’t read “\(prov.title)” (\(error.localizedDescription)); albums and favorites are finished on the next run."))
+                return
+            }
+        }
+        func find(_ key: String, real: Bool) -> PhotoAsset? {
             guard let p = store.value.photos[key] else { return nil }
+            if let id = p.id { return byID[id] ?? (real ? nil : Self.stub(id, library)) }
             let candidates = byName[p.name.lowercased()] ?? []
             return candidates.first { ($0.resource(.original)?.size ?? $0.size) == p.size } ?? (candidates.count == 1 ? candidates[0] : nil)
         }
         var unmatched = Set<String>()
+        var existingAlbums: [PhotoAlbum]?
         for plan in pendingAlbums {
             try Task.checkCancellation()
             let m = store.value
             let keys = plan.members.filter { m.photos[$0] != nil && !(m.albums[plan.title]?.added.contains($0) ?? false) }
             var assets = [PhotoAsset]()
             var found = [String]()
-            for k in keys { if let a = find(k) { assets.append(a); found.append(k) } else { unmatched.insert(k) } }
+            var seen = Set<String>()
+            for k in keys {
+                guard let a = find(k, real: false) else { unmatched.insert(k); continue }
+                found.append(k)
+                if seen.insert(a.id).inserted { assets.append(a) }
+            }
             guard !assets.isEmpty else { continue }
             var entry = m.albums[plan.title]
             if entry == nil {
-                var a = (try? await backend.albums(in: library))?.first { $0.kind == .album && $0.name == plan.title }
+                // Reuse an album of that name; if the albums can't be read, stop rather than make a second one.
+                do { if existingAlbums == nil { existingAlbums = try await backend.albums(in: library) } } catch {
+                    if MigrationEngine.isCancel(error) || Self.stops(error) != nil { throw error }
+                    ctx.fail("Albums", SyncError.unavailable("Couldn’t read your iCloud albums (\(error.localizedDescription)); albums are finished on the next run."))
+                    return
+                }
+                var a = existingAlbums?.first { $0.kind == .album && $0.name == plan.title }
                 if a == nil {
                     a = try await backend.createAlbum(plan.title, in: library)
+                    existingAlbums?.append(a!)
                     stats.mutate { $0.albumsCreated += 1 }
                 }
-                guard let a else { continue }
-                entry = .init(id: a.id, title: plan.title, added: [])
+                entry = .init(id: a!.id, title: plan.title, added: [])
                 store.apply(.album(plan.title, entry!))
             }
             let album = PhotoAlbum(id: entry!.id, name: plan.title, kind: .album)
-            for (part, partKeys) in zip(assets.chunked(100), found.chunked(100)) {
-                do {
-                    try await backend.add(part, to: album, library: library)
-                    store.apply(.albumAdded(plan.title, partKeys))
-                    stats.mutate { $0.albumAdds += part.count }
-                } catch {
-                    if MigrationEngine.isCancel(error) || Self.stops(error) != nil { throw error }
-                    ctx.fail("Album “\(plan.title)”", error)
-                    break
-                }
+            do {
+                for part in assets.chunked(100) { try await backend.add(part, to: album, library: library) }
+                store.apply(.albumAdded(plan.title, found))
+                stats.mutate { $0.albumAdds += found.count }
+            } catch {
+                if MigrationEngine.isCancel(error) || Self.stops(error) != nil { throw error }
+                ctx.fail("Album “\(plan.title)”", error)
             }
         }
         if !pendingFavs.isEmpty && backend.capabilities.contains(.favorite) {
             var assets = [PhotoAsset](), keys = [String]()
-            for i in pendingFavs { if let a = find(i.key) { assets.append(a); keys.append(i.key) } else { unmatched.insert(i.key) } }
+            for i in pendingFavs { if let a = find(i.key, real: true) { assets.append(a); keys.append(i.key) } else { unmatched.insert(i.key) } }
             for (part, partKeys) in zip(assets.chunked(100), keys.chunked(100)) {
                 do {
                     _ = try await backend.setFavorite(part, true)
@@ -745,7 +822,7 @@ public final class ImportEngine: @unchecked Sendable {
         }
         if !unmatched.isEmpty {
             stats.mutate { $0.unmatched = unmatched.count }
-            ctx.fail("Albums", SyncError.unavailable("\(unmatched.count) photo\(unmatched.count == 1 ? "" : "s") couldn’t be found again in “\(prov.title)” to add to albums; they’re in your library."))
+            ctx.fail("Albums", SyncError.unavailable("\(unmatched.count) photo\(unmatched.count == 1 ? "" : "s") couldn’t be found in “\(prov.title)” yet to add to albums or favorites; the next run tries again."))
         }
     }
 }

@@ -14,6 +14,10 @@ public struct GDriveItem: Sendable, Equatable {
     public var exportLinks: [String: String]
     /// Set on folders Cirrus made (“From iCloud”); private to this OAuth client.
     public var appProperties: [String: String]
+    /// Public properties (any client can read them).
+    public var properties: [String: String]
+    /// Made by Cirrus's iCloud → Google direction (by any OAuth client).
+    public var isCirrusCopy: Bool { appProperties[MigrationEngine.sourceKey] != nil || properties[MigrationEngine.sourceKey] != nil }
     public var isFolder: Bool { mimeType == GoogleDrive.folderMime }
     public var isGoogleNative: Bool { mimeType.hasPrefix("application/vnd.google-apps.") && !isFolder }
     /// Changes whenever the content does.
@@ -30,6 +34,7 @@ public struct GDriveItem: Sendable, Equatable {
         canDownload = j["capabilities"]["canDownload"].bool ?? true
         exportLinks = j["exportLinks"].object.compactMapValues(\.string)
         appProperties = j["appProperties"].object.compactMapValues(\.string)
+        properties = j["properties"].object.compactMapValues(\.string)
     }
 }
 
@@ -69,7 +74,7 @@ public enum GoogleDocFormat: String, Codable, Sendable, CaseIterable {
 }
 
 public extension GoogleDrive {
-    static let readFields = "id,name,mimeType,size,modifiedTime,md5Checksum,parents,capabilities/canDownload,exportLinks,appProperties"
+    static let readFields = "id,name,mimeType,size,modifiedTime,md5Checksum,parents,capabilities/canDownload,exportLinks,appProperties,properties"
     /// Google exports Docs editors files up to 10 MB through files.export; bigger ones go through exportLinks.
     static let exportLimit: Int64 = 10 * 1024 * 1024
 
@@ -110,7 +115,7 @@ public extension GoogleDrive {
             let end = total < 0 ? have + Self.downloadChunk - 1 : min(total, have + Self.downloadChunk) - 1
             let req = try api.request("GET", Self.base + "/files/" + item.id, query: ["alt": "media"], headers: ["Range": "bytes=\(have)-\(end)", "Accept": "*/*"])
             let r: GoogleAPI.Response
-            do { r = try await api.send(req, idempotent: true) } catch let e as URLError where GoogleAPI.isTransient(e, ambiguousOK: true) && failures < api.maxRetries {
+            do { r = try await api.send(req, idempotent: true, followRedirects: true) } catch let e as URLError where GoogleAPI.isTransient(e, ambiguousOK: true) && failures < api.maxRetries {
                 failures += 1
                 try await api.sleep(api.delay(attempt: failures, retryAfter: nil))
                 continue
@@ -145,15 +150,17 @@ public extension GoogleDrive {
         let req = try api.request("GET", Self.base + "/files/\(item.id)/export", query: ["mimeType": target.mime], headers: ["Accept": "*/*"])
         var data: Data
         do {
-            data = try await api.send(req, idempotent: true).data
+            data = try await api.send(req, idempotent: true, followRedirects: true).data
         } catch let e as GoogleError {
             // Too big for files.export: use the document's export link instead.
             guard case .http(let code, let msg) = e, [400, 403, 413].contains(code),
                   msg.lowercased().contains("too large") || msg.lowercased().contains("exportsizelimit"),
                   let link = item.exportLinks[target.mime], let u = URL(string: link) else { throw e }
+            // Export links come from Google's answer; still, the token only goes to Google's own hosts.
+            guard GoogleRedirects.allowed(u) else { throw GoogleError.badResponse("The export link for \(item.name) isn’t a Google address, so Cirrus didn’t use it.") }
             var big = URLRequest(url: u)
             big.setValue("*/*", forHTTPHeaderField: "Accept")
-            data = try await api.send(big, idempotent: true).data
+            data = try await api.send(big, idempotent: true, followRedirects: true).data
         }
         try data.write(to: dest)
         return Int64(data.count)
