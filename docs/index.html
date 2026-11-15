@@ -7,7 +7,14 @@
 <meta name="description" content="Cirrus is a native app to browse, move, sync and back up iCloud Drive and iCloud Photos on Mac, Windows, iPhone and iPad. Free, open source, private by design.">
 <meta property="og:title" content="Cirrus — a Finder for iCloud">
 <meta property="og:description" content="Browse, drag, sync and back up iCloud Drive and Photos on Mac, Windows, iPhone and iPad. Free and open source.">
-<meta property="og:image" content="img/mac/dark/photos.webp">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://zephyrsai.github.io/Cirrus/">
+<meta property="og:image" content="https://zephyrsai.github.io/Cirrus/img/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Cirrus — Your iCloud, in a real Finder. Mac, Windows, iPhone and iPad.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://zephyrsai.github.io/Cirrus/img/og.png">
 <link rel="icon" href="img/favicon.png">
 <meta name="color-scheme" content="light dark">
 <style>
@@ -71,23 +78,49 @@ nav .links a { color: var(--ink2); }
 .chips { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; color: var(--ink3); font-size: 13px; }
 .chip { border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px; background: var(--card); }
 
-/* Film strip slideshow: every frame has the same height and keeps its own proportions */
-.strip { --h: 300px; position: relative; overflow: hidden; background: var(--film); padding: 26px 0 22px;
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent); mask-image: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent); }
+/* Film strips: glide on their own, drag/swipe/scroll to seek, click a frame to open the viewer.
+   Every frame reserves its size up front, so nothing shifts while images load. */
+.strip { --h: 300px; position: relative; background: var(--film); padding: 26px 0 22px; }
 .strip.phones { --h: 400px; }
-.strip::before, .strip::after { content: ""; position: absolute; left: 0; right: 0; height: 8px;
+.strip::before, .strip::after { content: ""; position: absolute; left: 0; right: 0; height: 8px; pointer-events: none;
   background: repeating-linear-gradient(90deg, transparent 0 12px, rgba(255, 255, 255, .16) 12px 24px, transparent 24px 36px); }
 .strip::before { top: 9px; } .strip::after { bottom: 7px; }
-.track { display: flex; width: max-content; animation: roll var(--dur, 70s) linear infinite; }
-.strip.reverse .track { animation-direction: reverse; }
-.strip:hover .track { animation-play-state: paused; }
-@keyframes roll { to { transform: translateX(-50%); } }
-.shot { flex: none; margin: 0 9px; }
-.shot img { height: var(--h); width: auto; border-radius: 8px; box-shadow: 0 10px 30px rgba(0, 0, 0, .45); background: #1a1f2b; }
+.viewport { overflow-x: auto; overflow-y: hidden; scrollbar-width: none; cursor: grab; overscroll-behavior-x: contain;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent); mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent); }
+.viewport::-webkit-scrollbar { display: none; }
+.viewport.dragging { cursor: grabbing; }
+.viewport.dragging .shot { pointer-events: none; }
+.track { display: flex; width: max-content; }
+.shot { flex: none; margin: 0 9px; cursor: zoom-in; }
+.shot img { height: var(--h); width: auto; border-radius: 8px; box-shadow: 0 10px 30px rgba(0, 0, 0, .45); background: #1a1f2b;
+  -webkit-user-drag: none; user-select: none; transition: transform .25s; }
+.shot:hover img { transform: translateY(-3px); }
 .phones .shot img { border-radius: 26px; border: 3px solid #23293a; }
-.shot figcaption { color: rgba(255, 255, 255, .78); font-size: 12.5px; text-align: center; margin-top: 9px; }
-@media (max-width: 720px) { .strip { --h: 190px; } .strip.phones { --h: 300px; } }
-@media (prefers-reduced-motion: reduce) { .track { animation: none; } .strip { overflow-x: auto; } }
+.shot figcaption { color: rgba(255, 255, 255, .78); font-size: 12.5px; text-align: center; margin-top: 9px; user-select: none; }
+.snav { position: absolute; top: calc(50% - 10px); transform: translateY(-50%); z-index: 2; width: 42px; height: 42px; border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, .18); background: rgba(20, 24, 36, .7); color: #fff; font-size: 22px; line-height: 1; cursor: pointer;
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.snav:hover { background: rgba(40, 48, 70, .85); }
+.snav.prev { left: 14px; } .snav.next { right: 14px; }
+@media (max-width: 720px) { .strip { --h: 190px; } .strip.phones { --h: 300px; } .snav { display: none; } }
+
+/* Viewer */
+.lb { position: fixed; inset: 0; z-index: 100; background: rgba(4, 6, 12, .94); display: grid; grid-template-rows: minmax(0, 1fr) auto;
+  padding: 58px 70px 14px; -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+.lb[hidden] { display: none; }
+.lb figure { margin: 0; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
+.lb figure img { max-width: 100%; max-height: calc(100% - 34px); width: auto; height: auto; border-radius: 10px; box-shadow: 0 20px 60px rgba(0, 0, 0, .6); }
+.lb.phone figure img { border-radius: 30px; border: 3px solid #23293a; }
+.lb figcaption { color: #fff; font-size: 14px; }
+.lbtn { position: absolute; width: 44px; height: 44px; border-radius: 50%; border: 1px solid rgba(255, 255, 255, .2); background: rgba(255, 255, 255, .1);
+  color: #fff; font-size: 24px; line-height: 1; cursor: pointer; }
+.lbtn:hover { background: rgba(255, 255, 255, .2); }
+.lb .close { top: 12px; right: 14px; font-size: 22px; }
+.lb .prev { left: 14px; top: 50%; } .lb .next { right: 14px; top: 50%; }
+.thumbs { display: flex; gap: 8px; justify-content: safe center; overflow-x: auto; padding: 10px 4px 2px; scrollbar-width: thin; }
+.thumbs img { height: 56px; width: auto; border-radius: 6px; opacity: .5; cursor: pointer; border: 2px solid transparent; flex: none; }
+.thumbs img:hover { opacity: .85; } .thumbs img.on { opacity: 1; border-color: var(--accent); }
+@media (max-width: 720px) { .lb { padding: 54px 10px 10px; } .lb .prev, .lb .next { top: auto; bottom: 86px; } .thumbs img { height: 44px; } }
 
 /* Features */
 .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 28px; }
@@ -153,7 +186,7 @@ footer p { margin: 4px 0; max-width: 640px; }
   </div>
 </header>
 
-<div class="strip" id="macStrip" aria-label="Cirrus for Mac screenshots"><div class="track"></div></div>
+<div class="strip" id="macStrip" aria-label="Cirrus for Mac screenshots"><button class="snav prev" type="button" aria-label="Previous">‹</button><div class="viewport"><div class="track"></div></div><button class="snav next" type="button" aria-label="Next">›</button></div>
 
 <section id="features">
   <div class="wrap">
@@ -188,7 +221,7 @@ footer p { margin: 4px 0; max-width: 640px; }
     </ul>
   </div>
 </section>
-<div class="strip phones reverse" id="iosStrip" aria-label="Cirrus for iPhone screenshots"><div class="track"></div></div>
+<div class="strip phones" id="iosStrip" aria-label="Cirrus for iPhone screenshots"><button class="snav prev" type="button" aria-label="Previous">‹</button><div class="viewport"><div class="track"></div></div><button class="snav next" type="button" aria-label="Next">›</button></div>
 
 <section id="download">
   <div class="wrap">
@@ -225,32 +258,116 @@ footer p { margin: 4px 0; max-width: 640px; }
   </div>
 </footer>
 
+<div class="lb" id="lb" hidden role="dialog" aria-modal="true" aria-label="Screenshot viewer">
+  <button class="lbtn close" type="button" aria-label="Close">✕</button>
+  <button class="lbtn prev" type="button" aria-label="Previous">‹</button>
+  <button class="lbtn next" type="button" aria-label="Next">›</button>
+  <figure><img id="lbImg" alt=""><figcaption id="lbCap"></figcaption></figure>
+  <div class="thumbs" id="lbThumbs"></div>
+</div>
+
 <script>
 (() => {
-  const mac = [['photos', 'Photos by month'], ['columns', 'Column view'], ['preview', 'Preview pane'], ['drive', 'iCloud Drive'],
-               ['dual', 'Two panes'], ['list', 'List view'], ['google', 'Move to or from Google'], ['albums', 'Albums'], ['backup', 'Back Up iCloud']];
-  const ios = [['drive', 'iCloud Drive'], ['photos', 'Photos by month'], ['photo', 'Live Photo'], ['albums', 'Albums'], ['backup', 'Back up to a drive'],
-               ['transfers', 'Transfers'], ['export', 'Export originals'], ['settings-readonly', 'Read-only mode']];
+  // [file, caption, width, height] — sizes reserve space so the strips never jump while loading
+  const sets = {
+    mac: [['photos', 'Photos by month', 1024, 640], ['columns', 'Column view', 1024, 640], ['preview', 'Preview pane', 1024, 640],
+          ['drive', 'iCloud Drive', 1024, 640], ['dual', 'Two panes', 1024, 640], ['list', 'List view', 1024, 640],
+          ['google', 'Move to or from Google', 492, 640], ['albums', 'Albums', 1024, 640], ['backup', 'Back Up iCloud', 528, 640]],
+    ios: [['drive', 'iCloud Drive', 396, 860], ['photos', 'Photos by month', 396, 860], ['photo', 'Live Photo', 396, 860], ['albums', 'Albums', 396, 860],
+          ['backup', 'Back up to a drive', 396, 860], ['transfers', 'Transfers', 396, 860], ['export', 'Export originals', 396, 860],
+          ['settings-readonly', 'Read-only mode', 396, 860]],
+  };
   const root = document.documentElement, btn = document.getElementById('themeBtn');
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
   let mode = 'auto';
   try { mode = localStorage.getItem('cirrus-theme') || 'auto'; } catch (e) {}
   const dark = () => mode === 'dark' || (mode === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+  const src = (kind, f, full) => `img/${full && kind === 'mac' ? 'mac-full' : kind}/${dark() ? 'dark' : 'light'}/${f}.webp`;
 
-  // Each strip holds its frames twice, so sliding by half loops without a seam.
-  function fill(id, kind, list, dur) {
-    const strip = document.getElementById(id), track = strip.querySelector('.track');
-    strip.style.setProperty('--dur', dur + 's');
-    track.innerHTML = [...list, ...list].map(([f, t], i) =>
-      `<figure class="shot"${i >= list.length ? ' aria-hidden="true"' : ''}><img data-kind="${kind}" data-f="${f}" alt="${i >= list.length ? '' : t}"><figcaption>${t}</figcaption></figure>`).join('');
+  // ---------- Viewer
+  const lb = document.getElementById('lb'), lbImg = document.getElementById('lbImg'), lbCap = document.getElementById('lbCap'), thumbs = document.getElementById('lbThumbs');
+  let view = null;   // {kind, i}
+  function show() {
+    const list = sets[view.kind], [f, t] = list[view.i];
+    lb.classList.toggle('phone', view.kind === 'ios');
+    lbImg.src = src(view.kind, f, true); lbImg.alt = t;
+    lbCap.textContent = `${t} — ${view.i + 1} of ${list.length}`;
+    thumbs.innerHTML = list.map(([g, c], j) => `<img src="${src(view.kind, g)}" alt="${c}" data-j="${j}"${j === view.i ? ' class="on"' : ''}>`).join('');
+    thumbs.querySelector('.on')?.scrollIntoView({ inline: 'center', block: 'nearest' });
   }
-  fill('macStrip', 'mac', mac, 75);
-  fill('iosStrip', 'ios', ios, 60);
+  function open(kind, i) { view = { kind, i }; lb.hidden = false; document.body.style.overflow = 'hidden'; show(); lb.querySelector('.close').focus(); }
+  function close() { view = null; lb.hidden = true; document.body.style.overflow = ''; }
+  function go(d) { const n = sets[view.kind].length; view.i = (view.i + d + n) % n; show(); }
+  lb.querySelector('.close').onclick = close;
+  lb.querySelector('.prev').onclick = () => go(-1);
+  lb.querySelector('.next').onclick = () => go(1);
+  lb.addEventListener('click', e => { if (e.target === lb || e.target.tagName === 'FIGURE') close(); });
+  thumbs.addEventListener('click', e => { if (e.target.dataset.j) { view.i = +e.target.dataset.j; show(); } });
+  addEventListener('keydown', e => {
+    if (!view) return;
+    if (e.key === 'Escape') close(); else if (e.key === 'ArrowLeft') go(-1); else if (e.key === 'ArrowRight') go(1);
+  });
 
+  // ---------- Strips
+  function strip(id, kind, speed) {
+    const el = document.getElementById(id), vp = el.querySelector('.viewport'), track = el.querySelector('.track'), list = sets[kind];
+    track.innerHTML = [...list, ...list].map(([f, t, w, h], i) =>
+      `<figure class="shot" data-i="${i % list.length}"${i >= list.length ? ' aria-hidden="true"' : ''}><img data-kind="${kind}" data-f="${f}" width="${w}" height="${h}" alt="${i >= list.length ? '' : t}" draggable="false"><figcaption>${t}</figcaption></figure>`).join('');
+    let pos = 0, last = performance.now(), hold = 0, hover = false, drag = null, moved = false;
+    const half = () => track.scrollWidth / 2;
+    // The frames are there twice: crossing the middle jumps back by exactly one set, which looks identical.
+    const wrap = () => { const h = half(); if (h > 0 && vp.scrollLeft >= h) vp.scrollLeft -= h; else if (h > 0 && vp.scrollLeft < 1) vp.scrollLeft += h; };
+    const pause = ms => { hold = performance.now() + ms; };
+    vp.addEventListener('mouseenter', () => { hover = true; });
+    vp.addEventListener('mouseleave', () => { hover = false; });
+    vp.addEventListener('wheel', () => pause(2500), { passive: true });
+    vp.addEventListener('touchstart', () => pause(4000), { passive: true });
+    vp.addEventListener('scroll', wrap, { passive: true });
+    vp.addEventListener('pointerdown', e => {
+      if (e.pointerType !== 'mouse' || e.button !== 0) return;
+      drag = { x: e.clientX, s: vp.scrollLeft }; moved = false;
+    });
+    addEventListener('pointermove', e => {
+      if (!drag) return;
+      const dx = e.clientX - drag.x;
+      if (!moved && Math.abs(dx) > 5) { moved = true; vp.classList.add('dragging'); }
+      if (moved) { vp.scrollLeft = drag.s - dx; pause(2500); }
+    });
+    addEventListener('pointerup', () => { if (drag) { drag = null; vp.classList.remove('dragging'); } });
+    track.addEventListener('click', e => {
+      const fig = e.target.closest('.shot');
+      if (moved) { moved = false; return; }
+      if (fig) open(kind, +fig.dataset.i);
+    });
+    const step = d => {
+      pause(6000);
+      const from = vp.scrollLeft, by = d * (track.children[0].getBoundingClientRect().width + 18);
+      vp.scrollBy({ left: by, behavior: 'smooth' });
+      setTimeout(() => { if (Math.abs(vp.scrollLeft - from) < 2) vp.scrollLeft = from + by; }, 350);   // no smooth scrolling here
+    };
+    el.querySelector('.prev').onclick = () => step(-1);
+    el.querySelector('.next').onclick = () => step(1);
+    function advance(now) {
+      const dt = Math.min(.05, (now - last) / 1000); last = now;
+      if (reduced || hover || drag || view || now < hold || document.hidden) return;
+      if (Math.abs(vp.scrollLeft - pos) > 2) pos = vp.scrollLeft;   // someone moved it: carry on from there
+      pos += speed * dt;
+      const h = half(); if (h > 0) { if (pos >= h) pos -= h; if (pos < 0) pos += h; }
+      vp.scrollLeft = pos;
+    }
+    requestAnimationFrame(function tick(now) { advance(now); requestAnimationFrame(tick); });
+    // Some embedded or power-saving views pause animation frames: keep gliding on a timer then.
+    setInterval(() => { const now = performance.now(); if (now - last > 120) advance(now); }, 40);
+  }
+  strip('macStrip', 'mac', 32);
+  strip('iosStrip', 'ios', -26);
+
+  // ---------- Theme
   function apply() {
     if (mode === 'auto') root.removeAttribute('data-theme'); else root.setAttribute('data-theme', mode);
     btn.textContent = mode[0].toUpperCase() + mode.slice(1);
-    const t = dark() ? 'dark' : 'light';
-    document.querySelectorAll('img[data-kind]').forEach(i => { i.src = `img/${i.dataset.kind}/${t}/${i.dataset.f}.webp`; });
+    document.querySelectorAll('img[data-kind]').forEach(i => { i.src = src(i.dataset.kind, i.dataset.f); });
+    if (view) show();
   }
   btn.addEventListener('click', () => { mode = ({ auto: 'light', light: 'dark', dark: 'auto' })[mode]; try { localStorage.setItem('cirrus-theme', mode); } catch (e) {} apply(); });
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => mode === 'auto' && apply());
