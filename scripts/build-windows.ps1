@@ -63,9 +63,10 @@ Cirrus $Version for Windows ($arch)$(if ($Tester) {' - tester build'})
 A Finder-style browser for iCloud Drive and iCloud Photos: drag and drop, transfers, sync jobs and
 full iCloud backups. Requires Windows 10 (version 2004 or later) or Windows 11. No install needed:
 unzip anywhere and run Cirrus.exe. Settings and logs live in %LOCALAPPDATA%\Cirrus.
+Only one Cirrus runs at a time: opening it again (any copy or build) brings the running one forward.
 $(if ($Tester) {"`r`nThis tester build starts in read-only mode: nothing in iCloud can change until you turn that`r`noff in Settings > Safety. Browsing, downloading, exporting and backing up still work.`r`n"})
 $(if (-not $CertificateThumbprint) {"The app isn't code-signed, so Windows SmartScreen may say it ""protected your PC"". Choose`r`nMore info > Run anyway.`r`n"})
-Try it without an Apple ID: in a terminal, run
+Try it without an Apple ID: quit Cirrus if it's open, then in a terminal run
     set CIRRUS_DEMO=1 && Cirrus.exe
 "@
   Set-Content -Path (Join-Path $pub "README.txt") -Value $readme -Encoding UTF8
@@ -81,7 +82,12 @@ Write-Host "== SHA-256"
 foreach ($z in $zips) { "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $z).Hash.ToLower(), (Split-Path -Leaf $z) }
 
 if ($Run) {
-  $exe = Join-Path $stage "win-$($Archs[0])\Cirrus.exe"
-  $env:CIRRUS_DEMO = "1"
-  Start-Process $exe
+  # Only one Cirrus may run at a time (Cirrus enforces it too): never start a second one from here.
+  if (Get-Process -Name Cirrus -ErrorAction SilentlyContinue) {
+    Write-Host "Cirrus is already running; quit it first to try the new build (a second launch would only bring it forward)."
+  } else {
+    $exe = Join-Path $stage "win-$($Archs[0])\Cirrus.exe"
+    $env:CIRRUS_DEMO = "1"
+    Start-Process $exe
+  }
 }

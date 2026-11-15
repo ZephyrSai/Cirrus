@@ -205,3 +205,28 @@ static class ShellIcons
         return s;
     }
 }
+
+/// <summary>Foreground hand-over between two Cirrus launches.</summary>
+static class Foreground
+{
+    const int ASFW_ANY = -1;
+    const int SW_RESTORE = 9;
+    [DllImport("user32.dll")] static extern bool AllowSetForegroundWindow(int processId);
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hWnd, int cmd);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hWnd);
+
+    /// <summary>Lets the running Cirrus take the foreground from this launch (which the user just started).</summary>
+    public static void AllowAny() { try { AllowSetForegroundWindow(ASFW_ANY); } catch { } }
+
+    public static void Bring(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return;
+        try
+        {
+            if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+            SetForegroundWindow(hwnd);
+        }
+        catch { }
+    }
+}

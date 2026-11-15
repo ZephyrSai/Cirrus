@@ -44,6 +44,7 @@ Cirrus $VERSION for Windows ($ARCH)$([[ $TESTER_FLAG == true ]] && echo " — te
 A Finder-style browser for iCloud Drive and iCloud Photos: drag and drop, transfers, sync jobs and
 full iCloud backups. Requires Windows 10 (version 2004 or later) or Windows 11. No install needed:
 unzip anywhere and run Cirrus.exe. Settings and logs live in %LOCALAPPDATA%\\Cirrus.
+Only one Cirrus runs at a time: opening it again (any copy or build) brings the running one forward.
 
 $([[ $TESTER_FLAG == true ]] && echo "This tester build starts in read-only mode: nothing in iCloud can change until you turn that
 off in Settings > Safety. Browsing, downloading, exporting and backing up still work.
@@ -51,7 +52,7 @@ off in Settings > Safety. Browsing, downloading, exporting and backing up still 
 The app isn't code-signed, so Windows SmartScreen may say it "protected your PC". Choose
 More info > Run anyway.
 
-Try it without an Apple ID: in a terminal, run
+Try it without an Apple ID: quit Cirrus if it's open, then in a terminal run
     set CIRRUS_DEMO=1 && Cirrus.exe
 TXT
   ZIP=$OUT/Cirrus-$VERSION$SUFFIX-win-$ARCH.zip

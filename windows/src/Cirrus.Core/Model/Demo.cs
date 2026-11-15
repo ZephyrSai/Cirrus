@@ -14,9 +14,11 @@ public sealed class DemoDrive : IDriveBackend
     readonly int _delayMs;
     readonly object _lock = new();
 
-    DemoDrive()
+    DemoDrive() : this(Paths.CacheDir("demo")) { }
+
+    /// <summary>A separate demo iCloud Drive in <paramref name="baseDir"/> (tests and the headless move demo).</summary>
+    internal DemoDrive(string baseDir)
     {
-        var baseDir = Paths.CacheDir("demo");
         _root = Path.Combine(baseDir, "drive");
         _trash = Path.Combine(baseDir, "drive-trash");
         _delayMs = Env.Flag("CIRRUS_DEMO_FAST") ? 0 : 120;
@@ -239,9 +241,12 @@ public sealed class DemoPhotos : IPhotosBackend
     const int ArtVersion = 3;
     static bool Fast => Env.Flag("CIRRUS_DEMO_FAST");
 
-    DemoPhotos()
+    DemoPhotos() : this(Path.Combine(Paths.CacheDir("demo"), "photos")) { }
+
+    /// <summary>A separate demo library in <paramref name="dir"/> (tests and the headless move demo).</summary>
+    internal DemoPhotos(string dir)
     {
-        _dir = Path.Combine(Paths.CacheDir("demo"), "photos");
+        _dir = dir;
         var marker = Path.Combine(_dir, $"art-v{ArtVersion}");
         if (!File.Exists(marker) && Directory.Exists(_dir)) Directory.Delete(_dir, true);   // the demo's own generated cache
         Directory.CreateDirectory(_dir);
@@ -404,7 +409,11 @@ public sealed class DemoPhotos : IPhotosBackend
     public Task DeleteAsync(IReadOnlyList<PhotoAsset> assets, CancellationToken ct = default) { SafetyPolicy.CheckWrite(); Mutate(assets, a => a.IsDeleted = true); return Task.CompletedTask; }
     public Task RestoreAsync(IReadOnlyList<PhotoAsset> assets, CancellationToken ct = default) { SafetyPolicy.CheckWrite(); Mutate(assets, a => a.IsDeleted = false); return Task.CompletedTask; }
 
-    public Task ImportFilesAsync(IReadOnlyList<string> files, PhotoAlbum? album, PhotoLibraryRef library, Action<long, long>? progress, CancellationToken ct = default)
+    public Task ImportFilesAsync(IReadOnlyList<string> files, PhotoAlbum? album, PhotoLibraryRef library, Action<long, long>? progress, CancellationToken ct = default) =>
+        ImportFilesEachAsync(files, album, library, progress, (_, _) => { }, ct);
+
+    public Task ImportFilesEachAsync(IReadOnlyList<string> files, PhotoAlbum? album, PhotoLibraryRef library, Action<long, long>? progress,
+        Action<string, string?> imported, CancellationToken ct = default)
     {
         SafetyPolicy.CheckWrite();
         long n = 0;
@@ -440,9 +449,11 @@ public sealed class DemoPhotos : IPhotosBackend
                 }
             }
             n++;
+            Save();
+            imported(g.Primary, id);
+            if (g.PairedVideo is { } pv) imported(pv, id);
             progress?.Invoke(n, files.Count);
         }
-        Save();
         return Task.CompletedTask;
     }
 

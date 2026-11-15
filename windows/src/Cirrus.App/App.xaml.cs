@@ -8,12 +8,34 @@ namespace Cirrus.App;
 
 public partial class App : Application
 {
+    SingleInstance? _instance;
+    bool _activatePending;
+
     protected override void OnStartup(StartupEventArgs e)
     {
 #if !DEBUG
         // Release builds honour only the user-facing switches (CIRRUS_DEMO, CIRRUS_PROFILE): no test or automation hooks.
         Env.LockDown();
 #endif
+        // One Cirrus at a time, whatever the build, flavour or profile: decided before any window, setting or account
+        // exists. A second launch brings the running one forward and quits. There is no override.
+        _instance = SingleInstance.Claim();
+        if (!_instance.IsFirst)
+        {
+            Foreground.AllowAny();   // the running Cirrus may take the foreground from this (foreground) process
+            _instance.SignalFirst(TimeSpan.FromSeconds(3));
+            _instance.Dispose();
+            Shutdown(0);
+            return;
+        }
+        if (SingleInstance.OtherRunningCirrus() is { } older)
+        {
+            // A Cirrus from before the lock existed: bring it forward the old way, and leave it running alone.
+            using (older) Foreground.Bring(older.MainWindowHandle);
+            Shutdown(0);
+            return;
+        }
+        _instance.Listen(() => Dispatcher.InvokeAsync(BringToFront));
         base.OnStartup(e);
         DispatcherUnhandledException += OnUnhandled;
         AppDomain.CurrentDomain.UnhandledException += (_, a) => Log.Status("unhandled: " + (a.ExceptionObject as Exception)?.GetType().Name);
@@ -30,6 +52,7 @@ public partial class App : Application
             : new MemorySecretStore();
         AccountManager.Shared = new AccountManager(secrets, new WindowsPresence()) { DemoMode = BuildInfo.DemoMode };
         AccountManager.Shared.Load();
+        Services.GoogleAccounts.Shared = new Services.GoogleAccounts(secrets, new WindowsPresence());
         SyncStore.Shared.Load();
         JobScheduler.Shared.Start();
         TransferManager.Shared.Changed += () => Dispatcher.InvokeAsync(() => KeepAwake.Set(TransferManager.Shared.IsBusy));
@@ -38,12 +61,31 @@ public partial class App : Application
         var main = new MainWindow();
         MainWindow = main;
         main.Show();
+        if (_activatePending) BringToFront();
+    }
+
+    /// <summary>A later launch asked for us: restore and focus the main window.</summary>
+    void BringToFront()
+    {
+        if (MainWindow is not { IsLoaded: true } w) { _activatePending = true; return; }
+        _activatePending = false;
+        if (w.WindowState == WindowState.Minimized) w.WindowState = WindowState.Normal;
+        w.Show();
+        w.Activate();
+        w.Topmost = true;   // the documented nudge past the foreground lock; undone at once
+        w.Topmost = false;
+        w.Focus();
+        Foreground.Bring(new System.Windows.Interop.WindowInteropHelper(w).Handle);
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
-        JobScheduler.Shared.Dispose();
-        KeepAwake.Set(false);
+        if (_instance is { IsFirst: true })
+        {
+            JobScheduler.Shared.Dispose();
+            KeepAwake.Set(false);
+        }
+        _instance?.Dispose();
         base.OnExit(e);
     }
 

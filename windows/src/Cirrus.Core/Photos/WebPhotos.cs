@@ -520,7 +520,11 @@ public sealed class WebPhotos : IPhotosBackend
         await ModifyAssets(assets, new() { ["isDeleted"] = 0 }, ct).ConfigureAwait(false);
     }
 
-    public async Task ImportFilesAsync(IReadOnlyList<string> files, PhotoAlbum? album, PhotoLibraryRef library, Action<long, long>? progress, CancellationToken ct = default)
+    public Task ImportFilesAsync(IReadOnlyList<string> files, PhotoAlbum? album, PhotoLibraryRef library, Action<long, long>? progress, CancellationToken ct = default) =>
+        ImportFilesEachAsync(files, album, library, progress, (_, _) => { }, ct);
+
+    public async Task ImportFilesEachAsync(IReadOnlyList<string> files, PhotoAlbum? album, PhotoLibraryRef library, Action<long, long>? progress,
+        Action<string, string?> imported, CancellationToken ct = default)
     {
         SafetyPolicy.CheckWrite();
         if (Session.WebserviceURL("uploadimagews") is not string b || Session.Dsid is not string dsid) throw ICloudException.Unavailable("iCloud Photos upload");
@@ -538,8 +542,10 @@ public sealed class WebPhotos : IPhotosBackend
                 ["timezoneOffset"] = ((int)TimeZoneInfo.Local.GetUtcOffset(DateTime.Now).TotalMinutes).ToString(),
             }, file, null, "application/octet-stream", (d, _) => progress?.Invoke(before + d, total), ct).ConfigureAwait(false);
             if ((r["errors"][0]["errorMessage"].Str ?? r["errors"][0]["message"].Str) is { } err) throw ICloudException.Server(err);
-            created.AddRange(r["records"].Array.Where(x => x["recordType"].Str == "CPLAsset").Select(x => x["recordName"].Str).OfType<string>());
+            var ids = r["records"].Array.Where(x => x["recordType"].Str == "CPLAsset").Select(x => x["recordName"].Str).OfType<string>().ToList();
+            created.AddRange(ids);
             before += size;
+            imported(file, ids.FirstOrDefault());   // in iCloud now, whatever happens next
         }
         if (album is { Kind: PhotoAlbumKind.Album } && created.Count > 0)
             await AddAsync(created.Select(id => new PhotoAsset { Id = id, Library = library.Id }).ToList(), album, library, ct).ConfigureAwait(false);

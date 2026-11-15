@@ -115,6 +115,17 @@ public interface IPhotosBackend
     Task DeleteAsync(IReadOnlyList<PhotoAsset> assets, CancellationToken ct = default);
     Task RestoreAsync(IReadOnlyList<PhotoAsset> assets, CancellationToken ct = default);
     Task ImportFilesAsync(IReadOnlyList<string> files, PhotoAlbum? album, PhotoLibraryRef library, Action<long, long>? progress, CancellationToken ct = default);
+    /// <summary>
+    /// Like <see cref="ImportFilesAsync"/>, but reports each file (with its new asset id when the backend knows it) as soon
+    /// as it is in the library, so a failure later in the call (the album add, the next file, a cancel) never makes the
+    /// caller send it again.
+    /// </summary>
+    async Task ImportFilesEachAsync(IReadOnlyList<string> files, PhotoAlbum? album, PhotoLibraryRef library, Action<long, long>? progress,
+        Action<string, string?> imported, CancellationToken ct = default)
+    {
+        await ImportFilesAsync(files, album, library, progress, ct).ConfigureAwait(false);
+        foreach (var f in files) imported(f, null);
+    }
     Task AddAsync(IReadOnlyList<PhotoAsset> assets, PhotoAlbum album, PhotoLibraryRef library, CancellationToken ct = default);
     Task<PhotoAlbum> CreateAlbumAsync(string name, PhotoLibraryRef library, CancellationToken ct = default);
     /// <summary>Opaque "as of" marker for a library after the last listing (null = the backend can't tell).</summary>

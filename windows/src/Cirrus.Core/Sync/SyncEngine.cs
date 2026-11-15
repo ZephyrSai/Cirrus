@@ -434,6 +434,9 @@ public sealed class LocalSide : ISyncSide
     public string Label { get { var n = Path.GetFileName(Root); return string.IsNullOrEmpty(n) ? Root : n; } }
     public long? FreeSpace => VolumeInfo.FreeSpace(Root);
 
+    /// <summary>Where a relative path lives on disk (the name the last scan found, else the mapped name).</summary>
+    internal string PathFor(string rel) => PathOf(rel);
+
     string PathOf(string rel)
     {
         string? onDisk;
@@ -569,7 +572,9 @@ public sealed class DriveSide : ISyncSide
         return output;
     }
 
-    DriveNode? Node(string rel) { lock (_lock) return _nodes.TryGetValue(rel, out var n) ? n : null; }
+    internal DriveNode? Node(string rel) { lock (_lock) return _nodes.TryGetValue(rel, out var n) ? n : null; }
+    /// <summary>The iCloud Drive backend (the move to Google downloads straight into its own staging folder).</summary>
+    internal IDriveBackend Backend => _drive;
 
     async Task<string> FolderID(string rel, CancellationToken ct)
     {

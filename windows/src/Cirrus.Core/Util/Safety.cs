@@ -95,7 +95,9 @@ public static class DriveSafetyExtensions
             return await drive.UploadAsync(file, name, folderID, modified, progress, ct).ConfigureAwait(false);
         var temp = ".cirrus-upload-" + Guid.NewGuid().ToString("N")[..8] + "-" + name;
         var uploaded = await drive.UploadAsync(file, temp, folderID, modified, progress, ct).ConfigureAwait(false);
-        await drive.TrashAsync([existing], ct).ConfigureAwait(false);
-        return await drive.RenameAsync(uploaded, name, ct).ConfigureAwait(false);
+        // Once the new copy is in iCloud, finish the swap even if the run is being cancelled: stopping here would leave a
+        // hidden full-size temporary copy behind.
+        await drive.TrashAsync([existing], CancellationToken.None).ConfigureAwait(false);
+        return await drive.RenameAsync(uploaded, name, CancellationToken.None).ConfigureAwait(false);
     }
 }

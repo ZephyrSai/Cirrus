@@ -193,6 +193,7 @@ public partial class MainWindow : Window
         m.Items.Add(new Separator());
         m.Items.Add(MenuItem("Back Up iCloud…", "\uE8F7", () => ShowBackup()));
         m.Items.Add(MenuItem("Sync Jobs…", "\uE895", () => ShowSyncJobs()));
+        m.Items.Add(MenuItem("Move to or from Google…", "\uE8AB", () => ShowMove()));
         m.Items.Add(MenuItem("Transfers", "\uE896", () => SetTransfersVisible(true)));
         m.Items.Add(new Separator());
         m.Items.Add(MenuItem("Add Apple ID…", "\uE8FA", () => SignIn(null)));
@@ -246,6 +247,7 @@ public partial class MainWindow : Window
 
     public void ShowBackup(string? accountID = null) => new BackupWindow(accountID) { Owner = this }.Show();
     public void ShowSyncJobs() => new SyncJobsWindow { Owner = this }.Show();
+    public void ShowMove() => MigrationWindow.Present(this);
 
     // MARK: Keyboard
 
@@ -502,6 +504,7 @@ public partial class MainWindow : Window
         Node(tools, "Back Up iCloud…", "\uE8F7", new SidebarAction(() => ShowBackup()));
         var running = SyncStore.Shared.Jobs.Count(j => SyncStore.Shared.IsRunning(j.Id));
         Node(tools, running > 0 ? $"Sync Jobs ({running} running)" : "Sync Jobs…", "\uE895", new SidebarAction(() => ShowSyncJobs()));
+        Node(tools, "Move to or from Google…", "\uE8AB", new SidebarAction(() => ShowMove()));
         Node(tools, "Transfers", "\uE896", new SidebarAction(() => SetTransfersVisible(true)));
         Node(tools, "Settings…", "\uE713", new SidebarAction(() => ShowSettings()));
         _syncingSidebar = false;

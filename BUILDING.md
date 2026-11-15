@@ -130,12 +130,19 @@ windows/
     Model/   Accounts.cs, Settings.cs, Demo.cs + DemoArt.cs (CIRRUS_DEMO backends), Errors.cs
     Util/    Safety.cs (read-only mode, SafeReplace), LocalFiles.cs (Recycle Bin, never-delete fallback, cloud
              placeholders), VolumeInfo.cs, Paths.cs (+ WinNames: reversible mapping for names NTFS can't store), Json.cs, Log.cs
+    Google/  GoogleAuth.cs (loopback PKCE sign-in), GoogleApi.cs (tokens, retries, back-off), GoogleCredentials.cs (DPAPI
+             store, Windows Hello gate), GoogleDrive.cs, GooglePhotos.cs (+ capture-date probe), GooglePicker.cs,
+             Takeout.cs (in-process .zip/.tgz reader), JournalStore.cs (crash-safe manifests), Migration.cs (iCloud → Google),
+             GoogleImport.cs (Google → iCloud)
   src/Cirrus.App/                net10.0-windows10.0.19041.0, WPF, Fluent theme following Windows light/dark
     UI/      MainWindow (sidebar, tabs, path bar, toolbar, status bar), BrowserTab (details / icons / photo grid by
-             month), TransfersPanel, SignInWindow, LocationPicker (Copy/Move To…), BackupWindow, SyncJobsWindow, SettingsWindow
-    Services/ Ops.cs (copy/move matrix with preflight and conflict handling), Thumbnails.cs
+             month), TransfersPanel, SignInWindow, LocationPicker (Copy/Move To…), BackupWindow, SyncJobsWindow, SettingsWindow,
+             MigrationWindow (Move to or from Google), GoogleSetupWindow (the Google Cloud console steps)
+    Services/ Ops.cs (copy/move matrix with preflight and conflict handling), Thumbnails.cs, GoogleAccounts.cs
     Platform/ Native.cs (Windows Hello / Windows password, keep-awake, shell icons), DragOut.cs (lazy drag to Explorer)
   tests/Cirrus.Core.Tests/       xUnit; reuses Tests/CirrusCoreTests/Fixtures/{srp,bigint}-vectors.txt
+    Fakes/   FakeGoogle.cs (fake OAuth/Drive/Photos/Picker server as an HttpMessageHandler; also linked into Debug app
+             builds for the demo), TakeoutFixture.cs (synthetic Takeout export as .zip, .tgz or a folder)
 ```
 
 ### Runtime switches (both platforms)
@@ -144,7 +151,7 @@ Release builds honour only the user-facing switches, `CIRRUS_DEMO` and `CIRRUS_P
 
 | Variable | Builds | Effect |
 |---|---|---|
-| `CIRRUS_DEMO=1` | all | Adds a disk-backed demo iCloud (Drive + Photos), so everything can be tried without an Apple ID. It never touches real accounts. |
+| `CIRRUS_DEMO=1` | all | Adds a disk-backed demo iCloud (Drive + Photos), so everything can be tried without an Apple ID. It never touches real accounts. Windows Debug builds also get a demo Google account (the tests' fake server) for Move to or from Google; Release builds always talk to the real Google. |
 | `CIRRUS_PROFILE=<name>` | all | Separate settings, caches and secrets (`Cirrus-<name>`). |
 | `CIRRUS_DEMO_FAST=1`, `CIRRUS_DEMO_PHOTOS=<n>` | Debug | Demo without simulated network delays; size of the demo library. |
 | `CIRRUS_DEBUG=1` | Debug | Verbose logging to stderr, including lines that may name files. |
@@ -152,6 +159,8 @@ Release builds honour only the user-facing switches, `CIRRUS_DEMO` and `CIRRUS_P
 | `CIRRUS_DATA_DIR` | Debug | Windows/Core: base folder for all Cirrus data. The tests point it at a temp folder. |
 
 ### Windows-specific behaviour
+
+- **One Cirrus at a time.** Before any window, setting or account exists, `App.OnStartup` takes a per-user named mutex, `Local\Cirrus.SingleInstance.<user SID>`. It is the same for every build, tester flavour and `CIRRUS_PROFILE`, and it isn't a file in a profile folder. A second launch lets the running Cirrus take the foreground, asks it through a named pipe only the same user can open (`PipeOptions.CurrentUserOnly`) to restore and focus its window, and quits without touching settings or logs. A Cirrus.exe from before the lock existed, running in the same session, is brought forward the same way. There is no override. The tests use private lock names and never start Cirrus.exe; `build-windows.ps1 -Run` doesn't start one while another is running.
 
 - **Saved passwords** are encrypted with DPAPI (current user) under `%LOCALAPPDATA%\Cirrus\Secrets`. File names are hashes, so no Apple IDs appear on disk. A saved password is only released after Windows Hello (`UserConsentVerifier`), or the Windows account password when Hello isn't set up. This can be turned off in Settings.
 - **Removals.** Local removals go to the Recycle Bin, through Explorer's own dialogs, so Windows asks before anything would be deleted permanently. Windows deletes permanently instead of recycling in some cases: USB sticks, network shares, items bigger than the bin, paths that are too long, and bins or policies set to "don't move files to the Recycle Bin". In those cases Cirrus moves the item into `.cirrus\Removed\<date>\` next to it. iCloud removals go to Recently Deleted. "Delete Immediately" exists only inside iCloud Drive's Recently Deleted, and it asks first.
@@ -185,6 +194,18 @@ Release builds honour only the user-facing switches, `CIRRUS_DEMO` and `CIRRUS_P
   - PDFs, videos and other files use Explorer's own thumbnails.
   - Large photo previews fall back to the original (≤ 20 MB, cached as JPEG) when iCloud has no medium rendition.
 
+- **Move to or from Google** (port of the Mac's Google move).
+  - *Sign-in.* Bring your own "Desktop app" OAuth client (the setup window walks through the eight Google Cloud console steps). Google's page opens in the default browser and answers on a one-shot listener bound to `127.0.0.1` only (exclusive port), with PKCE S256 and a random state.
+  - *Secrets.* The client ID and secret, the account list and refresh tokens are DPAPI-encrypted in the same store as saved Apple ID passwords. A refresh token is released only after Windows Hello or the Windows password, under the same Settings switch. Reconnecting replaces the saved token without revoking the old one (a revoke would end the whole grant); Disconnect revokes it.
+  - *Privacy.* The access token is attached only to Google's own hosts (`*.googleapis.com`, `*.googleusercontent.com`, `accounts/docs/drive.google.com`). Redirects are followed only for downloads (GET, https, at most three hops). Logs carry method, host, path and status, never tokens, codes, secrets or addresses.
+  - *Safety.* iCloud → Google only reads iCloud. Google → iCloud only adds: a replaced copy goes to the Recycle Bin (iCloud for Windows folder) or Recently Deleted (iCloud.com), and read-only mode stops the run before the first write (checked again inside the engine and the backends). Drive replacements in Google go to Google Drive's trash. The two directions skip each other's output ("From Google Drive", "From Google Photos", Cirrus's "From iCloud" folder, and photos the other direction sent).
+  - *Takeout.* Read in-process: `.zip` with System.IO.Compression, `.tgz`/`.tar.gz`/`.tar` with System.Formats.Tar over GZipStream (no tar.exe). `.tbz`/`.bz2` parts are refused with a hint to choose .zip or .tgz. Sidecars are read while listing; media are unpacked a batch at a time (about 1 GB, or the largest item), each under a name Cirrus chooses; members with `..`, absolute or drive-letter paths are left out, and a member that inflates beyond its header is refused.
+  - *State.* Resumable journals (one per iCloud + Google account pair) in `%LOCALAPPDATA%\Cirrus\migration`; staging per pair in `Cache\migration-staging`, cleared at the start and end of every run. Only one run per pair and direction at a time (a reopened window or a Retry can't start a second), and the limits are checked again at the start of every run against what's still left.
+  - *This PC's disk.* With iCloud for Windows, Check Space also counts this PC: a Google → iCloud copy must fit on the drive of the iCloud Drive folder, and files that are only in iCloud count when moving to Google (iCloud for Windows downloads them and keeps them).
+  - *Loop markers.* The "From iCloud" folder carries a private tag and a public `cirrusRole` property, since private tags can't be read by a Cirrus using another Google Cloud project; an untagged root folder named "From iCloud" is also left out, with a warning. Photos are recorded one by one as iCloud takes them, so a later failure never sends one twice.
+  - *Capture dates — different from the Mac.* The Mac writes Google's capture date, place and caption into the staged copy (ImageIO/AVFoundation). No small, MIT-licensed, well-maintained managed EXIF/XMP writer was found, so Windows doesn't rewrite files: the staged copy's modification time is set to Google's capture date, and iCloud.com's upload sends it as `lastModDate`, which iCloud uses for files without a date of their own. Files that carry their own date (most camera originals) keep it. Places and captions from Google are not written; the check warns when the export has any. For iCloud → Google, a read-only probe (EXIF in JPEG/PNG/TIFF/HEIC, the movie header in MOV/MP4) decides whether the date also goes into the Google Photos description, as on the Mac.
+  - *Accounts.* Photos need an Apple ID signed in inside Cirrus (iCloud for Windows has no Photos API Cirrus can write to); the iCloud for Windows iCloud Drive folder works for Drive in both directions.
+
 ### What can be verified where
 
 On the Mac: the Core tests (`dotnet test`) and that both Windows builds compile and publish. The tests cover:
@@ -201,5 +222,8 @@ On the Mac: the Core tests (`dotnet test`) and that both Windows builds compile 
   - Release lock-down of `CIRRUS_*` switches.
   - Retries only for safe calls.
   - Shared-library lookup can't stall discovery.
+- Move to or from Google, against the fake Google server: loopback PKCE sign-in, denied consent and forged state, token refresh and reconnect, back-off and daily caps, resumable Drive and Photos uploads that survive dropped connections, 50-item batches and albums, quotas, interrupted runs that resume the same session, Takeout parsing as .zip, .tgz and a folder (sidecar naming generations, duplicates, edited copies, Live Photo pairs, trashed items), the Takeout and picker imports, Drive copies with Docs exports and Recycle-Bin replacement, read-only mode, loop protection between the directions, hostile archive names, token host scoping, log hygiene and the DPAPI-store layout. A headless demo runs both directions end to end against the demo iCloud (`dotnet test --filter GoogleDemoTests --logger "console;verbosity=detailed"`).
 
-These need a Windows PC: the whole WPF UI, Windows Hello and the Windows-password fallback, DPAPI, the owner-only folder permissions, the Recycle Bin, drag and drop to and from Explorer, shell icons and thumbnails, JPEG re-encoding of large previews, and iCloud for Windows integration.
+These need real Google: the consent flow in a browser, real quotas and rate limits, export-link redirects and picker downloads from Google's content servers.
+
+These need a Windows PC: the whole WPF UI, Windows Hello and the Windows-password fallback, DPAPI, the owner-only folder permissions, the Recycle Bin, drag and drop to and from Explorer, shell icons and thumbnails, JPEG re-encoding of large previews, iCloud for Windows integration, and the Move to or from Google window (browser hand-off, file pickers, progress).
