@@ -115,6 +115,18 @@ enum Debug {
                 try? await Task.sleep(nanoseconds: 800_000_000)
                 log("batchrename: " + p.shown.map(\.name).sorted().joined(separator: ", "))
             }
+        case "tabrects":   // how the tab bar is seen (counts and geometry only)
+            if let w = b?.window {
+                let t = TabDrag.tabs(of: w)
+                log("tabs: \(w.tabGroup?.windows.count ?? 0) windows, bar visible=\(w.tabGroup?.isTabBarVisible ?? false), rects=\(t.map { "\(Int($0.rect.minX)),\(Int($0.rect.width))x\(Int($0.rect.height))" })")
+                if let mid = t.last.map({ NSPoint(x: $0.rect.midX, y: $0.rect.midY) }) { log("hit last tab: \(TabDrag.tab(at: mid, near: w) === t.last?.window)") }
+            }
+        case "tabdrop":   // tabdrop:<index> — what releasing the selection on that tab does
+            if let p = pane, let w = b?.window, let i = Int(arg), let tabs = w.tabGroup?.windows, i < tabs.count {
+                let ok = TabDrag.drop(p.selectedItems, from: p.location, onto: tabs[i])
+                log("tabdrop \(i): \(ok) → \((tabs[i].windowController as? BrowserWindowController)?.activePane.map { Catalog.shared.title($0.location) } ?? "?")")
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
         case "batchsheet": pane?.batchRename(nil); try? await Task.sleep(nanoseconds: 500_000_000)
         case "columnselect":   // columnselect:<name> — click an item in the deepest column showing it
             if let c = pane?.columns {

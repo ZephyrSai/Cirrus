@@ -122,7 +122,25 @@ enum DragDrop {
         let caps = Catalog.shared.caps(target)
         let pb = info.draggingPasteboard
         let mods = NSEvent.modifierFlags
-        if let (items, source) = DragRegistry.shared.items(from: pb) {
+        if let (items, source) = DragRegistry.shared.items(from: pb) { return operation(items: items, source: source, to: target, mods: mods) }
+        guard caps.acceptsDrops else { return [] }
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
+            if case .local(let p) = target {
+                if urls.contains(where: { $0.deletingLastPathComponent().standardizedFileURL.path == URL(fileURLWithPath: p).standardizedFileURL.path }) && !mods.contains(.option) { return [] }
+                if mods.contains(.option) { return .copy }
+                if mods.contains(.command) { return .move }
+                return Ops.sameVolume(urls[0], URL(fileURLWithPath: p)) ? .move : .copy
+            }
+            return mods.contains(.command) ? .move : .copy
+        }
+        if pb.canReadObject(forClasses: [NSFilePromiseReceiver.self], options: nil) { return .copy }
+        return []
+    }
+
+    /// Copy or move for Cirrus's own items (same rules as Finder: same volume or same iCloud account moves).
+    static func operation(items: [Item], source: Location?, to target: Location, mods: NSEvent.ModifierFlags = NSEvent.modifierFlags) -> NSDragOperation {
+        let caps = Catalog.shared.caps(target)
+        do {
             if case .album(let a, _, let id) = target {
                 guard id.hasPrefix("album:") || id == "smart:All Photos" || id == "smart:all" else { return [] }
                 if items.allSatisfy({ $0.photo != nil && $0.account == a }) { return id.hasPrefix("album:") && source != target ? .link : [] }
@@ -139,18 +157,6 @@ enum DragDrop {
             }
             return mods.contains(.command) && items.allSatisfy({ $0.localURL != nil || $0.driveNode != nil }) ? .move : .copy
         }
-        guard caps.acceptsDrops else { return [] }
-        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
-            if case .local(let p) = target {
-                if urls.contains(where: { $0.deletingLastPathComponent().standardizedFileURL.path == URL(fileURLWithPath: p).standardizedFileURL.path }) && !mods.contains(.option) { return [] }
-                if mods.contains(.option) { return .copy }
-                if mods.contains(.command) { return .move }
-                return Ops.sameVolume(urls[0], URL(fileURLWithPath: p)) ? .move : .copy
-            }
-            return mods.contains(.command) ? .move : .copy
-        }
-        if pb.canReadObject(forClasses: [NSFilePromiseReceiver.self], options: nil) { return .copy }
-        return []
     }
 
     static func perform(_ info: NSDraggingInfo, to target: Location, window: NSWindow?) -> Bool {

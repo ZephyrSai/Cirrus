@@ -678,6 +678,20 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
 
     func collectionView(_ cv: NSCollectionView, canDragItemsAt ips: Set<IndexPath>, with event: NSEvent) -> Bool { renameField == nil }
 
+    // Window tabs as drop targets (hover to switch, release on a tab to deliver there).
+    func collectionView(_ cv: NSCollectionView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forItemsAt indexPaths: Set<IndexPath>) {
+        TabDrag.began(in: view.window)
+    }
+    func collectionView(_ cv: NSCollectionView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, dragOperation operation: NSDragOperation) {
+        TabDrag.ended(session, at: screenPoint, operation: operation)
+    }
+    func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forRowIndexes rowIndexes: IndexSet) {
+        TabDrag.began(in: view.window)
+    }
+    func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        TabDrag.ended(session, at: screenPoint, operation: operation)
+    }
+
     func collectionView(_ cv: NSCollectionView, pasteboardWriterForItemAt ip: IndexPath) -> NSPasteboardWriting? {
         guard let i = flat(ip) else { return nil }
         return writer(shown[i])
