@@ -72,8 +72,41 @@ final class SignInController: NSWindowController, NSTextFieldDelegate, NSComboBo
 
     /// Opens the system Passwords AutoFill picker for the Apple ID field. macOS only suggests
     /// logins inline for apps tied to the website, so this triggers Edit › AutoFill › Passwords… directly.
+    /// What the Passwords picker is filling right now (nil = not in a fill flow).
+    enum FillStep { case appleID, password }
+    var fillStep: FillStep?
+    var lastLengths = (apple: 0, pass: 0)
+
+    /// One pick when the Apple ID is known: the picker opens on the password field and Cirrus signs in
+    /// as soon as it's filled. With an empty Apple ID it fills that first, then reopens itself for the password.
     @objc func fillFromPasswords() {
-        window?.makeFirstResponder(appleField)
+        let needsID = appleField.stringValue.trimmingCharacters(in: .whitespaces).isEmpty
+        openPicker(for: needsID ? .appleID : .password)
+    }
+
+    var fillWatcher: Timer?
+
+    func openPicker(for step: FillStep) {
+        fillStep = step
+        lastLengths = (appleField.stringValue.count, passField.stringValue.count)
+        // Watch the fields too, in case AutoFill sets them without a text-change event.
+        fillWatcher?.invalidate()
+        let started = Date()
+        fillWatcher = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] t in
+            MainActor.assumeIsolated {
+                guard let self, let current = self.fillStep, Date().timeIntervalSince(started) < 90 else { t.invalidate(); return }
+                if current == .appleID, self.appleField.stringValue.count > self.lastLengths.apple + 1 {
+                    t.invalidate()
+                    self.lastLengths.apple = self.appleField.stringValue.count
+                    self.updateSavedButton()
+                    self.openPicker(for: .password)
+                } else if current == .password, self.passField.stringValue.count > self.lastLengths.pass + 1 {
+                    t.invalidate()
+                    self.filledPassword()
+                }
+            }
+        }
+        window?.makeFirstResponder(step == .appleID ? appleField : passField)
         func find(_ menu: NSMenu?) -> (NSMenu, Int)? {
             guard let menu else { return nil }
             for (i, item) in menu.items.enumerated() {
@@ -82,14 +115,31 @@ final class SignInController: NSWindowController, NSTextFieldDelegate, NSComboBo
             }
             return nil
         }
-        NSApp.mainMenu?.items.first { $0.title == "Edit" }?.submenu?.update()
-        if let (menu, i) = find(NSApp.mainMenu?.items.first { $0.title == "Edit" }?.submenu) {
-            menu.performActionForItem(at: i)
+        let edit = NSApp.mainMenu?.items.first { $0.title == "Edit" }?.submenu
+        edit?.update()
+        if let (menu, i) = find(edit) {
+            // Let the focus change settle so the picker targets the right field.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { menu.performActionForItem(at: i) }
         } else if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Passwords") {
+            fillStep = nil
             NSWorkspace.shared.open(app)
             status.textColor = .secondaryLabelColor
             status.stringValue = "Copy your Apple ID password from the Passwords app, then paste it here."
         }
+    }
+
+    func filledPassword() {
+        fillWatcher?.invalidate()
+        guard fillStep != nil, step == .creds, !appleField.stringValue.isEmpty else { return }
+        fillStep = nil
+        status.textColor = .secondaryLabelColor
+        status.stringValue = "Filled from Passwords — signing in…"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { if !self.busy { self.startSignIn() } }
+    }
+
+    /// AutoFill inserts a whole value at once (typing adds one character at a time).
+    func autoFillHappened(_ field: NSTextField, previous: Int) -> Bool {
+        fillStep != nil && field.stringValue.count > previous + 1
     }
 
     /// Re-sign-in using the password saved in Keychain, released by Touch ID / Mac password.
@@ -116,7 +166,7 @@ final class SignInController: NSWindowController, NSTextFieldDelegate, NSComboBo
             ? "This Mac is already signed in to iCloud, and Cirrus uses that automatically. Sign in here only to browse another Apple ID."
             : "Cirrus signs in the way iCloud.com does. Your password goes only to Apple, and two-factor authentication still applies. Your saved password from the Passwords app can fill the fields."
         blurb.preferredMaxLayoutWidth = 400
-        appleField.placeholderString = "Apple ID (email or phone)"
+        appleField.placeholderString = "Apple ID (type it once — Cirrus remembers it)"
         passField.placeholderString = "Password"
         // AutoFill from the Passwords app (key icon / Edit › AutoFill › Passwords…).
         appleField.contentType = .username
@@ -284,7 +334,20 @@ final class SignInController: NSWindowController, NSTextFieldDelegate, NSComboBo
     }
 
     func controlTextDidChange(_ obj: Notification) {
-        if (obj.object as? NSComboBox) === appleField { updateSavedButton() }
+        if (obj.object as? NSComboBox) === appleField {
+            updateSavedButton()
+            if fillStep == .appleID, autoFillHappened(appleField, previous: lastLengths.apple) {
+                // Apple ID came from the picker: go straight on to the password.
+                fillWatcher?.invalidate()
+                fillStep = .password
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self.openPicker(for: .password) }
+            }
+            lastLengths.apple = appleField.stringValue.count
+        }
+        if (obj.object as? NSSecureTextField) === passField {
+            if fillStep == .password, autoFillHappened(passField, previous: lastLengths.pass) { filledPassword() }
+            lastLengths.pass = passField.stringValue.count
+        }
         if step == .code, (obj.object as? NSTextField) === codeField, codeField.stringValue.filter(\.isNumber).count == 6 { submitCode() }
     }
 
