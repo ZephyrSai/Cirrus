@@ -7,7 +7,7 @@ enum Prefs {
         d.register(defaults: [
             "showHidden": false, "foldersOnTop": true, "exportLive": true, "exportEdited": false, "iconSize": 64.0, "photoSize": 120.0,
             "maxTransfers": 4, "groupPhotosByMonth": true, "showStatusBar": true, "showPathBar": true, "menuBarIcon": true,
-            "openRemoteEdits": true, "squarePhotoGrid": true,
+            "openRemoteEdits": true, "squarePhotoGrid": true, "drivePreviews": true,
             // Tester builds (TESTER=1) start in read-only mode so nothing in iCloud can be changed until the tester opts in.
             "readOnlyICloud": (Bundle.main.object(forInfoDictionaryKey: "CirrusTesterBuild") as? Bool) ?? false,
         ])

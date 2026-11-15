@@ -367,11 +367,18 @@ public sealed class LocalSide : ISyncSide
     readonly object _lock = new();
     Dictionary<string, string> _actual = [];   // NFC logical key → on-disk relative path
 
-    public LocalSide(string root, IReadOnlyList<string> excludes)
+    /// <summary>
+    /// Destinations may not exist yet (first run). Sources must: a missing source folder (unplugged drive,
+    /// renamed folder) must never look like "everything was deleted".
+    /// </summary>
+    public bool AllowMissing { get; init; }
+
+    public LocalSide(string root, IReadOnlyList<string> excludes, bool allowMissing = false)
     {
         Root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
         if (Root.Length == 0 || Root.EndsWith(':')) Root += Path.DirectorySeparatorChar;
         Excludes = excludes;
+        AllowMissing = allowMissing;
     }
 
     public string Label { get { var n = Path.GetFileName(Root); return string.IsNullOrEmpty(n) ? Root : n; } }
@@ -390,8 +397,9 @@ public sealed class LocalSide : ISyncSide
         var map = new Dictionary<string, string>();
         if (!Directory.Exists(Root))
         {
-            if (SafetyPolicy.IsICloudPath(Root) && SafetyPolicy.ReadOnlyICloud) return output;
-            Directory.CreateDirectory(Root);
+            // Scanning never creates anything; folders are made only when something is stored.
+            if (AllowMissing) return output;
+            throw SyncException.Unavailable($"“{Root}” isn’t available. Connect the drive or choose the folder again.");
         }
         var stack = new Stack<(DirectoryInfo Dir, string Rel)>();
         stack.Push((new DirectoryInfo(Root), ""));

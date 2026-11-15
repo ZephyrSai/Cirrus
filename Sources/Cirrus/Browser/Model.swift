@@ -300,6 +300,11 @@ final class Catalog {
     // MARK: Listing
 
     func list(_ loc: Location, partial: @escaping @MainActor ([Item]) -> Void) async throws -> [Item] {
+        let started = Date()
+        defer {
+            let secs = Date().timeIntervalSince(started)
+            if secs > 1 { Log.status("list \(Self.kindName(loc)) \(memory[loc]?.count ?? 0) items in \(String(format: "%.1f", secs))s") }
+        }
         let items: [Item]
         switch loc {
         case .computer:
@@ -328,6 +333,18 @@ final class Catalog {
         }
         memory[loc] = items
         return items
+    }
+
+    static func kindName(_ loc: Location) -> String {
+        switch loc {
+        case .computer: return "computer"
+        case .local: return "local"
+        case .drive: return "drive"
+        case .driveTrash: return "drive-trash"
+        case .photos: return "albums"
+        case .album: return "photos"
+        case .device: return "device"
+        }
     }
 
     func computerItems() -> [Item] {
@@ -423,8 +440,16 @@ final class Catalog {
     func libraries(account: String) async throws -> [PhotoLibraryRef] {
         if let l = libraryIndex[account] { return l }
         guard let photos = AccountManager.shared.account(id: account)?.photos else { throw ICloudError.needsSignIn }
+        let file = cacheFile(account: account, library: "_", album: "_libraries")
+        if AccountManager.shared.account(id: account)?.kind == .web, let d = try? Data(contentsOf: file),
+           let cached = try? JSONDecoder().decode([PhotoLibraryRef].self, from: d), !cached.isEmpty {
+            libraryIndex[account] = cached
+            Task { @MainActor in if let fresh = try? await photos.libraries() { Catalog.shared.libraryIndex[account] = fresh; if let d = try? JSONEncoder().encode(fresh) { try? d.write(to: file, options: .atomic) } } }
+            return cached
+        }
         let libs = try await photos.libraries()
         libraryIndex[account] = libs
+        if let d = try? JSONEncoder().encode(libs) { try? d.write(to: file, options: .atomic) }
         return libs
     }
 
@@ -435,10 +460,23 @@ final class Catalog {
     func albums(account: String, library: String, refresh: Bool = false) async throws -> [PhotoAlbum] {
         let key = account + "|" + library
         if !refresh, let a = albumIndex[key] { return a }
+        // Last known album list on disk: show it now, refresh quietly.
+        let file = cacheFile(account: account, library: library, album: "_albums")
+        if !refresh, AccountManager.shared.account(id: account)?.kind == .web,
+           let d = try? Data(contentsOf: file), let cached = try? JSONDecoder().decode([PhotoAlbum].self, from: d) {
+            albumIndex[key] = cached
+            Task { @MainActor in
+                if let fresh = try? await Catalog.shared.albums(account: account, library: library, refresh: true), fresh != cached {
+                    NotificationCenter.default.post(name: .cirrusLocationChanged, object: Location.photos(account, library, nil))
+                }
+            }
+            return cached
+        }
         guard let photos = AccountManager.shared.account(id: account)?.photos else { throw ICloudError.needsSignIn }
         let lib = try await self.library(account: account, id: library)
         let albums = try await photos.albums(in: lib)
         albumIndex[key] = albums
+        if AccountManager.shared.account(id: account)?.kind == .web, let d = try? JSONEncoder().encode(albums) { try? d.write(to: file, options: .atomic) }
         return albums
     }
 

@@ -466,6 +466,7 @@ final class PreferencesWindowController: NSWindowController {
             box("Keep folders on top when sorting by name", "foldersOnTop"),
             box("Show Cirrus in the menu bar", "menuBarIcon", #selector(menuBarToggled(_:))),
             login,
+            box("Show previews of iCloud Drive files (downloads files up to 25 MB once and keeps them in the cache)", "drivePreviews"),
             header("Photos"),
             box("Include the Live Photo video (.MOV) when dragging or exporting photos", "exportLive"),
             box("Export the edited version instead of the original when one exists", "exportEdited"),
@@ -506,8 +507,8 @@ final class PreferencesWindowController: NSWindowController {
             if a.runModal() != .alertFirstButtonReturn { b.state = .on; return }
         }
         Prefs.readOnlyICloud = b.state == .on
-        Catalog.shared.memory.removeAll()
-        for wc in (NSApp.delegate as? AppDelegate)?.windows ?? [] { for p in wc.panes { p.reload() } }
+        // Only the allowed actions change; refresh banners and menus without re-fetching everything at once.
+        for wc in (NSApp.delegate as? AppDelegate)?.windows ?? [] { for p in wc.panes { p.updateBanner(); p.applyItems(p.allItems, preserve: true) } }
     }
 
     @objc func menuBarToggled(_ b: NSButton) { UserDefaults.standard.set(b.state == .on, forKey: "menuBarIcon"); (NSApp.delegate as? AppDelegate)?.updateStatusItem() }

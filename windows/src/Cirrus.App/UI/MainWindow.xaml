@@ -1,0 +1,117 @@
+<Window x:Class="Cirrus.App.UI.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Cirrus" Width="1240" Height="780" MinWidth="760" MinHeight="460"
+        WindowStartupLocation="CenterScreen" Icon="/Assets/Cirrus.ico">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />   <!-- toolbar -->
+            <RowDefinition Height="Auto" />   <!-- banners -->
+            <RowDefinition Height="*" />      <!-- sidebar + tabs -->
+            <RowDefinition Height="Auto" />   <!-- transfers -->
+            <RowDefinition Height="Auto" />   <!-- status bar -->
+        </Grid.RowDefinitions>
+
+        <!-- Toolbar -->
+        <Grid Grid.Row="0" Margin="8,6,8,6">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <Button x:Name="BackButton" ToolTip="Back (Alt+Left)" Click="Back_Click" Padding="8,5" Margin="0,0,2,0" Background="Transparent" BorderThickness="0">
+                    <TextBlock Text="&#xE72B;" Style="{StaticResource IconText}" />
+                </Button>
+                <Button x:Name="ForwardButton" ToolTip="Forward (Alt+Right)" Click="Forward_Click" Padding="8,5" Margin="0,0,2,0" Background="Transparent" BorderThickness="0">
+                    <TextBlock Text="&#xE72A;" Style="{StaticResource IconText}" />
+                </Button>
+                <Button x:Name="UpButton" ToolTip="Up (Alt+Up)" Click="Up_Click" Padding="8,5" Margin="0,0,2,0" Background="Transparent" BorderThickness="0">
+                    <TextBlock Text="&#xE74A;" Style="{StaticResource IconText}" />
+                </Button>
+                <Button ToolTip="Refresh (F5)" Click="Refresh_Click" Padding="8,5" Margin="0,0,8,0" Background="Transparent" BorderThickness="0">
+                    <TextBlock Text="&#xE72C;" Style="{StaticResource IconText}" />
+                </Button>
+            </StackPanel>
+            <!-- Path bar -->
+            <Border Grid.Column="1" CornerRadius="4" BorderThickness="1" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                    Background="{DynamicResource ControlFillColorDefaultBrush}" Padding="4,0" Margin="0,0,8,0" MinHeight="32">
+                <ScrollViewer HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled" x:Name="PathScroll">
+                    <StackPanel x:Name="PathBar" Orientation="Horizontal" VerticalAlignment="Center" />
+                </ScrollViewer>
+            </Border>
+            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBox x:Name="FilterBox" Width="200" Margin="0,0,8,0" ToolTip="Filter this folder (Ctrl+F)" TextChanged="Filter_Changed" VerticalContentAlignment="Center" />
+                <Button x:Name="NewFolderButton" ToolTip="New folder (Ctrl+Shift+N)" Click="NewFolder_Click" Padding="8,5" Margin="0,0,2,0" Background="Transparent" BorderThickness="0">
+                    <TextBlock Text="&#xE8F4;" Style="{StaticResource IconText}" />
+                </Button>
+                <ToggleButton x:Name="DetailsView" ToolTip="Details" Click="View_Click" Tag="details" Padding="8,5" BorderThickness="0">
+                    <TextBlock Text="&#xE8FD;" Style="{StaticResource IconText}" />
+                </ToggleButton>
+                <ToggleButton x:Name="IconsView" ToolTip="Large icons" Click="View_Click" Tag="icons" Padding="8,5" BorderThickness="0" Margin="0,0,8,0">
+                    <TextBlock Text="&#xE8A9;" Style="{StaticResource IconText}" />
+                </ToggleButton>
+                <ToggleButton x:Name="TransfersToggle" ToolTip="Transfers" Click="TransfersToggle_Click" Padding="8,5" BorderThickness="0" Margin="0,0,2,0">
+                    <Grid>
+                        <TextBlock Text="&#xE896;" Style="{StaticResource IconText}" />
+                        <Border x:Name="TransferBadge" Background="{DynamicResource AccentFillColorDefaultBrush}" CornerRadius="7" MinWidth="14" Height="14"
+                                HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-6,-10,0" Visibility="Collapsed">
+                            <TextBlock x:Name="TransferBadgeText" FontSize="9" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="3,0" />
+                        </Border>
+                    </Grid>
+                </ToggleButton>
+                <Button x:Name="MenuButton" ToolTip="More" Click="Menu_Click" Padding="8,5" Background="Transparent" BorderThickness="0">
+                    <TextBlock Text="&#xE712;" Style="{StaticResource IconText}" />
+                </Button>
+            </StackPanel>
+        </Grid>
+
+        <!-- Banners: read-only mode, job results -->
+        <StackPanel Grid.Row="1">
+            <Border x:Name="ReadOnlyBanner" Background="{DynamicResource SystemFillColorCautionBackgroundBrush}" Padding="12,6" Visibility="Collapsed">
+                <DockPanel>
+                    <Button DockPanel.Dock="Right" Content="Safety Settings…" Click="SafetySettings_Click" Padding="10,3" />
+                    <TextBlock VerticalAlignment="Center" TextWrapping="Wrap">
+                        <Run FontFamily="{StaticResource IconFont}" Text="&#xE72E;" /> <Run x:Name="ReadOnlyText" Text="Read-only mode is on: Cirrus won’t change anything in iCloud. Browsing, downloading, exporting and backing up still work." />
+                    </TextBlock>
+                </DockPanel>
+            </Border>
+            <Border x:Name="Banner" Background="{DynamicResource SystemFillColorAttentionBackgroundBrush}" Padding="12,6" Visibility="Collapsed">
+                <DockPanel>
+                    <Button DockPanel.Dock="Right" Content="Dismiss" Click="DismissBanner_Click" Padding="10,3" />
+                    <TextBlock x:Name="BannerText" VerticalAlignment="Center" TextWrapping="Wrap" />
+                </DockPanel>
+            </Border>
+        </StackPanel>
+
+        <!-- Sidebar and tabs -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="250" MinWidth="160" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TreeView x:Name="Sidebar" BorderThickness="0" Padding="4" AllowDrop="True" SelectedItemChanged="Sidebar_SelectionChanged"
+                      Background="Transparent" ScrollViewer.HorizontalScrollBarVisibility="Disabled" />
+            <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Stretch" Background="Transparent" />
+            <Grid Grid.Column="2">
+                <TabControl x:Name="Tabs" SelectionChanged="Tabs_SelectionChanged" Padding="0" BorderThickness="0,1,0,0" />
+                <Button x:Name="NewTabButton" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,2,6,0" Padding="8,3" ToolTip="New tab (Ctrl+T)"
+                        Click="NewTab_Click" Background="Transparent" BorderThickness="0">
+                    <TextBlock Text="&#xE710;" Style="{StaticResource IconText}" FontSize="12" />
+                </Button>
+            </Grid>
+        </Grid>
+
+        <!-- Transfers panel -->
+        <Border Grid.Row="3" x:Name="TransfersHost" Visibility="Collapsed" BorderThickness="0,1,0,0" BorderBrush="{DynamicResource DividerStrokeColorDefaultBrush}" Height="220" />
+
+        <!-- Status bar -->
+        <Border Grid.Row="4" BorderThickness="0,1,0,0" BorderBrush="{DynamicResource DividerStrokeColorDefaultBrush}" Padding="10,3">
+            <DockPanel>
+                <TextBlock x:Name="TransferStatus" DockPanel.Dock="Right" Style="{StaticResource Caption}" Margin="12,0,0,0" />
+                <TextBlock x:Name="StatusText" Style="{StaticResource Caption}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />
+            </DockPanel>
+        </Border>
+    </Grid>
+</Window>

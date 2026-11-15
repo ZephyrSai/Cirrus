@@ -23,11 +23,11 @@ public sealed class JobEngine
 
     static AccountManager Accounts => AccountManager.Shared;
 
-    ISyncSide Side(SyncEndpoint e, IReadOnlyList<string> excludes)
+    ISyncSide Side(SyncEndpoint e, IReadOnlyList<string> excludes, bool isDestination)
     {
         switch (e.Kind)
         {
-            case EndpointKind.Local: return new LocalSide(e.Path!, excludes);
+            case EndpointKind.Local: return new LocalSide(e.Path!, excludes, allowMissing: isDestination);
             case EndpointKind.Drive:
                 var acct = Accounts.Account(e.Account) ?? throw ICloudException.NeedsSignIn();
                 if (acct.Drive is null) throw ICloudException.NeedsSignIn();
@@ -68,7 +68,7 @@ public sealed class JobEngine
         {
             case JobKind.FolderSync:
             {
-                var a = Side(job.Source, job.Options.Excludes); var b = Side(job.Destination, job.Options.Excludes);
+                var a = Side(job.Source, job.Options.Excludes, false); var b = Side(job.Destination, job.Options.Excludes, true);
                 var (sa, sb) = await new SyncRunner(a, b).ScanAsync(p => progress?.Invoke(p.Phase), ct).ConfigureAwait(false);
                 var plan = SyncPlanner.Plan(job.Mode, sa, sb, job.Mode == SyncMode.TwoWay ? SyncState.Load(job.Id) : null);
                 return new Preview { Plan = plan, Summary = SyncPlanner.Describe(plan), GuardTripped = SyncPlanner.GuardTripped(plan, job.Mode, job.Options.MaxDeletePercent) };
@@ -171,7 +171,7 @@ public sealed class JobEngine
         {
             case JobKind.FolderSync:
             {
-                var a = Side(job.Source, job.Options.Excludes); var b = Side(job.Destination, job.Options.Excludes);
+                var a = Side(job.Source, job.Options.Excludes, false); var b = Side(job.Destination, job.Options.Excludes, true);
                 var runner = new SyncRunner(a, b);
                 var (sa, sb) = await runner.ScanAsync(Report, ct).ConfigureAwait(false);
                 var plan = SyncPlanner.Plan(job.Mode, sa, sb, job.Mode == SyncMode.TwoWay ? SyncState.Load(job.Id) : null);

@@ -1,6 +1,11 @@
 import CoreGraphics
 import Foundation
 import ImageIO
+import CryptoKit
+
+enum SHA256Hex {
+    static func digest(_ s: String) -> String { SHA256.hash(data: Data(s.utf8)).map { String(format: "%02x", $0) }.joined() }
+}
 
 public struct PhotoLibraryRef: Hashable, Codable, Sendable {
     public var id: String           // CloudKit zone (PrimarySync, SharedSync-…) or "local"
@@ -138,12 +143,18 @@ public enum PhotoFormats {
 /// Small on-disk cache for remote thumbnails.
 public enum ThumbnailDiskCache {
     static let queue = DispatchQueue(label: "cirrus.thumbcache", attributes: .concurrent)
+    /// Hashed names (no Apple IDs or photo IDs on disk), one folder per account.
+    public static func accountDir(_ backend: String) -> URL {
+        Paths.cacheDir("thumbs").appendingPathComponent(hash(backend), isDirectory: true)
+    }
     public static func url(_ backend: String, _ id: String, _ px: Int) -> URL {
-        let safe = (backend + "_" + id).replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
-        let bucket = safe.utf8.reduce(UInt32(5381)) { ($0 &* 33) &+ UInt32($1) } % 64 // stable across launches
-        let dir = Paths.cacheDir("thumbs").appendingPathComponent(String(bucket), isDirectory: true)
+        let dir = accountDir(backend).appendingPathComponent(String(hash(id).prefix(2)), isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("\(safe.prefix(180))-\(px).jpg")
+        return dir.appendingPathComponent("\(hash(id))-\(px).jpg")
+    }
+    static func hash(_ s: String) -> String {
+        let d = SHA256Hex.digest(s)
+        return String(d.prefix(24))
     }
     public static func read(_ backend: String, _ id: String, _ px: Int) -> Data? { try? Data(contentsOf: url(backend, id, px)) }
     public static func write(_ data: Data, _ backend: String, _ id: String, _ px: Int) { try? data.write(to: url(backend, id, px), options: .atomic) }

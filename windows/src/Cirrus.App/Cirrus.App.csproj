@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Cirrus for Windows (WPF). Builds on macOS too thanks to EnableWindowsTargeting; runs on Windows 10 2004+ / 11. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>Cirrus.App</RootNamespace>
+    <AssemblyName>Cirrus</AssemblyName>
+    <ApplicationIcon>Assets\Cirrus.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- WPF0001: Fluent ThemeMode is still marked experimental. -->
+    <NoWarn>$(NoWarn);WPF0001;SYSLIB1054;CA1416</NoWarn>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <!-- TESTER=1 builds (scripts/build-windows.*) start in read-only iCloud mode. -->
+    <CirrusTester Condition="'$(CirrusTester)' == ''">false</CirrusTester>
+    <DefineConstants Condition="'$(CirrusTester)' == 'true'">$(DefineConstants);TESTER</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Cirrus.Core\Cirrus.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets\Cirrus.ico" />
+    <Resource Include="Assets\AppIcon-256.png" />
+  </ItemGroup>
+</Project>

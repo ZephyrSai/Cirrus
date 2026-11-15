@@ -1,0 +1,30 @@
+<Application x:Class="Cirrus.App.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             ThemeMode="System"
+             ShutdownMode="OnMainWindowClose">
+    <!-- Fluent theme following Windows' light/dark setting. Controls keep Fluent's implicit styles, so the
+         styles below only target TextBlock (which inherits its colour) and never replace control styles. -->
+    <Application.Resources>
+        <ResourceDictionary>
+            <!-- Segoe Fluent Icons on Windows 11, Segoe MDL2 Assets on Windows 10. -->
+            <FontFamily x:Key="IconFont">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
+            <Style x:Key="IconText" TargetType="TextBlock">
+                <Setter Property="FontFamily" Value="{StaticResource IconFont}" />
+                <Setter Property="FontSize" Value="16" />
+                <Setter Property="VerticalAlignment" Value="Center" />
+                <Setter Property="HorizontalAlignment" Value="Center" />
+            </Style>
+            <Style x:Key="Caption" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="12" />
+                <Setter Property="Opacity" Value="0.75" />
+                <Setter Property="TextWrapping" Value="Wrap" />
+            </Style>
+            <Style x:Key="SectionHeader" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="14" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Margin" Value="0,12,0,6" />
+            </Style>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

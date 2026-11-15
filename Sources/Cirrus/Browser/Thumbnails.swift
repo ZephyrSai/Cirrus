@@ -23,7 +23,10 @@ final class Thumbnails {
     let cache = NSCache<NSString, NSImage>()
     let iconCache = NSCache<NSString, NSImage>()
     var tasks = [String: Task<NSImage?, Never>]()
-    let remoteLimiter = AsyncLimiter(6)
+    let remoteLimiter = AsyncLimiter(12)
+    let previewLimiter = AsyncLimiter(3)
+    static let drivePreviewMax: Int64 = 25_000_000
+    static var drivePreviews: Bool { UserDefaults.standard.object(forKey: "drivePreviews") as? Bool ?? true }
     let localLimiter = AsyncLimiter(4)
 
     init() { cache.countLimit = 3000; iconCache.countLimit = 600 }
@@ -84,6 +87,12 @@ final class Thumbnails {
         switch item.payload {
         case .photo: return true
         case .device(let d): return !d.isFolder
+        case .drive(let n):
+            // iCloud.com's API has no thumbnails: fetch small previewable files once and thumbnail them locally.
+            guard Self.drivePreviews, !n.isFolder, n.size > 0, n.size <= Self.drivePreviewMax, let t = item.utType else { return false }
+            return t.conforms(to: .image) || t.conforms(to: .pdf) || t.conforms(to: .movie) || t.conforms(to: .presentation)
+                || t.conforms(to: .spreadsheet) || t.identifier.contains("iwork") || t.conforms(to: .rtf) || t.identifier == "com.microsoft.word.doc"
+                || t.identifier == "org.openxmlformats.wordprocessingml.document"
         case .file:
             guard !item.isContainer, item.cloud != .cloudOnly, let t = item.utType else { return false }
             return t.conforms(to: .image) || t.conforms(to: .movie) || t.conforms(to: .pdf) || t.conforms(to: .presentation)
@@ -99,7 +108,7 @@ final class Thumbnails {
         if let t = tasks[key] { return await t.value }
         let backend: PhotosBackend? = item.account.flatMap { AccountManager.shared.account(id: $0)?.photos }
         let target = px <= 256 ? 256 : 1024
-        let limiterRemote = remoteLimiter, limiterLocal = localLimiter
+        let limiterRemote = remoteLimiter, limiterLocal = localLimiter, previewLimit = previewLimiter
         let task = Task<NSImage?, Never> {
             switch item.payload {
             case .photo(let p):
@@ -111,6 +120,13 @@ final class Thumbnails {
             case .device(let d):
                 guard let cg = await DeviceManager.shared.thumbnail(d) else { return nil }
                 return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+            case .drive:
+                await previewLimit.acquire()
+                defer { Task { await previewLimit.release() } }
+                guard let u = try? await Ops.shared.localCopy(item, cache: "Open", progressTitle: nil) else { return nil }
+                let req = QLThumbnailGenerator.Request(fileAt: u, size: CGSize(width: target / 2, height: target / 2), scale: 2, representationTypes: .thumbnail)
+                guard let rep = try? await QLThumbnailGenerator.shared.generateBestRepresentation(for: req) else { return nil }
+                return rep.nsImage
             case .file(let u):
                 await limiterLocal.acquire()
                 defer { Task { await limiterLocal.release() } }

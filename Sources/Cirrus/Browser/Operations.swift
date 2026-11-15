@@ -520,8 +520,11 @@ final class Ops {
         let dir = Paths.cacheDir(cache).appendingPathComponent(Self.stableKey(item.key), isDirectory: true)
         let name = Paths.safeName(item.name)
         let target = dir.appendingPathComponent(name)
-        if let size = (try? FileManager.default.attributesOfItem(atPath: target.path)[.size] as? Int64), item.size == nil || size == item.size || item.isPhoto {
-            return target
+        // Reuse a cached copy if it's the same version (size and modified date match).
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: target.path), let size = attrs[.size] as? Int64,
+           item.size == nil || size == item.size || item.isPhoto {
+            let m = attrs[.modificationDate] as? Date
+            if item.modified == nil || m == nil || abs(m!.timeIntervalSince(item.modified!)) < 2 || item.isPhoto { return target }
         }
         try? FileManager.default.removeItem(at: dir)
         if let progressTitle {

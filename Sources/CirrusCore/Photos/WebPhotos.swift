@@ -69,10 +69,19 @@ public final class WebPhotos: PhotosBackend, @unchecked Sendable {
     // MARK: Libraries & albums
 
     public func libraries() async throws -> [PhotoLibraryRef] {
+        // Private and shared databases in parallel; the shared one is optional and gets a short leash.
+        async let privateZones = call("private", "changes/database", [:])
+        let sharedTask = Task { () -> JSON? in try? await withThrowingTaskGroup(of: JSON?.self) { g in
+            g.addTask { try await self.call("shared", "changes/database", [:]) }
+            g.addTask { try await Task.sleep(nanoseconds: 6_000_000_000); return nil }
+            let r = try await g.next() ?? nil
+            g.cancelAll()
+            return r
+        } }
+        let priv = try await privateZones
+        let shared = await sharedTask.value
         var found = [PhotoLibraryRef]()
-        for area in ["private", "shared"] {
-            let r: JSON
-            do { r = try await call(area, "changes/database", [:]) } catch { if area == "shared" { continue }; throw error }
+        for (area, r) in [("private", priv), ("shared", shared ?? .null)] {
             for z in r["zones"].array where z["deleted"].bool != true {
                 let name = z["zoneID"]["zoneName"].string ?? ""
                 guard name == "PrimarySync" || name.hasPrefix("SharedSync"), !found.contains(where: { $0.id == name }) else { continue }

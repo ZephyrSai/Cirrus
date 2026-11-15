@@ -341,11 +341,11 @@ public sealed class BackupEngine
         {
             var pairs = new List<(string, ISyncSide, ISyncSide)>();
             if (_sources.Drive is { } d)
-                pairs.Add(("iCloud Drive", new DriveSide(d, d.RootID, "iCloud Drive", _options.Excludes), new LocalSide(driveDest, _options.Excludes)));
+                pairs.Add(("iCloud Drive", new DriveSide(d, d.RootID, "iCloud Drive", _options.Excludes), new LocalSide(driveDest, _options.Excludes, allowMissing: true)));
             else if (_sources.NativeDriveRoot is { } root)
-                pairs.Add(("iCloud Drive", new LocalSide(root, _options.Excludes), new LocalSide(driveDest, _options.Excludes)));
+                pairs.Add(("iCloud Drive", new LocalSide(root, _options.Excludes), new LocalSide(driveDest, _options.Excludes, allowMissing: true)));
             if (_sources.Drive is null && _sources.NativePhotosRoot is { } pr && _options.IncludePhotos)
-                pairs.Add(("iCloud Photos", new LocalSide(pr, _options.Excludes), new LocalSide(Path.Combine(AccountRoot, "Photos", "iCloud Photos"), _options.Excludes)));
+                pairs.Add(("iCloud Photos", new LocalSide(pr, _options.Excludes), new LocalSide(Path.Combine(AccountRoot, "Photos", "iCloud Photos"), _options.Excludes, allowMissing: true)));
             foreach (var (label, src, dst) in pairs)
             {
                 progress?.Invoke($"Scanning {label}…");

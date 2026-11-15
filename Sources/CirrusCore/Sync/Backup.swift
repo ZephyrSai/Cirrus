@@ -342,6 +342,9 @@ public final class BackupEngine: @unchecked Sendable {
             let other = s.categories.filter { !["photos", "docs", "documents"].contains($0.key.lowercased()) }.reduce(0) { $0 + $1.bytes }
             if other > 0 { ev.warnings.append("\(other.byteString) of your iCloud storage (device backups, Mail, Messages and app data) can’t be downloaded through iCloud.com and isn’t included.") }
         }
+        if let v = ev.volume, !v.isRoot, (try? v.url.resourceValues(forKeys: [.volumeIsEncryptedKey]).volumeIsEncrypted) == false {
+            ev.warnings.append("“\(v.name)” isn’t encrypted, so anyone with the drive can read this backup. For private data, use an encrypted APFS drive (Disk Utility › Erase › APFS (Encrypted)).")
+        }
         if ev.volume?.isRoot == true {
             ev.warnings.append("The destination is this Mac’s startup disk. For a real backup, choose an external drive.")
         }

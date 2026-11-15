@@ -22,6 +22,7 @@ static class TestEnv
         Environment.SetEnvironmentVariable("CIRRUS_NATIVE_DRIVE", null);
         Environment.SetEnvironmentVariable("CIRRUS_NATIVE_PHOTOS", null);
         LocalFiles.Recycler = new QuarantineRecycler();
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => { try { Directory.Delete(Root, true); } catch { } };   // test scratch only
     }
 
     public static string TempDir(string name)

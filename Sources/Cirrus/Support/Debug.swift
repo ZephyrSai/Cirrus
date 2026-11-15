@@ -9,9 +9,17 @@ enum Debug {
     static var dir: URL?
     static var lastWindow: NSWindow?
     /// CIRRUS_HEADLESS=1: no Dock icon, windows parked off-screen, prompts auto-answered — test runs never appear on the user's screen.
+    #if DEBUG
     static let headless = ProcessInfo.processInfo.environment["CIRRUS_HEADLESS"] != nil
+    #else
+    static let headless = false   // release builds ignore all test-automation switches
+    #endif
     /// CIRRUS_AUTO_CONFLICT=keepBoth|replace|skip answers “already exists” prompts in tests.
+    #if DEBUG
     static let autoConflict = ProcessInfo.processInfo.environment["CIRRUS_AUTO_CONFLICT"] ?? (headless ? "keepBoth" : nil)
+    #else
+    static let autoConflict: String? = nil
+    #endif
 
     static func offscreen(_ w: NSWindow?) {
         guard headless, let w else { return }
@@ -19,6 +27,9 @@ enum Debug {
     }
 
     static func run(_ app: AppDelegate) {
+        #if !DEBUG
+        return   // no scripting in release builds: another process can't drive a signed-in Cirrus
+        #endif
         let env = ProcessInfo.processInfo.environment
         if let d = env["CIRRUS_SNAPSHOT"] { dir = URL(fileURLWithPath: d, isDirectory: true); try? FileManager.default.createDirectory(at: dir!, withIntermediateDirectories: true) }
         guard let script = env["CIRRUS_SCRIPT"] else { return }
@@ -42,6 +53,9 @@ enum Debug {
         case "demo-albums": return demo.map { .photos($0.id, "demo", nil) }
         case "demo-trash": return demo.map { .driveTrash($0.id) }
         case "demo-deleted": return demo.map { .album($0.id, "demo", "smart:Recently Deleted") }
+        case "web-drive": return am.webAccounts.first.flatMap { a in a.drive.map { .drive(a.id, $0.rootID) } }
+        case "web-photos": return am.webAccounts.first.map { .album($0.id, "PrimarySync", "smart:All Photos") }
+        case "web-albums": return am.webAccounts.first.map { .photos($0.id, "PrimarySync", nil) }
         case "mac-photos": return .album("mac", "local", "smart:all")
         case "mac-albums": return .photos("mac", "local", nil)
         default:
@@ -59,7 +73,8 @@ enum Debug {
         log(s)
         switch cmd {
         case "open":
-            if let l = location(arg) { pane?.navigate(to: l); await waitLoaded(pane) } else { log("unknown location \(arg)") }
+            let t0 = Date()
+            if let l = location(arg) { pane?.navigate(to: l); await waitLoaded(pane); log("open \(arg): \(String(format: "%.1f", Date().timeIntervalSince(t0) - 0.7))s") } else { log("unknown location \(arg)") }
         case "view": pane?.setViewMode(arg == "list" ? .list : .icons)
         case "dual": b?.toggleDualPane(nil); await waitLoaded(b?.activePane)
         case "focus": b?.focusOtherPane()
@@ -117,10 +132,50 @@ enum Debug {
         case "waittransfers":
             while !TransferManager.shared.active.isEmpty { try? await Task.sleep(nanoseconds: 250_000_000) }
             for t in TransferManager.shared.transfers { log("transfer \(t.title): \(t.state) \(t.detail)") }
+        case "counts":   // counts and timings only — no names (safe for real accounts)
+            if let p = pane {
+                let files = p.shown.filter { !$0.isContainer }
+                log("counts: kind=\(Catalog.kindName(p.location)) items=\(p.shown.count) files=\(files.count) folders=\(p.shown.count - files.count) loading=\(p.isLoading) error=\(p.lastError.map { String(describing: $0) } ?? "none")")
+            }
+        case "albumcounts":   // smart album ids + counts, user albums only as a total (no personal names)
+            if let a = AccountManager.shared.webAccounts.first, let albums = Catalog.shared.albumIndex[a.id + "|PrimarySync"] {
+                let smart = albums.filter { $0.kind == .smart }.map { "\($0.id.replacingOccurrences(of: "smart:", with: ""))=\($0.count.map(String.init) ?? "?")" }
+                let user = albums.filter { $0.kind != .smart }
+                log("albums: \(smart.joined(separator: ", ")); user albums/folders=\(user.count) items=\(user.compactMap(\.count).reduce(0, +))")
+            } else { log("albums: none cached") }
+            if let a = AccountManager.shared.webAccounts.first { log("libraries: \((Catalog.shared.libraryIndex[a.id] ?? []).map { $0.isShared ? "shared" : "personal" })") }
+        case "fetchsmallest":   // fetchsmallest:<dir> — download the smallest non-empty file here, report time, delete it
+            if let p = pane, let item = p.shown.filter({ !$0.isContainer && ($0.size ?? 0) > 0 }).min(by: { ($0.size ?? 0) < ($1.size ?? 0) }) {
+                let dir = URL(fileURLWithPath: arg).appendingPathComponent(UUID().uuidString)
+                let t0 = Date()
+                do {
+                    let u = try await Ops.materialize(item, into: dir, exportLive: false, nameOverride: "probe") { _, _ in }
+                    let bytes = (try? FileManager.default.attributesOfItem(atPath: u.path)[.size] as? Int64) ?? 0
+                    log("fetch: \(bytes) bytes in \(String(format: "%.2f", Date().timeIntervalSince(t0)))s")
+                } catch { log("fetch failed after \(String(format: "%.1f", Date().timeIntervalSince(t0)))s: \(error)") }
+                try? FileManager.default.removeItem(at: dir)
+            }
+        case "fetchsize":   // fetchsize:<bytes>:<dir> — download the file closest to that size (e.g. a ~6 MB one)
+            let parts = arg.split(separator: ":", maxSplits: 1).map(String.init)
+            if let p = pane, parts.count == 2, let target = Int64(parts[0]),
+               let item = p.shown.filter({ !$0.isContainer && ($0.size ?? 0) > 0 }).min(by: { abs(($0.size ?? 0) - target) < abs(($1.size ?? 0) - target) }) {
+                let dir = URL(fileURLWithPath: parts[1]).appendingPathComponent(UUID().uuidString)
+                let t0 = Date()
+                do {
+                    let u = try await Ops.materialize(item, into: dir, exportLive: false, nameOverride: "probe") { _, _ in }
+                    let bytes = (try? FileManager.default.attributesOfItem(atPath: u.path)[.size] as? Int64) ?? 0
+                    log("fetch: \(bytes) bytes in \(String(format: "%.2f", Date().timeIntervalSince(t0)))s")
+                } catch { log("fetch failed after \(String(format: "%.1f", Date().timeIntervalSince(t0)))s: \(error)") }
+                try? FileManager.default.removeItem(at: dir)
+            }
         case "dumptransfers": for t in TransferManager.shared.transfers { log("transfer \(t.title): \(t.state) \(t.completed)/\(t.total) \(t.detail)") }
         case "dump":
             if let p = pane { log("location=\(Catalog.shared.title(p.location)) items=\(p.shown.count) status=\(p.statusLabel.stringValue) first=\(p.shown.prefix(6).map(\.name))") }
         case "wait": try? await Task.sleep(nanoseconds: UInt64((Double(arg) ?? 1) * 1e9))
+        case "waitload":
+            let t0 = Date()
+            if let p = pane { for _ in 0..<1200 { if !p.isLoading { break }; try? await Task.sleep(nanoseconds: 100_000_000) } }
+            log("loaded in \(String(format: "%.1f", Date().timeIntervalSince(t0)))s")
         case "snap": snapshot(arg, window: lastWindow ?? b?.window)
         case "dismiss":
             for w in NSApp.windows where w.isSheet || w.className.contains("Alert") { w.sheetParent?.endSheet(w) ; w.orderOut(nil) }

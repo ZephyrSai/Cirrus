@@ -57,6 +57,23 @@ public class LocalSyncTests
     }
 
     [Fact]
+    public async Task MissingSourceFolderStopsInsteadOfLookingEmpty()
+    {
+        var dst = TestEnv.TempDir("dst-full");
+        TestEnv.Write("precious", Path.Combine(dst, "precious.txt"));
+        var gone = Path.Combine(TestEnv.Root, "unplugged-" + Guid.NewGuid().ToString("N")[..6]);
+        var runner = new SyncRunner(new LocalSide(gone, []), new LocalSide(dst, []));
+        var e = await Assert.ThrowsAsync<SyncException>(() => runner.ScanAsync(null));
+        Assert.Contains("isn’t available", e.Message);
+        Assert.False(Directory.Exists(gone));
+        Assert.True(File.Exists(Path.Combine(dst, "precious.txt")));
+        // A destination that doesn't exist yet is fine, and scanning it creates nothing.
+        var fresh = Path.Combine(TestEnv.Root, "fresh-" + Guid.NewGuid().ToString("N")[..6]);
+        Assert.Empty(await new LocalSide(fresh, [], allowMissing: true).ScanAsync(null, default));
+        Assert.False(Directory.Exists(fresh));
+    }
+
+    [Fact]
     public async Task MirrorMovesExtrasAsideAndCopyNeverRemoves()
     {
         string src = TestEnv.TempDir("msrc"), dst = TestEnv.TempDir("mdst");

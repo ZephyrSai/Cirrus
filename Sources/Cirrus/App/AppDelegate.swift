@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !SingleInstance.claim() { NSApp.terminate(nil); return }
         NSApp.setActivationPolicy(Debug.headless ? .accessory : .regular)
         NSApp.mainMenu = MainMenu.build(self)
+        Paths.cleanCaches()
         AccountManager.shared.load()
         SyncStore.shared.load()
         DeviceManager.shared.start()

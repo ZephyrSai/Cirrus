@@ -100,7 +100,7 @@ public actor ICloudSession {
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
         config.urlCache = nil
-        config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForRequest = 30   // a stalled connection fails fast and is retried
         config.timeoutIntervalForResource = 60 * 60 * 24
         config.httpMaximumConnectionsPerHost = 8
         if let mocks = ICloudSession.testProtocolClasses { config.protocolClasses = mocks }
@@ -138,20 +138,29 @@ public actor ICloudSession {
 
     struct Response { let data: Data; let http: HTTPURLResponse; var json: JSON { (try? JSON(data: data)) ?? .null } }
 
-    func send(_ request: URLRequest) async throws -> Response {
+    func send(_ request: URLRequest, retryNetwork: Bool? = nil) async throws -> Response {
         var req = request
         req.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         let (data, resp): (Data, URLResponse)
+        let started = Date()
+        let session = http
         do {
-            (data, resp) = try await http.data(for: req)
+            // A dropped/stale connection (“The network connection was lost”) is retried for safe calls.
+            if retryNetwork ?? (req.httpMethod == "GET") {
+                (data, resp) = try await Self.withNetworkRetry { try await session.data(for: req) }
+            } else {
+                (data, resp) = try await session.data(for: req)
+            }
         } catch let e as URLError where e.code == .cancelled {
             throw ICloudError.cancelled
         }
+        let secs = Date().timeIntervalSince(started)
+        if secs > 2 { Log.status("slow \(req.httpMethod ?? "GET") \(req.url?.host ?? "")\(req.url?.path ?? "") \(String(format: "%.1f", secs))s") }
         guard let h = resp as? HTTPURLResponse else { throw ICloudError.http(0, "No response") }
         absorb(h)
         let line = "\(req.httpMethod ?? "GET") \(req.url?.host ?? "")\(req.url?.path ?? "") → \(h.statusCode)"
         // Status lines only (no query, headers, cookies or bodies) so live problems can be diagnosed safely.
-        if (200..<300).contains(h.statusCode) { Log.debug(line) } else { Log.info("http " + line) }
+        if (200..<300).contains(h.statusCode) { Log.debug(line + String(format: " (%.2fs)", secs)) } else { Log.status("http " + line) }
         return Response(data: data, http: h)
     }
 
@@ -286,7 +295,7 @@ public actor ICloudSession {
             body: jsonBody(["accountName": .string(appleID), "m1": .string(Data(client.M1).base64EncodedString()),
                             "m2": .string(Data(client.M2).base64EncodedString()), "c": .string(c), "rememberMe": true,
                             "trustTokens": .array(state.trustToken.map { [JSON.string($0)] } ?? [])])))
-        Log.info("auth: signin/complete → \(complete.http.statusCode)")
+        Log.status("auth: signin/complete → \(complete.http.statusCode)")
         switch complete.http.statusCode {
         case 200, 204:
             break
@@ -298,7 +307,7 @@ public actor ICloudSession {
             guard (200..<300).contains(r.http.statusCode) else {
                 throw ICloudError.http(r.http.statusCode, Self.errorMessage(r.json) ?? "Apple asked to update this account; sign in once at icloud.com, then try again.")
             }
-            Log.info("auth: repair acknowledged (\(r.http.statusCode))")
+            Log.status("auth: repair acknowledged (\(r.http.statusCode))")
         case 401, 403:
             throw ICloudError.badCredentials
         default:
@@ -532,7 +541,7 @@ public actor ICloudSession {
         while true {
             try Task.checkCancellation()
             let req = try makeRequest(url, method: method, query: query, headers: serviceHeaders(contentType: contentType), body: rawBody ?? body.map { jsonBody($0) })
-            let r = try await send(req)
+            let r = try await send(req, retryNetwork: idempotent)
             let code = r.http.statusCode
             if (200..<300).contains(code) { return r.json }
             if (code == 401 || code == 421) && !reauthed {
@@ -568,9 +577,8 @@ public actor ICloudSession {
             var req = URLRequest(url: url)
             for (k, v) in headers where k != "Content-Type" { req.setValue(v, forHTTPHeaderField: k) }
             req.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
-            let delegate = ProgressDelegate(expected: expectedSize ?? 0, progress: progress)
-            let (tmp, resp) = try await Self.withNetworkRetry { try await self.http.download(for: req, delegate: delegate) }
-            guard let h = resp as? HTTPURLResponse else { throw ICloudError.http(0, "No response") }
+            let started = Date()
+            let (tmp, h) = try await Self.withNetworkRetry { try await ContentDownloader.shared.fetch(req, expected: expectedSize ?? 0, progress: progress) }
             if [301, 302, 303, 307, 308, 330].contains(h.statusCode), let loc = h.value(forHTTPHeaderField: "Location") {
                 try? FileManager.default.removeItem(at: tmp)
                 current = loc
@@ -584,6 +592,10 @@ public actor ICloudSession {
             try? FileManager.default.removeItem(at: destination)
             try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.moveItem(at: tmp, to: destination)
+            try? FileManager.default.removeItem(at: tmp.deletingLastPathComponent())
+            let secs = Date().timeIntervalSince(started)
+            let bytes = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int64) ?? 0
+            if secs > 1.5 { Log.status("download \(bytes.byteString) in \(String(format: "%.1f", secs))s (\(Int64(Double(bytes) / max(secs, 0.01)).byteString)/s)") }
             return
         }
         throw ICloudError.http(0, "Too many redirects")
@@ -631,7 +643,7 @@ extension ICloudSession {
                 if e.code == .cancelled { throw ICloudError.cancelled }
                 guard transient.contains(e.code), attempt < 4 else { throw e }
                 attempt += 1
-                try await Task.sleep(nanoseconds: UInt64(pow(2, Double(attempt))) * 1_000_000_000)
+                try await Task.sleep(nanoseconds: UInt64(pow(2, Double(attempt - 1)) * 500_000_000))
             }
         }
     }
