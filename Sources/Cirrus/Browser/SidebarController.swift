@@ -87,7 +87,7 @@ final class SidebarController: NSViewController, NSOutlineViewDataSource, NSOutl
             out.append(s)
         }
         for a in am.accounts where a.kind == .web || a.kind == .demo {
-            let s = SidebarNode(.section, a.kind == .demo ? "Demo iCloud" : (a.title == a.appleID ? "iCloud — \(a.title)" : "iCloud — \(a.title)"))
+            let s = SidebarNode(.section, a.kind == .demo ? (Debug.screenshotMode ? "iCloud — Alex Morgan" : "Demo iCloud") : "iCloud — \(a.title)")
             if a.status == .needsSignIn {
                 let n = SidebarNode(.action("signin:" + (a.appleID ?? "")), "Sign In Again…", "exclamationmark.triangle.fill", tint: .systemYellow)
                 s.children.append(n)
@@ -106,11 +106,11 @@ final class SidebarController: NSViewController, NSOutlineViewDataSource, NSOutl
             if a.drive != nil { s.children.append(SidebarNode(.location(.driveTrash(a.id)), "Recently Deleted", "trash", tint: .secondaryLabelColor)) }
             out.append(s)
         }
-        if am.webAccounts.isEmpty {
+        if am.webAccounts.isEmpty && !Debug.screenshotMode {
             let s = out.first { $0.title == "iCloud" } ?? { let x = SidebarNode(.section, "iCloud"); out.append(x); return x }()
             s.children.append(SidebarNode(.action("signin"), signedInMac ? "Add Another Apple ID…" : "Sign In to iCloud…", "person.crop.circle.badge.plus", tint: .systemBlue))
         }
-        if let mac = am.macAccount, !signedInMac, mac.photos != nil {
+        if let mac = am.macAccount, !signedInMac, mac.photos != nil, !Debug.screenshotMode {
             let s = SidebarNode(.section, "This Mac")
             s.children.append(SidebarNode(.location(.album(mac.id, "local", "smart:all")), "Photos Library", "photo.on.rectangle.angled", tint: .systemOrange))
             s.children.append(SidebarNode(.location(.photos(mac.id, "local", nil)), "Library Albums", "rectangle.stack", tint: .systemOrange))
@@ -119,7 +119,7 @@ final class SidebarController: NSViewController, NSOutlineViewDataSource, NSOutl
 
         let locs = SidebarNode(.section, "Locations")
         locs.children.append(SidebarNode(.location(.computer), Catalog.shared.title(.computer), "desktopcomputer"))
-        for v in DeviceManager.shared.volumes where !v.isRoot {
+        for v in DeviceManager.shared.volumes where !v.isRoot && !Debug.screenshotMode {
             let n = SidebarNode(.location(.local(v.url.path)), v.name, v.isInternal ? "internaldrive" : "externaldrive")
             n.volume = v
             if v.isEjectable || v.isRemovable { n.accessory = "eject" }

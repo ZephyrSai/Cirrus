@@ -17,6 +17,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         SafetyPolicy.readOnlyICloud = Prefs.readOnlyICloud || ProcessInfo.processInfo.environment["CIRRUS_READ_ONLY"] != nil
         if !SingleInstance.claim() { NSApp.terminate(nil); return }
         NSApp.setActivationPolicy(Debug.headless ? .accessory : .regular)
+        #if DEBUG
+        if let a = ProcessInfo.processInfo.environment["CIRRUS_APPEARANCE"] { NSApp.appearance = NSAppearance(named: a == "light" ? .aqua : .darkAqua) }
+        #endif
         NSApp.mainMenu = MainMenu.build(self)
         Paths.cleanCaches()
         AccountManager.shared.load()

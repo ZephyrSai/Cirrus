@@ -6,6 +6,92 @@ import Foundation
 // transfers, sync and backup can be exercised without an Apple ID. Never touches real accounts.
 
 enum DemoArt {
+    /// A small landscape: sky gradient, sun or moon, layered hills, optional water — varied by seed.
+    static func scenic(width: Int, height: Int, seed: Int) -> Data? {
+        var rng = UInt64(truncatingIfNeeded: seed &* 2654435761 &+ 1013904223)
+        func rnd() -> CGFloat { rng = rng &* 6364136223846793005 &+ 1442695040888963407; return CGFloat((rng >> 33) % 10_000) / 10_000 }
+        let cs = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: cs,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        let W = CGFloat(width), H = CGFloat(height)
+        let palettes: [[(CGFloat, CGFloat, CGFloat)]] = [
+            [(0.99, 0.80, 0.55), (0.98, 0.52, 0.42), (0.55, 0.30, 0.55)],   // sunset
+            [(0.55, 0.80, 0.98), (0.75, 0.90, 0.99), (0.98, 0.96, 0.88)],   // clear day
+            [(0.12, 0.16, 0.38), (0.32, 0.28, 0.58), (0.95, 0.60, 0.55)],   // dusk
+            [(0.70, 0.88, 0.95), (0.92, 0.95, 0.98), (0.80, 0.86, 0.90)],   // winter
+            [(0.98, 0.88, 0.62), (0.96, 0.72, 0.45), (0.80, 0.50, 0.40)],   // golden hour
+            [(0.06, 0.10, 0.22), (0.12, 0.20, 0.40), (0.30, 0.42, 0.62)],   // night
+        ]
+        let pal = palettes[seed % palettes.count]
+        let sky = pal.map { NSColor(srgbRed: $0.0, green: $0.1, blue: $0.2, alpha: 1).cgColor }
+        if let g = CGGradient(colorsSpace: cs, colors: sky as CFArray, locations: [0, 0.6, 1]) {
+            ctx.drawLinearGradient(g, start: CGPoint(x: 0, y: H), end: CGPoint(x: 0, y: H * 0.25), options: [.drawsAfterEndLocation])
+        }
+        let night = seed % palettes.count == 5 || seed % palettes.count == 2
+        if night {
+            ctx.setFillColor(NSColor(white: 1, alpha: 0.85).cgColor)
+            for _ in 0..<40 { let r = 1 + rnd() * 2; ctx.fillEllipse(in: CGRect(x: rnd() * W, y: H * 0.5 + rnd() * H * 0.5, width: r, height: r)) }
+        }
+        let sunR = min(W, H) * (0.07 + rnd() * 0.05)
+        let sun = CGPoint(x: W * (0.2 + rnd() * 0.6), y: H * (0.55 + rnd() * 0.25))
+        ctx.setFillColor((night ? NSColor(srgbRed: 0.96, green: 0.95, blue: 0.85, alpha: 1) : NSColor(srgbRed: 1, green: 0.93, blue: 0.70, alpha: 0.95)).cgColor)
+        ctx.fillEllipse(in: CGRect(x: sun.x - sunR, y: sun.y - sunR, width: sunR * 2, height: sunR * 2))
+        let layers = 4
+        for l in 0..<layers {
+            let t = CGFloat(l) / CGFloat(layers - 1)
+            let base = H * (0.42 - t * 0.28)
+            let path = CGMutablePath()
+            path.move(to: CGPoint(x: 0, y: 0))
+            path.addLine(to: CGPoint(x: 0, y: base))
+            var x: CGFloat = 0
+            while x < W {
+                let step = W * (0.12 + rnd() * 0.12)
+                let peak = base + H * (0.05 + rnd() * 0.16) * (1 - t * 0.5)
+                path.addQuadCurve(to: CGPoint(x: x + step, y: base + H * 0.02 * rnd()), control: CGPoint(x: x + step / 2, y: peak))
+                x += step
+            }
+            path.addLine(to: CGPoint(x: W, y: 0))
+            path.closeSubpath()
+            let dark = 0.15 + t * 0.55
+            let tint = pal[2]
+            ctx.setFillColor(NSColor(srgbRed: tint.0 * (1 - dark), green: tint.1 * (1 - dark) + 0.05, blue: tint.2 * (1 - dark) + 0.08, alpha: 1).cgColor)
+            ctx.addPath(path)
+            ctx.fillPath()
+        }
+        if seed % 3 == 0 {   // lake with a soft reflection
+            ctx.setFillColor(NSColor(srgbRed: sky[1].components?[0] ?? 0.5, green: sky[1].components?[1] ?? 0.6, blue: (sky[1].components?[2] ?? 0.8), alpha: 0.55).cgColor)
+            ctx.fill(CGRect(x: 0, y: 0, width: W, height: H * 0.12))
+        }
+        guard let img = ctx.makeImage() else { return nil }
+        return NSBitmapImageRep(cgImage: img).representation(using: .jpeg, properties: [.compressionFactor: 0.82])
+    }
+
+    /// A one-page PDF with a title, a few lines and a colored banner (real documents for previews).
+    static func pdf(title: String, lines: [String], hue: CGFloat) -> Data {
+        let data = NSMutableData()
+        var box = CGRect(x: 0, y: 0, width: 612, height: 792)
+        guard let consumer = CGDataConsumer(data: data as CFMutableData), let ctx = CGContext(consumer: consumer, mediaBox: &box, nil) else { return Data() }
+        ctx.beginPDFPage(nil)
+        ctx.setFillColor(NSColor(hue: hue, saturation: 0.6, brightness: 0.85, alpha: 1).cgColor)
+        ctx.fill(CGRect(x: 0, y: 652, width: 612, height: 140))
+        let ns = NSGraphicsContext(cgContext: ctx, flipped: false)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = ns
+        NSAttributedString(string: title, attributes: [.font: NSFont.systemFont(ofSize: 34, weight: .bold), .foregroundColor: NSColor.white])
+            .draw(at: CGPoint(x: 48, y: 700))
+        var y: CGFloat = 600
+        for l in lines {
+            NSAttributedString(string: l, attributes: [.font: NSFont.systemFont(ofSize: 15), .foregroundColor: NSColor(white: 0.2, alpha: 1)]).draw(at: CGPoint(x: 48, y: y))
+            y -= 28
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        ctx.setFillColor(NSColor(white: 0.92, alpha: 1).cgColor)
+        for i in 0..<6 { ctx.fill(CGRect(x: 48, y: 260 + CGFloat(i) * 26, width: CGFloat(300 + (i * 37) % 200), height: 10)) }
+        ctx.endPDFPage()
+        ctx.closePDF()
+        return data as Data
+    }
+
     static func jpeg(width: Int, height: Int, hue: CGFloat, label: String) -> Data? {
         let cs = CGColorSpaceCreateDeviceRGB()
         guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: cs,
@@ -69,11 +155,18 @@ public final class DemoDrive: DriveBackend, @unchecked Sendable {
             try? fm.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? Data(s.utf8).write(to: u)
         }
-        for i in 0..<6 {
-            let u = root.appendingPathComponent("Pictures/Wallpaper \(i + 1).jpg")
+        for (i, name) in ["Big Sur", "Lake Tahoe", "Dolomites", "Patagonia", "Fjord", "Desert Night"].enumerated() {
+            let u = root.appendingPathComponent("Pictures/\(name).jpg")
             try? fm.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? DemoArt.jpeg(width: 1600, height: 1000, hue: CGFloat(i) / 6, label: "Wallpaper \(i + 1)")?.write(to: u)
+            try? DemoArt.scenic(width: 1600, height: 1000, seed: i + 3)?.write(to: u)
         }
+        try? DemoArt.scenic(width: 1800, height: 1200, seed: 1)?.write(to: root.appendingPathComponent("Golden Hour.jpg"))
+        try? DemoArt.pdf(title: "Lisbon Itinerary", lines: ["Fri — Alfama walk, Miradouro", "Sat — Belém, pastéis", "Sun — Sintra day trip"], hue: 0.58)
+            .write(to: root.appendingPathComponent("Lisbon Itinerary.pdf"))
+        try? DemoArt.pdf(title: "Brand Guide", lines: ["Colors and type", "Logo usage", "Voice and tone"], hue: 0.08)
+            .write(to: root.appendingPathComponent("Brand Guide.pdf"))
+        try? DemoArt.pdf(title: "Q3 Report", lines: ["Revenue up 18%", "Three new markets", "Hiring plan"], hue: 0.36)
+            .write(to: root.appendingPathComponent("Documents/Q3 Report.pdf"))
         let big = root.appendingPathComponent("Archives/Big download.bin")
         try? fm.createDirectory(at: big.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? Data(count: 24 << 20).write(to: big)
@@ -226,7 +319,7 @@ public final class DemoPhotos: PhotosBackend, @unchecked Sendable {
     let lock = NSLock()
     var store: Store
 
-    static let artVersion = 2
+    static let artVersion = 3
 
     init() {
         dir = Paths.cacheDir("demo").appendingPathComponent("photos", isDirectory: true)
@@ -254,7 +347,8 @@ public final class DemoPhotos: PhotosBackend, @unchecked Sendable {
             let fname = String(format: "IMG_%04d.JPG", 1000 + i)
             let w = i % 7 == 0 ? 900 : 1200, h = i % 7 == 0 ? 1200 : 900
             let label = names[i % names.count] + " \(i + 1)"
-            guard let data = DemoArt.jpeg(width: w, height: h, hue: CGFloat((i * 37) % 100) / 100, label: label) else { continue }
+            _ = label
+            guard let data = DemoArt.scenic(width: w, height: h, seed: i) else { continue }
             let f = dir.appendingPathComponent(id + ".jpg")
             try? data.write(to: f)
             let created = now.addingTimeInterval(-Double(i) * 86400 * 9.5 - Double((i * 7919) % 86400))

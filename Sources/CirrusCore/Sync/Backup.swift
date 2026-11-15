@@ -298,19 +298,25 @@ public final class BackupEngine: @unchecked Sendable {
             var pairs = [(String, SyncSide, SyncSide)]()
             if let d = sources.drive {
                 pairs.append(("iCloud Drive", DriveSide(drive: d, rootID: d.rootID, label: "iCloud Drive", excludes: options.excludes),
-                              LocalSide(root: driveDest, excludes: options.excludes)))
+                              LocalSide(root: driveDest, excludes: options.excludes, createIfMissing: true)))
             } else if let root = sources.nativeDriveRoot {
-                pairs.append(("iCloud Drive", LocalSide(root: root, excludes: options.excludes), LocalSide(root: driveDest, excludes: options.excludes)))
+                pairs.append(("iCloud Drive", LocalSide(root: root, excludes: options.excludes), LocalSide(root: driveDest, excludes: options.excludes, createIfMissing: true)))
                 for c in NativeICloud.appContainers(root: root) {
                     pairs.append((c.name, LocalSide(root: c.url, excludes: options.excludes),
-                                  LocalSide(root: driveDest.appendingPathComponent(Paths.safeName(c.name), isDirectory: true), excludes: options.excludes)))
+                                  LocalSide(root: driveDest.appendingPathComponent(Paths.safeName(c.name), isDirectory: true), excludes: options.excludes, createIfMissing: true)))
                 }
             }
             for (label, src, dst) in pairs {
                 progress("Scanning \(label)…")
                 let a = try await src.scan { n in progress("Scanning \(label)… \(n) items") }
                 let b = try await dst.scan(progress: nil)
-                let plan = SyncPlanner.plan(mode: options.keepDeleted ? .copy : .mirror, a: a, b: b, state: nil)
+                var plan = SyncPlanner.plan(mode: options.keepDeleted ? .copy : .mirror, a: a, b: b, state: nil)
+                // Backups never lose what they hold because iCloud briefly answered with an empty or partial list.
+                if plan.wipesSide || (plan.trashItemsB > 20 && plan.trashItemsB * 2 > b.count) {
+                    plan.actions.removeAll(where: \.isDestructive)
+                    ev.warnings.append("\(label): this run would have removed \(plan.trashItemsB) of \(b.count) backed-up items. They were kept; if you really deleted them in iCloud, remove them from the backup yourself.")
+                    plan.trashItemsB = 0
+                }
                 ev.driveFiles += a.values.filter { !$0.isDir }.count
                 ev.driveBytes += a.values.filter { !$0.isDir }.reduce(0) { $0 + $1.size }
                 ev.drivePendingBytes += plan.bytes

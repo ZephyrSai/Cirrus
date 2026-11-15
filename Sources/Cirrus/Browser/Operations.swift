@@ -158,6 +158,9 @@ final class Ops {
             files = files.filter { !blocked.contains($0.lastPathComponent) }
             guard !files.isEmpty else { return }
         }
+        if move && cleanupTemp == nil {
+            do { for f in files { try SafetyPolicy.checkLocalWrite(f) } } catch { displayError(error, title: "iCloud is read-only", window: window); return }
+        }
         let group = cleanupTemp.map { "relay:" + $0.lastPathComponent }
         defer {
             if let c = cleanupTemp, let g = group {
@@ -179,9 +182,12 @@ final class Ops {
                 TransferManager.shared.enqueue(f.lastPathComponent, detail: (isMove && sameVolume ? "Moving to " : "Copying to ") + dest.title,
                                                direction: .copy, total: (try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0, group: group,
                                                quotaKey: isMove && sameVolume ? nil : Preflight.volumeKey(dir)) { t in
-                    if replace { try LocalFiles.safeTrash(dst, root: nil) }
                     try await LocalFiles.ensureDownloaded(f)
-                    if isMove && sameVolume { try FileManager.default.moveItem(at: f, to: dst) }
+                    if replace {
+                        // New copy goes in beside the old one first; the old one is retired only after that worked.
+                        try LocalFiles.swapIn(f, at: dst, move: isMove && sameVolume)
+                        if move && !sameVolume { try? LocalFiles.safeTrash(f, root: nil) }
+                    } else if isMove && sameVolume { try FileManager.default.moveItem(at: f, to: dst) }
                     else {
                         try FileManager.default.copyItem(at: f, to: dst)
                         if move { try? LocalFiles.safeTrash(f, root: nil) }
@@ -221,7 +227,11 @@ final class Ops {
                             try await drive.trash([retire])
                             _ = try await drive.rename(folder, to: finalName)
                         }
-                        if move { try? LocalFiles.safeTrash(f, root: nil) }
+                        if move {
+                            let left = SyncPlanner.notCopied(plan, a: sa, b: sb)
+                            if left.isEmpty { try? LocalFiles.safeTrash(f, root: nil) }
+                            else { throw ICloudError.server("Uploaded, but kept the original folder: \(left.count) item\(left.count == 1 ? "" : "s") in iCloud differ (e.g. “\(left[0])”).") }
+                        }
                         await MainActor.run { Ops.shared.refresh(dest) }
                     }
                 } else {
@@ -376,10 +386,10 @@ final class Ops {
                 defer { try? FileManager.default.removeItem(at: staging) }
                 let got = try await Ops.materialize(item, into: staging, exportLive: exportLive, nameOverride: finalName) { d, tot in t.report(d, tot) }
                 let target = dir.appendingPathComponent(finalName)
-                if replace { try LocalFiles.safeTrash(target, root: nil) }
                 for f in (try? FileManager.default.contentsOfDirectory(at: staging, includingPropertiesForKeys: nil)) ?? [got] {
                     let dst = dir.appendingPathComponent(f.lastPathComponent)
-                    if FileManager.default.fileExists(atPath: dst.path) && f.lastPathComponent != finalName { continue }
+                    if f.lastPathComponent == finalName && replace { try LocalFiles.swapIn(f, at: dst, move: true); continue }
+                    if FileManager.default.fileExists(atPath: dst.path) { continue }
                     try FileManager.default.moveItem(at: f, to: dst)
                 }
                 t.resultURL = target
@@ -403,10 +413,16 @@ final class Ops {
                         n += 1
                         g.addTask {
                             let target = dir.appendingPathComponent(name)
-                            if replace { try LocalFiles.safeTrash(target, root: nil) }
                             let kind: PhotoResource.Kind = edited && p.resource(.edited) != nil ? .edited : .original
                             let base = done.value
-                            try await backend.export(p, resource: kind, to: target) { d, _ in t.report(base + d, 0) }
+                            if replace {
+                                let staged = dir.appendingPathComponent(".cirrus-\(UUID().uuidString.prefix(8))-" + name)
+                                do { try await backend.export(p, resource: kind, to: staged) { d, _ in t.report(base + d, 0) } }
+                                catch { try? FileManager.default.removeItem(at: staged); throw error }
+                                try LocalFiles.swapIn(staged, at: target, move: true)
+                            } else {
+                                try await backend.export(p, resource: kind, to: target) { d, _ in t.report(base + d, 0) }
+                            }
                             done.add(p.resource(kind)?.size ?? p.size)
                             if exportLive, p.resource(.liveVideo) != nil {
                                 let mov = dir.appendingPathComponent((name as NSString).deletingPathExtension + ".MOV")
@@ -451,7 +467,7 @@ final class Ops {
         case .drive(let n):
             guard let drive = account?.drive else { throw ICloudError.needsSignIn }
             if n.isFolder {
-                let runner = SyncRunner(a: DriveSide(drive: drive, rootID: n.id, label: n.name, excludes: []), b: LocalSide(root: target, excludes: []))
+                let runner = SyncRunner(a: DriveSide(drive: drive, rootID: n.id, label: n.name, excludes: []), b: LocalSide(root: target, excludes: [], createIfMissing: true))
                 let (a, b) = try await runner.scan { _ in }
                 let plan = SyncPlanner.plan(mode: .copy, a: a, b: b, state: nil)
                 let (rep, _) = try await runner.run(plan, a: a, b: b) { p in progress(p.bytesDone, p.bytesTotal) }
@@ -640,8 +656,8 @@ final class Ops {
     func trash(_ items: [Item], in loc: Location, window: NSWindow?) async {
         guard !items.isEmpty else { return }
         let local = items.compactMap(\.localURL)
-        if let u = local.first, SafetyPolicy.isICloudPath(u), SafetyPolicy.readOnlyICloud {
-            displayError(SafetyPolicy.ReadOnlyError(), title: "iCloud is read-only", window: window); return
+        do { for u in local { try SafetyPolicy.checkLocalWrite(u) } } catch {
+            displayError(error, title: "iCloud is read-only", window: window); return
         }
         if !local.isEmpty {
             var moved = [(URL, URL)]()

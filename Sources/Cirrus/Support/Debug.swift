@@ -22,6 +22,13 @@ enum Debug {
     static let autoConflict: String? = nil
     #endif
 
+    #if DEBUG
+    /// CIRRUS_SCREENSHOT=1: marketing screenshots with no personal details (generic Mac name, no home folder, demo name).
+    static let screenshotMode = ProcessInfo.processInfo.environment["CIRRUS_SCREENSHOT"] != nil
+    #else
+    static let screenshotMode = false
+    #endif
+
     static func offscreen(_ w: NSWindow?) {
         guard headless, let w else { return }
         w.setFrameOrigin(NSPoint(x: -30000, y: -30000))
@@ -257,6 +264,10 @@ enum Debug {
                 if let sm = top.submenu { sm.delegate?.menuNeedsUpdate?(sm) }
                 log("menu \(top.title): " + (top.submenu?.items.map { i in i.isSeparatorItem ? "—" : (i.title + (i.submenu != nil ? " ▸[" + (i.submenu!.items.map(\.title).joined(separator: ", ")) + "]" : "")) }.joined(separator: " | ") ?? ""))
             }
+        case "winsize":
+            let wh = arg.split(separator: "x").compactMap { Double($0) }
+            if wh.count == 2, let w = lastWindow ?? b?.window { w.setContentSize(NSSize(width: wh[0], height: wh[1])); offscreen(w) }
+            try? await Task.sleep(nanoseconds: 300_000_000)
         case "quit": NSApp.terminate(nil)
         default: log("unknown step \(cmd)")
         }

@@ -50,6 +50,12 @@ public struct SyncPlan: Sendable {
     public var destinationCount: Int
     public var bytes: Int64 { actions.reduce(0) { $0 + $1.bytes } }
     public var trashCount: Int { actions.filter(\.isDestructive).count }
+    /// Items that would go to the Trash on each side, counting everything inside trashed folders.
+    public var trashItemsA = 0
+    public var trashItemsB = 0
+    public var trashItemCount: Int { trashItemsA + trashItemsB }
+    /// The run would empty one side completely — what a disconnected drive or a moved folder looks like.
+    public var wipesSide: Bool { (trashItemsB > 0 && trashItemsB >= destinationCount) || (trashItemsA > 0 && trashItemsA >= sourceCount) }
     public var transferCount: Int { actions.filter { if case .skip = $0 { return false }; if case .mkdirA = $0 { return false }; if case .mkdirB = $0 { return false }; return !$0.isDestructive }.count }
     public var isEmpty: Bool { actions.allSatisfy { if case .skip = $0 { return true }; return false } }
 }
@@ -153,7 +159,68 @@ public enum SyncPlanner {
                 + fileActions.keys.sorted(by: pathOrder).map { fileActions[$0]! }
                 + dirActions.filter(\.isDestructive)
         }
-        return SyncPlan(actions: actions, sourceCount: a.count, destinationCount: b.count)
+        var plan = SyncPlan(actions: dropCaseOnlyTrash(actions), sourceCount: a.count, destinationCount: b.count)
+        plan.trashItemsA = removedCount(plan.actions, a, sideA: true)
+        plan.trashItemsB = removedCount(plan.actions, b, sideA: false)
+        return plan
+    }
+
+    static func fold(_ s: String) -> String { s.folding(options: [.caseInsensitive], locale: nil) }
+
+    /// A file or folder renamed only by case (“Photo.jpg” → “photo.jpg”) shows up as one new and one missing
+    /// path. On case-insensitive disks (and iCloud Drive) both names are the same item, so trashing the “old”
+    /// one would trash the new copy too. Never trash a path that something is being copied onto.
+    static func dropCaseOnlyTrash(_ actions: [SyncAction]) -> [SyncAction] {
+        var intoA = Set<String>(), intoB = Set<String>()
+        func add(_ p: String, _ set: inout Set<String>) {
+            var x = Substring(fold(p))
+            while true { set.insert(String(x)); guard let i = x.lastIndex(of: "/") else { break }; x = x[..<i] }
+        }
+        for act in actions {
+            switch act {
+            case .copyAB(let p, _), .mkdirB(let p): add(p, &intoB)
+            case .copyBA(let p, _), .mkdirA(let p): add(p, &intoA)
+            case .conflict(let p, _, _): add(p, &intoA); add(p, &intoB)
+            default: break
+            }
+        }
+        guard !intoA.isEmpty || !intoB.isEmpty else { return actions }
+        return actions.filter { act in
+            switch act {
+            case .trashB(let p): return !intoB.contains(fold(p))
+            case .trashA(let p): return !intoA.contains(fold(p))
+            default: return true
+            }
+        }
+    }
+
+    /// How many scanned items the plan's trash actions remove from one side, including folder contents.
+    static func removedCount(_ actions: [SyncAction], _ side: [String: SideEntry], sideA: Bool) -> Int {
+        let trashed = Set(actions.compactMap { act -> String? in
+            switch act { case .trashA(let p) where sideA: return p; case .trashB(let p) where !sideA: return p; default: return nil }
+        })
+        guard !trashed.isEmpty else { return 0 }
+        var n = 0
+        for k in side.keys {
+            var p = Substring(k)
+            while true {
+                if trashed.contains(String(p)) { n += 1; break }
+                guard let i = p.lastIndex(of: "/") else { break }
+                p = p[..<i]
+            }
+        }
+        return n
+    }
+
+    /// Source files a one-way plan leaves without an identical copy on the destination (skipped, or newer
+    /// there). A move must keep its original while this isn't empty.
+    public static func notCopied(_ plan: SyncPlan, a: [String: SideEntry], b: [String: SideEntry]) -> [String] {
+        let copying = Set(plan.actions.compactMap { act -> String? in if case .copyAB(let p, _) = act { return p }; return nil })
+        return a.compactMap { k, e in
+            if e.isDir || copying.contains(k) { return nil }
+            if let eb = b[k], !eb.isDir, same(e, eb) { return nil }
+            return k
+        }.sorted()
     }
 
     /// Parents before children, then alphabetical by component.
@@ -342,18 +409,34 @@ public final class LocalSide: SyncSide, @unchecked Sendable {
     private let lock = NSLock()
     private var actual = [String: String]()   // NFC key → on-disk relative path
 
-    public init(root: URL, excludes: [String]) { self.root = root.standardizedFileURL; self.excludes = excludes }
+    /// Create the folder when it doesn't exist (destinations). Sources and two-way sides with history must
+    /// already exist: a missing folder (unplugged drive, moved folder) would otherwise look like “everything deleted”.
+    public let createIfMissing: Bool
+
+    public init(root: URL, excludes: [String], createIfMissing: Bool = false) {
+        self.root = root.standardizedFileURL; self.excludes = excludes; self.createIfMissing = createIfMissing
+    }
 
     public var freeSpace: Int64? { VolumeInfo.freeSpace(at: root) }
 
     func url(_ rel: String) -> URL { root.appendingPathComponent(lock.withLock { actual[rel] } ?? rel) }
 
     public func scan(progress: (@Sendable (Int) -> Void)?) async throws -> [String: SideEntry] {
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        var isDir: ObjCBool = false
+        if !FileManager.default.fileExists(atPath: root.path, isDirectory: &isDir) {
+            guard createIfMissing else { throw SyncError.unavailable("“\(label)” isn’t available. Connect the drive it’s on, or choose the folder again. Nothing was changed.") }
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        } else if !isDir.boolValue {
+            throw SyncError.unavailable("“\(label)” is a file, not a folder. Nothing was changed.")
+        }
         var out = [String: SideEntry]()
         var map = [String: String]()
         let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .isSymbolicLinkKey]
-        guard let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys, options: [], errorHandler: { _, _ in true }) else { return [:] }
+        // A folder that can't be read would look empty, i.e. “everything inside was deleted”: stop instead.
+        let unreadable = UnreadableBox()
+        guard let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys, options: [], errorHandler: { u, err in
+            unreadable.note(u, err); return true
+        }) else { throw SyncError.unavailable("Couldn’t read “\(label)”. Nothing was changed.") }
         let base = root.path.hasSuffix("/") ? root.path : root.path + "/"
         var n = 0
         while let u = e.nextObject() as? URL {
@@ -382,6 +465,9 @@ public final class LocalSide: SyncSide, @unchecked Sendable {
             n += 1
             if n % 500 == 0 { progress?(n); try Task.checkCancellation() }
         }
+        if let (u, err) = unreadable.first {
+            throw SyncError.unavailable("Couldn’t read “\(u.lastPathComponent)” (\(err.localizedDescription)). Nothing was changed — fix its permissions or exclude it.")
+        }
         lock.withLock { actual = map }
         return out
     }
@@ -395,8 +481,8 @@ public final class LocalSide: SyncSide, @unchecked Sendable {
     }
 
     public func store(_ rel: String, from file: URL, mtime: Date, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
-        try SafetyPolicy.checkLocalWrite(root)
         let dest = url(rel)
+        try SafetyPolicy.checkLocalWrite(root); try SafetyPolicy.checkLocalWrite(dest)
         try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
         try LocalFiles.atomicCopy(file, to: dest)
         try? FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: dest.path)
@@ -404,12 +490,28 @@ public final class LocalSide: SyncSide, @unchecked Sendable {
     }
 
     public func makeDir(_ rel: String) async throws {
-        try SafetyPolicy.checkLocalWrite(root)
+        try SafetyPolicy.checkLocalWrite(root); try SafetyPolicy.checkLocalWrite(url(rel))
         try FileManager.default.createDirectory(at: url(rel), withIntermediateDirectories: true)
         lock.withLock { actual[rel] = rel }
     }
 
-    public func trash(_ rel: String) async throws { try SafetyPolicy.checkLocalWrite(root); try LocalFiles.safeTrash(url(rel), root: root) }
+    public func trash(_ rel: String) async throws {
+        let u = url(rel)
+        try SafetyPolicy.checkLocalWrite(root); try SafetyPolicy.checkLocalWrite(u)
+        // On a case-insensitive disk “Photo.jpg” also opens “photo.jpg”. Only trash an entry whose on-disk
+        // name is exactly this one, so a case-only rename can never take the renamed file with it.
+        let name = u.lastPathComponent.precomposedStringWithCanonicalMapping
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: u.deletingLastPathComponent().path)) ?? []
+        guard names.contains(where: { $0.precomposedStringWithCanonicalMapping == name }) else { return }
+        try LocalFiles.safeTrash(u, root: root)
+    }
+}
+
+final class UnreadableBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: (URL, Error)?
+    func note(_ u: URL, _ e: Error) { lock.withLock { if value == nil { value = (u, e) } } }
+    var first: (URL, Error)? { lock.withLock { value } }
 }
 
 public final class DriveSide: SyncSide, @unchecked Sendable {
@@ -439,12 +541,20 @@ public final class DriveSide: SyncSide, @unchecked Sendable {
     }
 
     func node(_ rel: String) -> DriveNode? { lock.withLock { nodes[rel] } }
+    /// iCloud Drive names are case-insensitive: “photo.jpg” and “Photo.jpg” are the same item there.
+    func nodeIgnoringCase(_ rel: String) -> DriveNode? {
+        lock.withLock {
+            if let n = nodes[rel] { return n }
+            let f = SyncPlanner.fold(rel)
+            return nodes.first { SyncPlanner.fold($0.key) == f }?.value
+        }
+    }
 
     func folderID(_ rel: String) async throws -> String {
         if rel.isEmpty || rel == "." { return rootID }
-        if let n = node(rel), n.isFolder { return n.id }
+        if let n = nodeIgnoringCase(rel), n.isFolder { return n.id }
         try await makeDir(rel)
-        guard let n = node(rel) else { throw SyncError.unavailable("Couldn’t create folder \(rel) in iCloud Drive.") }
+        guard let n = nodeIgnoringCase(rel) else { throw SyncError.unavailable("Couldn’t create folder \(rel) in iCloud Drive.") }
         return n.id
     }
 
@@ -458,14 +568,14 @@ public final class DriveSide: SyncSide, @unchecked Sendable {
     public func store(_ rel: String, from file: URL, mtime: Date, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
         let parent = (rel as NSString).deletingLastPathComponent
         let fid = try await folderID(parent)
-        let existing = node(rel)
+        let existing = nodeIgnoringCase(rel)
         let n = try await drive.safeReplace(file, name: (rel as NSString).lastPathComponent, in: fid, existing: existing?.isFolder == false ? existing : nil,
                                             modified: mtime, progress: progress)
         lock.withLock { nodes[rel] = n }
     }
 
     public func makeDir(_ rel: String) async throws {
-        if let n = node(rel), n.isFolder { return }
+        if let n = nodeIgnoringCase(rel), n.isFolder { lock.withLock { nodes[rel] = n }; return }
         let parent = (rel as NSString).deletingLastPathComponent
         let pid = try await folderID(parent)
         let name = (rel as NSString).lastPathComponent
@@ -474,7 +584,7 @@ public final class DriveSide: SyncSide, @unchecked Sendable {
             lock.withLock { nodes[rel] = n }
         } catch {
             // Someone else may have created it meanwhile.
-            if let found = try? await drive.list(pid).first(where: { $0.name == name && $0.isFolder }) { lock.withLock { nodes[rel] = found } } else { throw error }
+            if let found = try? await drive.list(pid).first(where: { $0.isFolder && $0.name.caseInsensitiveCompare(name) == .orderedSame }) { lock.withLock { nodes[rel] = found } } else { throw error }
         }
     }
 
@@ -514,6 +624,23 @@ public enum LocalFiles {
         } else {
             try fm.moveItem(at: tmp, to: dest)
         }
+    }
+
+    /// Put `source` at `dest`, replacing what's there without a moment where only the old copy is gone:
+    /// the new copy lands beside it under a temporary name, then the old one goes to the Trash, then a rename.
+    /// `move` moves `source` instead of copying it.
+    public static func swapIn(_ source: URL, at dest: URL, move: Bool) throws {
+        let fm = FileManager.default
+        let tmp = dest.deletingLastPathComponent().appendingPathComponent(".cirrus-\(UUID().uuidString.prefix(8))-" + dest.lastPathComponent)
+        if move { try fm.moveItem(at: source, to: tmp) } else { try fm.copyItem(at: source, to: tmp) }
+        do {
+            try safeTrash(dest, root: nil)
+        } catch {
+            // Couldn't retire the old copy: leave everything as it was.
+            if move { try? fm.moveItem(at: tmp, to: source) } else { try? fm.removeItem(at: tmp) }
+            throw error
+        }
+        try fm.moveItem(at: tmp, to: dest)
     }
 
     /// Move to the Trash; on volumes without one, into <root>/.cirrus/Removed/<date>/ instead. Never deletes.

@@ -19,7 +19,11 @@ public struct VolumeInfo: Hashable, Sendable {
                                          .volumeTotalCapacityKey, .volumeLocalizedFormatDescriptionKey, .volumeURLKey]
         guard let v = try? url.resourceValues(forKeys: keys) else { return nil }
         let avail = v.volumeAvailableCapacityForImportantUsage ?? Int64(v.volumeAvailableCapacity ?? 0)
-        return VolumeInfo(url: v.volume ?? url, name: v.volumeName ?? url.lastPathComponent, isInternal: v.volumeIsInternal ?? false,
+        var name = v.volumeName ?? url.lastPathComponent
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["CIRRUS_SCREENSHOT"] != nil && (v.volumeIsRootFileSystem ?? false) { name = "Macintosh HD" }
+        #endif
+        return VolumeInfo(url: v.volume ?? url, name: name, isInternal: v.volumeIsInternal ?? false,
                           isRemovable: v.volumeIsRemovable ?? false, isEjectable: v.volumeIsEjectable ?? false,
                           isRoot: v.volumeIsRootFileSystem ?? false, available: avail, total: Int64(v.volumeTotalCapacity ?? 0),
                           format: v.volumeLocalizedFormatDescription)

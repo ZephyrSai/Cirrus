@@ -62,7 +62,9 @@ public extension DriveBackend {
             frontier.removeFirst(batch.count)
             let listed = try await listMany(batch.map(\.id))
             for (fid, prefix) in batch {
-                for node in listed[fid] ?? [] {
+                // A folder missing from the reply would look empty (“everything deleted”): stop instead.
+                guard let items = listed[fid] else { throw ICloudError.server("iCloud Drive didn’t list “\(prefix.isEmpty ? "iCloud Drive" : prefix)”. Nothing was changed; try again.") }
+                for node in items {
                     let rel = prefix.isEmpty ? node.name : prefix + "/" + node.name
                     out.append((rel, node))
                     if node.isFolder { frontier.append((node.id, rel)) }
@@ -124,6 +126,10 @@ public final class WebDrive: DriveBackend, @unchecked Sendable {
         for (i, folder) in resp.array.enumerated() {
             let fid = folder["drivewsid"].string ?? (i < folderIDs.count ? folderIDs[i] : "")
             if folder["status"].string == "NOT_FOUND" { throw ICloudError.notFound }
+            // An error entry has no item list; treating it as an empty folder would be dangerous for sync.
+            if folder["items"].isNull && (folder["numberOfItems"].int64 ?? 0) > 0 || folder["errorCode"].string != nil {
+                throw ICloudError.server("iCloud Drive couldn’t list a folder. Nothing was changed; try again.")
+            }
             out[fid] = folder["items"].array.compactMap { Self.node($0, parent: fid) }
         }
         return out

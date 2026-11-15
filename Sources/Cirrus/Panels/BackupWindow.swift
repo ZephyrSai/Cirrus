@@ -150,7 +150,7 @@ final class BackupWindowController: NSWindowController {
             switch a.kind {
             case .mac: t = AccountManager.macSignedInToICloud ? "This Mac’s iCloud (iCloud Drive folder + Photos library)" : "This Mac’s Photos library"
             case .web: t = "\(a.appleID ?? a.title)" + (a.status == .needsSignIn ? " — sign in needed" : "")
-            case .demo: t = "Demo iCloud"
+            case .demo: t = Debug.screenshotMode ? "alex@example.com" : "Demo iCloud"
             }
             accountPopup.addItem(withTitle: t)
         }

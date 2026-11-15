@@ -135,7 +135,7 @@ final class Catalog {
 
     func title(_ loc: Location) -> String {
         switch loc {
-        case .computer: return Host.current().localizedName ?? "This Mac"
+        case .computer: return Debug.screenshotMode ? "MacBook Pro" : (Host.current().localizedName ?? "This Mac")
         case .local(let p):
             let url = URL(fileURLWithPath: p)
             if let root = AccountManager.shared.macAccount?.driveRoot, url.standardizedFileURL.path == root.standardizedFileURL.path { return "iCloud Drive" }

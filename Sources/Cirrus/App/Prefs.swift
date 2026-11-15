@@ -25,8 +25,9 @@ enum Prefs {
     static var menuBarIcon: Bool { get { d.bool(forKey: "menuBarIcon") } set { d.set(newValue, forKey: "menuBarIcon") } }
     static var favorites: [String] {
         get {
-            if let f = d.stringArray(forKey: "sidebarFavorites") { return f }
             let h = FileManager.default.homeDirectoryForCurrentUser.path
+            if Debug.screenshotMode { return ["/Applications", h + "/Desktop", h + "/Documents", h + "/Downloads", h + "/Pictures"] }
+            if let f = d.stringArray(forKey: "sidebarFavorites") { return f }
             return ["/Applications", h, h + "/Desktop", h + "/Documents", h + "/Downloads", h + "/Pictures"]
         }
         set { d.set(newValue, forKey: "sidebarFavorites") }

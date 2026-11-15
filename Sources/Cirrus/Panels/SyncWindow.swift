@@ -450,12 +450,12 @@ final class PreferencesWindowController: NSWindowController {
         concurrency.action = #selector(concurrencyChanged(_:))
         let login = NSButton(checkboxWithTitle: "Open Cirrus at login (for scheduled syncs and backups)", target: self, action: #selector(loginToggled(_:)))
         login.state = SMAppServiceStatus.isEnabled ? .on : .off
-        let readOnly = NSButton(checkboxWithTitle: "Read-only iCloud: never change anything in iCloud (browse, download and back up only)", target: self, action: #selector(readOnlyToggled(_:)))
+        let readOnly = NSButton(checkboxWithTitle: "Read-only iCloud: browse, download and back up only", target: self, action: #selector(readOnlyToggled(_:)))
         readOnly.state = Prefs.readOnlyICloud ? .on : .off
         let views: [NSView] = [
             header("Safety"),
             readOnly,
-            note("Deletions always go to the Trash or iCloud’s Recently Deleted, never straight to deletion. Read-only mode also blocks uploads, renames, moves and photo edits."),
+            note("Nothing in iCloud changes while this is on: no uploads, renames, moves, deletions or photo edits. Deletions otherwise always go to the Trash or iCloud’s Recently Deleted."),
             { () -> NSButton in
                 let b = NSButton(checkboxWithTitle: "Require Touch ID or Mac password before using a saved Apple ID password", target: self, action: #selector(authToggled(_:)))
                 b.state = CredentialGate.requireAuth ? .on : .off
@@ -466,7 +466,8 @@ final class PreferencesWindowController: NSWindowController {
             box("Keep folders on top when sorting by name", "foldersOnTop"),
             box("Show Cirrus in the menu bar", "menuBarIcon", #selector(menuBarToggled(_:))),
             login,
-            box("Show previews of iCloud Drive files (downloads files up to 25 MB once and keeps them in the cache)", "drivePreviews"),
+            box("Show previews of iCloud Drive files", "drivePreviews"),
+            note("Files up to 25 MB are downloaded once for their preview and kept in the cache."),
             header("Photos"),
             box("Include the Live Photo video (.MOV) when dragging or exporting photos", "exportLive"),
             box("Export the edited version instead of the original when one exists", "exportEdited"),

@@ -31,7 +31,22 @@ public enum SafetyPolicy {
         return false
     }
 
-    public static func checkLocalWrite(_ url: URL) throws { if isICloudPath(url) { try checkWrite() } }
+    /// Also true for items iCloud syncs from elsewhere (Desktop & Documents in iCloud) and for folders that
+    /// contain the Mac's iCloud Drive, since trashing or replacing those would change iCloud too.
+    public static func touchesICloud(_ url: URL) -> Bool {
+        let paths = Set([url.standardizedFileURL.path, url.resolvingSymlinksInPath().path])
+        for p in paths where isICloudPath(URL(fileURLWithPath: p)) { return true }
+        let mobile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Mobile Documents").standardizedFileURL.path
+        for p in paths where mobile.hasPrefix(p.hasSuffix("/") ? p : p + "/") { return true }
+        var u = url.resolvingSymlinksInPath()
+        while u.path != "/" && !u.path.isEmpty {
+            if let v = try? u.resourceValues(forKeys: [.isUbiquitousItemKey]) { return v.isUbiquitousItem == true }
+            u = u.deletingLastPathComponent()
+        }
+        return false
+    }
+
+    public static func checkLocalWrite(_ url: URL) throws { if readOnlyICloud && touchesICloud(url) { throw ReadOnlyError() } }
 }
 
 public extension DriveBackend {

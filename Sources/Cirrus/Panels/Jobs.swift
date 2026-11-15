@@ -17,9 +17,11 @@ final class JobRunner {
         var guardTripped: Bool
     }
 
-    func side(_ e: SyncEndpoint, excludes: [String]) throws -> SyncSide {
+    /// `create`: make a missing local folder (one-way destinations, or a two-way job's first run). Otherwise a
+    /// missing folder stops the job, since it would look like everything in it had been deleted.
+    func side(_ e: SyncEndpoint, excludes: [String], create: Bool = false) throws -> SyncSide {
         switch e {
-        case .local(let p): return LocalSide(root: URL(fileURLWithPath: p, isDirectory: true), excludes: excludes)
+        case .local(let p): return LocalSide(root: URL(fileURLWithPath: p, isDirectory: true), excludes: excludes, createIfMissing: create)
         case .drive(let a, let fid, let path):
             guard let acct = AccountManager.shared.account(id: a), let d = acct.drive else { throw ICloudError.needsSignIn }
             return DriveSide(drive: d, rootID: fid, label: path.isEmpty ? "iCloud Drive" : (path as NSString).lastPathComponent, excludes: excludes)
@@ -52,7 +54,8 @@ final class JobRunner {
     func preview(_ job: SyncJob, progress: @escaping @Sendable (String) -> Void) async throws -> Preview {
         switch job.kind {
         case .folderSync:
-            let a = try side(job.source, excludes: job.options.excludes), b = try side(job.destination, excludes: job.options.excludes)
+            let a = try side(job.source, excludes: job.options.excludes, create: Self.firstTwoWayRun(job)),
+                b = try side(job.destination, excludes: job.options.excludes, create: job.mode != .twoWay || Self.firstTwoWayRun(job))
             let runner = SyncRunner(a: a, b: b)
             let (sa, sb) = try await runner.scan { p in progress(p.phase) }
             let plan = SyncPlanner.plan(mode: job.mode, a: sa, b: sb, state: job.mode == .twoWay ? SyncState.load(job.id) : nil)
@@ -71,10 +74,16 @@ final class JobRunner {
         }
     }
 
+    /// Counts everything inside trashed folders, and always trips when a run would empty one side entirely.
     nonisolated static func guardTripped(_ plan: SyncPlan, _ job: SyncJob) -> Bool {
-        let n = plan.trashCount
+        if plan.wipesSide { return true }
+        let n = plan.trashItemCount
         let base = max(1, job.mode == .twoWay ? plan.sourceCount + plan.destinationCount : plan.destinationCount)
         return n > 20 && n * 100 / base > job.options.maxDeletePercent
+    }
+
+    nonisolated static func firstTwoWayRun(_ job: SyncJob) -> Bool {
+        job.mode == .twoWay && SyncState.load(job.id).entries.isEmpty
     }
 
     static func describe(_ plan: SyncPlan) -> String {
@@ -87,7 +96,7 @@ final class JobRunner {
         if copies > 0 { parts.append("\(copies) to copy") }
         if back > 0 { parts.append("\(back) to copy back") }
         if conflicts > 0 { parts.append("\(conflicts) conflict\(conflicts == 1 ? "" : "s") (both kept)") }
-        if plan.trashCount > 0 { parts.append("\(plan.trashCount) to move to the Trash") }
+        if plan.trashCount > 0 { parts.append("\(plan.trashItemCount) item\(plan.trashItemCount == 1 ? "" : "s") to move to the Trash") }
         if skips > 0 { parts.append("\(skips) skipped") }
         return parts.joined(separator: ", ") + (plan.bytes > 0 ? " — \(plan.bytes.byteString)" : "")
     }
@@ -144,11 +153,13 @@ final class JobRunner {
         }
         switch job.kind {
         case .folderSync:
-            let (a, b) = try await MainActor.run { (try self.side(job.source, excludes: job.options.excludes), try self.side(job.destination, excludes: job.options.excludes)) }
+            let first = Self.firstTwoWayRun(job)
+            let (a, b) = try await MainActor.run { (try self.side(job.source, excludes: job.options.excludes, create: first),
+                                                    try self.side(job.destination, excludes: job.options.excludes, create: job.mode != .twoWay || first)) }
             let runner = SyncRunner(a: a, b: b)
             let (sa, sb) = try await runner.scan(progress: report)
             let plan = SyncPlanner.plan(mode: job.mode, a: sa, b: sb, state: job.mode == .twoWay ? SyncState.load(job.id) : nil)
-            if !force && Self.guardTripped(plan, job) { throw SyncError.deleteGuard(plan.trashCount, max(plan.destinationCount, plan.sourceCount)) }
+            if !force && Self.guardTripped(plan, job) { throw SyncError.deleteGuard(plan.trashItemCount, job.mode == .twoWay ? plan.sourceCount + plan.destinationCount : plan.destinationCount) }
             for (side, label) in [(b, "destination"), (a, "source")] where job.mode == .twoWay || label == "destination" {
                 if let free = side.freeSpace, free < plan.bytes { throw SyncError.notEnoughSpace(need: plan.bytes, free: free) }
             }
