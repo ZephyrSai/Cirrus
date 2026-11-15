@@ -117,7 +117,7 @@ sealed class SyncJobsWindow : Window
             if (p.Backup is { } b && b.Warnings.Count > 0) body += "\n\n" + string.Join("\n", b.Warnings.Select(w => "⚠ " + w));
             if (p.GuardTripped)
             {
-                body += $"\n\nThis would move {p.Plan!.TrashCount} items to the Recycle Bin / Recently Deleted, more than the {j.Options.MaxDeletePercent}% limit. A normal run stops here.";
+                body += $"\n\nThis would move {p.Plan!.RemovedItems} items to the Recycle Bin / Recently Deleted, more than the {j.Options.MaxDeletePercent}% limit. A normal run stops here.";
                 if (Dialogs.Ask(this, "Preview — check the removals", body, ["Run Anyway", "Cancel"], 1, 1, PreflightSeverity.Warning) == 0) RunSelected(true);
             }
             else if (Dialogs.Ask(this, "Preview", body, ["Run Now", "Close"], 0, 1) == 0) RunSelected(false);
@@ -251,13 +251,16 @@ sealed class JobEditor : Window
         if (err is null && _source.Equals(_destination)) err = "Source and destination are the same.";
         if (err is null && (kind is JobKind.Backup or JobKind.PhotosExport) && _destination.LocalPath is { } d && SafetyPolicy.IsICloudPath(d))
             err = "Backups and exports must go outside iCloud.";
-        if (err is null && _source.LocalPath is { } sp && _destination.LocalPath is { } dp && (dp.StartsWith(sp + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || sp.StartsWith(dp + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)))
-            err = "One folder is inside the other; choose separate folders.";
+        static string Norm(string x) => Path.GetFullPath(x).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (err is null && _source.LocalPath is { } sp && _destination.LocalPath is { } dp && (Norm(dp).StartsWith(Norm(sp), StringComparison.OrdinalIgnoreCase) || Norm(sp).StartsWith(Norm(dp), StringComparison.OrdinalIgnoreCase)))
+            err = "One folder is inside the other (or they're the same); choose separate folders.";
         if (err is not null) { Dialogs.Error(this, "Can’t save this job", err); return; }
         _job.Name = _name.Text.Trim().Length > 0 ? _name.Text.Trim() : "Job";
+        var newMode = (SyncMode)Math.Max(0, _mode.SelectedIndex);
+        // The two-way baseline only describes the old pair of folders: never reuse it for a different pair or mode.
+        if (newMode != _job.Mode || kind != _job.Kind || !_source.Equals(_job.Source) || !_destination.Equals(_job.Destination)) SyncState.Forget(_job.Id);
         _job.Kind = kind;
-        _job.Mode = (SyncMode)Math.Max(0, _mode.SelectedIndex);
-        if (_job.Mode == SyncMode.TwoWay && !_source.Equals(_job.Source)) SyncState.Forget(_job.Id);
+        _job.Mode = newMode;
         _job.Source = _source;
         _job.Destination = _destination;
         _job.Options.Excludes = _excludes.Text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim().Replace("\\r", "\r")).Where(s => s.Length > 0).ToList();

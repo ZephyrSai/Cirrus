@@ -45,6 +45,15 @@ public sealed class SyncPlan
     public int TrashCount => Actions.Count(a => a.IsDestructive);
     public int TransferCount => Actions.Count(a => a.Kind != SyncActionKind.Skip && !a.IsMkdir && !a.IsDestructive);
     public bool IsEmpty => Actions.All(a => a.Kind == SyncActionKind.Skip);
+    /// <summary>Items that would be removed, counting everything inside removed folders.</summary>
+    public int RemovedItems { get; init; }
+    /// <summary>Items removed on side A / side B (counting folder contents).</summary>
+    public int TrashItemsA { get; init; }
+    public int TrashItemsB { get; init; }
+    /// <summary>The run would empty one side entirely: always stops for review (the user can still choose Run Anyway).</summary>
+    public bool WipesSide => (TrashItemsB > 0 && TrashItemsB >= DestinationCount) || (TrashItemsA > 0 && TrashItemsA >= SourceCount);
+    /// <summary>Two-way: one side is empty although the baseline says it had items (unplugged drive, re-pointed folder).</summary>
+    public bool SideVanished { get; init; }
 }
 
 public static class SyncPlanner
@@ -53,12 +62,32 @@ public static class SyncPlanner
 
     static bool Same(SideEntry a, SideEntry b) => a.Size == b.Size && Math.Abs(a.Mtime - b.Mtime) <= Slack;
 
-    /// <summary>One-way (copy / mirror) or two-way plan from scans of side A (source) and B (destination).</summary>
-    public static SyncPlan Plan(SyncMode mode, IReadOnlyDictionary<string, SideEntry> a, IReadOnlyDictionary<string, SideEntry> b, SyncState? state)
+    static readonly StringComparer Keys = StringComparer.OrdinalIgnoreCase;   // NTFS and iCloud ignore case
+
+    static Dictionary<string, T> CI<T>(IEnumerable<KeyValuePair<string, T>> d)
     {
+        var o = new Dictionary<string, T>(Keys);
+        foreach (var (k, v) in d) o.TryAdd(k, v);
+        return o;
+    }
+
+    internal static Dictionary<string, SideEntry> CaseInsensitive(IReadOnlyDictionary<string, SideEntry> d) =>
+        d is Dictionary<string, SideEntry> { Comparer: var c } dd && ReferenceEquals(c, Keys) ? dd : CI(d);
+
+    static bool Under(string rel, string dir) => rel.StartsWith(dir + "/", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// One-way (copy / mirror) or two-way plan from scans of side A (source) and B (destination). Paths match
+    /// case-insensitively, like NTFS and iCloud, so a case-only rename is never seen as delete + create.
+    /// </summary>
+    public static SyncPlan Plan(SyncMode mode, IReadOnlyDictionary<string, SideEntry> sa, IReadOnlyDictionary<string, SideEntry> sb, SyncState? state)
+    {
+        var a = CaseInsensitive(sa);
+        var b = CaseInsensitive(sb);
         var actions = new List<SyncAction>();
         var keysA = a.Keys.ToList();
         keysA.Sort(PathOrder);
+        var vanished = false;
         switch (mode)
         {
             case SyncMode.Copy:
@@ -91,7 +120,7 @@ public static class SyncPlanner
                     foreach (var rel in keysB)
                     {
                         if (a.ContainsKey(rel)) continue;
-                        if (trashedDirs.Any(d => rel.StartsWith(d + "/", StringComparison.Ordinal))) continue;
+                        if (trashedDirs.Any(d => Under(rel, d))) continue;
                         actions.Add(SyncAction.TrashB(rel));
                         if (b[rel].IsDir) trashedDirs.Add(rel);
                     }
@@ -99,14 +128,15 @@ public static class SyncPlanner
                 break;
 
             case SyncMode.TwoWay:
-                var st = state?.Entries ?? [];
-                var all = a.Keys.Union(b.Keys).ToList();
+                var st = CI(state?.Entries ?? []);
+                vanished = st.Count > 0 && (a.Count == 0) != (b.Count == 0);
+                var all = a.Keys.Union(b.Keys, Keys).ToList();
                 all.Sort(PathOrder);
-                var fileActions = new Dictionary<string, SyncAction>();
+                var fileActions = new Dictionary<string, SyncAction>(Keys);
                 foreach (var rel in all)
                 {
-                    a.TryGetValue(rel, out var xa); var hasA = a.ContainsKey(rel);
-                    b.TryGetValue(rel, out var yb); var hasB = b.ContainsKey(rel);
+                    var hasA = a.TryGetValue(rel, out var xa);
+                    var hasB = b.TryGetValue(rel, out var yb);
                     if ((hasA && xa.IsDir) || (hasB && yb.IsDir)) continue;
                     st.TryGetValue(rel, out var s);
                     bool changedA = hasA && (s is null || s.Size != xa.Size || Math.Abs(s.MtimeA - xa.Mtime) > Slack);
@@ -135,16 +165,16 @@ public static class SyncPlanner
                     var hasB = b.TryGetValue(rel, out var yb);
                     var isDir = (hasA && xa.IsDir) || (hasB && yb.IsDir);
                     if (!isDir || hasA == hasB) continue;
-                    if (removedDirs.Any(d => rel.StartsWith(d + "/", StringComparison.Ordinal))) continue;
+                    if (removedDirs.Any(d => Under(rel, d))) continue;
                     var onA = hasA;
                     var wasKnown = st.ContainsKey(rel);
-                    var children = fileActions.Where(kv => kv.Key.StartsWith(rel + "/", StringComparison.Ordinal)).Select(kv => kv.Value).ToList();
+                    var children = fileActions.Where(kv => Under(kv.Key, rel)).Select(kv => kv.Value).ToList();
                     var allTrash = children.All(c => c.Kind == (onA ? SyncActionKind.TrashA : SyncActionKind.TrashB));
                     if (wasKnown && allTrash)
                     {
                         dirActions.Add(onA ? SyncAction.TrashA(rel) : SyncAction.TrashB(rel));
                         removedDirs.Add(rel);
-                        foreach (var k in fileActions.Keys.Where(k => k.StartsWith(rel + "/", StringComparison.Ordinal)).ToList()) fileActions.Remove(k);
+                        foreach (var k in fileActions.Keys.Where(k => Under(k, rel)).ToList()) fileActions.Remove(k);
                     }
                     else dirActions.Add(onA ? SyncAction.MkdirB(rel) : SyncAction.MkdirA(rel));
                 }
@@ -153,7 +183,19 @@ public static class SyncPlanner
                 actions = dirActions.Where(d => d.IsMkdir).Concat(fileKeys.Select(k => fileActions[k])).Concat(dirActions.Where(d => d.IsDestructive)).ToList();
                 break;
         }
-        return new SyncPlan { Actions = actions, SourceCount = a.Count, DestinationCount = b.Count };
+        // Count what removals really take away: a removed folder takes everything inside it.
+        int removedA = 0, removedB = 0;
+        foreach (var act in actions.Where(x => x.IsDestructive))
+        {
+            var side = act.Kind == SyncActionKind.TrashA ? a : b;
+            var n = 1 + (side.TryGetValue(act.Path, out var e) && e.IsDir ? side.Keys.Count(k => Under(k, act.Path)) : 0);
+            if (act.Kind == SyncActionKind.TrashA) removedA += n; else removedB += n;
+        }
+        return new SyncPlan
+        {
+            Actions = actions, SourceCount = a.Count, DestinationCount = b.Count, RemovedItems = removedA + removedB,
+            TrashItemsA = removedA, TrashItemsB = removedB, SideVanished = vanished,
+        };
     }
 
     /// <summary>Parents before children, then natural (Finder/Explorer-like) order by component.</summary>
@@ -181,12 +223,16 @@ public static class SyncPlanner
         return dir.Length == 0 ? n : dir + "/" + n;
     }
 
-    /// <summary>The mirror/two-way delete guard: more than 20 removals and more than MaxDeletePercent of the items.</summary>
+    /// <summary>
+    /// The mirror/two-way delete guard: a run that would empty one side, a two-way side that is suddenly empty, or more
+    /// than 20 items removed (counting folder contents) that are also more than MaxDeletePercent of the items.
+    /// </summary>
     public static bool GuardTripped(SyncPlan plan, SyncMode mode, int maxDeletePercent)
     {
-        var n = plan.TrashCount;
+        if (plan.WipesSide || (plan.SideVanished && plan.TrashCount > 0)) return true;
+        var n = plan.RemovedItems;
         var baseCount = Math.Max(1, mode == SyncMode.TwoWay ? plan.SourceCount + plan.DestinationCount : plan.DestinationCount);
-        return n > 20 && n * 100 / baseCount > maxDeletePercent;
+        return n > 20 && (long)n * 100 / baseCount > maxDeletePercent;
     }
 
     public static string Describe(SyncPlan plan)
@@ -198,7 +244,7 @@ public static class SyncPlanner
         if (copies > 0) parts.Add($"{copies} to copy");
         if (back > 0) parts.Add($"{back} to copy back");
         if (conflicts > 0) parts.Add($"{conflicts} conflict{(conflicts == 1 ? "" : "s")} (both kept)");
-        if (plan.TrashCount > 0) parts.Add($"{plan.TrashCount} to move to the Recycle Bin");
+        if (plan.TrashCount > 0) parts.Add($"{plan.RemovedItems} to move to the Recycle Bin / Recently Deleted");
         if (skips > 0) parts.Add($"{skips} skipped");
         return string.Join(", ", parts) + (plan.Bytes > 0 ? " — " + plan.Bytes.ByteString() : "");
     }
@@ -234,26 +280,29 @@ public sealed class SyncRunner
     }
 
     /// <summary>Executes a plan. Returns the report and (for two-way) the new baseline.</summary>
-    public async Task<(RunReport Report, SyncState State)> RunAsync(SyncPlan plan, IReadOnlyDictionary<string, SideEntry> sa, IReadOnlyDictionary<string, SideEntry> sb,
+    public async Task<(RunReport Report, SyncState State)> RunAsync(SyncPlan plan, IReadOnlyDictionary<string, SideEntry> scanA, IReadOnlyDictionary<string, SideEntry> scanB,
         Action<RunProgress>? progress, CancellationToken ct = default)
     {
+        var sa = SyncPlanner.CaseInsensitive(scanA);
+        var sb = SyncPlanner.CaseInsensitive(scanB);
         var total = plan.Bytes;
         var files = plan.Actions.Count;
         var report = new RunReport();
         var gate = new object();
         int filesDone = 0;
         long bytesDone = 0;
-        var finalA = new Dictionary<string, SideEntry>(sa);
-        var finalB = new Dictionary<string, SideEntry>(sb);
+        var finalA = new Dictionary<string, SideEntry>(sa, StringComparer.OrdinalIgnoreCase);
+        var finalB = new Dictionary<string, SideEntry>(sb, StringComparer.OrdinalIgnoreCase);
         void Tick(string phase) { int f; long b; lock (gate) { f = filesDone; b = bytesDone; } progress?.Invoke(new RunProgress(phase, f, files, b, total)); }
         void Fail(string path, Exception e)
         {
             Log.Error($"sync failed for an item: {e.Message}");
+            Log.Status("sync failed for an item: " + e.GetType().Name);
             lock (gate) report.Failed.Add($"{path}: {e.Message}");
         }
         void SetA(string k, IReadOnlyDictionary<string, SideEntry> from) { lock (gate) { if (from.TryGetValue(k, out var v)) finalA[k] = v; else finalA.Remove(k); } }
         void SetB(string k, IReadOnlyDictionary<string, SideEntry> from) { lock (gate) { if (from.TryGetValue(k, out var v)) finalB[k] = v; else finalB.Remove(k); } }
-        static void RemoveTree(Dictionary<string, SideEntry> m, string k) { m.Remove(k); foreach (var x in m.Keys.Where(x => x.StartsWith(k + "/", StringComparison.Ordinal)).ToList()) m.Remove(x); }
+        static void RemoveTree(Dictionary<string, SideEntry> m, string k) { m.Remove(k); foreach (var x in m.Keys.Where(x => x.StartsWith(k + "/", StringComparison.OrdinalIgnoreCase)).ToList()) m.Remove(x); }
 
         // Folder creation first, sequentially.
         foreach (var act in plan.Actions)
@@ -365,7 +414,8 @@ public sealed class LocalSide : ISyncSide
     public string Root { get; }
     public IReadOnlyList<string> Excludes { get; }
     readonly object _lock = new();
-    Dictionary<string, string> _actual = [];   // NFC logical key → on-disk relative path
+    Dictionary<string, string> _actual = new(StringComparer.OrdinalIgnoreCase);   // NFC logical key → on-disk relative path
+    Dictionary<string, SideEntry> _scanned = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Destinations may not exist yet (first run). Sources must: a missing source folder (unplugged drive,
@@ -393,8 +443,8 @@ public sealed class LocalSide : ISyncSide
 
     public Task<Dictionary<string, SideEntry>> ScanAsync(Action<int>? progress, CancellationToken ct) => Task.Run(() =>
     {
-        var output = new Dictionary<string, SideEntry>();
-        var map = new Dictionary<string, string>();
+        var output = new Dictionary<string, SideEntry>(StringComparer.OrdinalIgnoreCase);
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (!Directory.Exists(Root))
         {
             // Scanning never creates anything; folders are made only when something is stored.
@@ -404,12 +454,17 @@ public sealed class LocalSide : ISyncSide
         var stack = new Stack<(DirectoryInfo Dir, string Rel)>();
         stack.Push((new DirectoryInfo(Root), ""));
         int n = 0;
-        var opts = new EnumerationOptions { IgnoreInaccessible = true, AttributesToSkip = 0, RecurseSubdirectories = false, ReturnSpecialDirectories = false };
+        var opts = new EnumerationOptions { IgnoreInaccessible = false, AttributesToSkip = 0, RecurseSubdirectories = false, ReturnSpecialDirectories = false };
         while (stack.Count > 0)
         {
             var (dir, prefix) = stack.Pop();
             IEnumerable<FileSystemInfo> entries;
-            try { entries = dir.EnumerateFileSystemInfos("*", opts).ToList(); } catch { continue; }
+            // A folder that can't be read must stop the run: treating it as empty would look like deletions.
+            try { entries = dir.EnumerateFileSystemInfos("*", opts).ToList(); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+            {
+                throw SyncException.Unavailable($"Couldn’t read “{(prefix.Length == 0 ? Root : prefix)}” ({e.Message}). Nothing was changed. Fix access to it or add it to the exclusions.");
+            }
             foreach (var e in entries)
             {
                 var diskRel = prefix.Length == 0 ? e.Name : prefix + "/" + e.Name;
@@ -425,7 +480,7 @@ public sealed class LocalSide : ISyncSide
                 if (n % 500 == 0) { progress?.Invoke(n); ct.ThrowIfCancellationRequested(); }
             }
         }
-        lock (_lock) _actual = map;
+        lock (_lock) { _actual = map; _scanned = new Dictionary<string, SideEntry>(output, StringComparer.OrdinalIgnoreCase); }
         return output;
     }, ct);
 
@@ -440,18 +495,34 @@ public sealed class LocalSide : ISyncSide
 
     public Task StoreAsync(string rel, string file, DateTimeOffset mtime, Action<long, long>? progress, CancellationToken ct) => Task.Run(() =>
     {
-        SafetyPolicy.CheckLocalWrite(Root);
         var dest = PathOf(rel);
+        SafetyPolicy.CheckLocalWrite(dest);
+        if (File.Exists(dest))
+        {
+            // Only replace what the scan saw: an edit made since then is left alone (and reported).
+            SideEntry seen;
+            bool known;
+            lock (_lock) known = _scanned.TryGetValue(rel, out seen);
+            var fi = new FileInfo(dest);
+            var now = new SideEntry(fi.Length, new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero).ToUnixTimeMilliseconds() / 1000.0, false);
+            if (!known || seen.Size != now.Size || Math.Abs(seen.Mtime - now.Mtime) > SyncPlanner.Slack)
+                throw SyncException.Unavailable($"“{Path.GetFileName(dest)}” changed during the run, so it was left as it is. It will be looked at again next time.");
+        }
         Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
         LocalFiles.AtomicCopy(file, dest);
         try { File.SetLastWriteTimeUtc(dest, mtime.UtcDateTime); } catch { }
-        lock (_lock) _actual[rel] = Path.GetRelativePath(Root, dest).Replace(Path.DirectorySeparatorChar, '/');
+        var fin = new FileInfo(dest);
+        lock (_lock)
+        {
+            _actual[rel] = Path.GetRelativePath(Root, dest).Replace(Path.DirectorySeparatorChar, '/');
+            _scanned[rel] = new SideEntry(fin.Length, new DateTimeOffset(fin.LastWriteTimeUtc, TimeSpan.Zero).ToUnixTimeMilliseconds() / 1000.0, false);
+        }
     }, ct);
 
     public Task MakeDirAsync(string rel, CancellationToken ct)
     {
-        SafetyPolicy.CheckLocalWrite(Root);
         var p = PathOf(rel);
+        SafetyPolicy.CheckLocalWrite(p);
         Directory.CreateDirectory(p);
         lock (_lock) _actual[rel] = Path.GetRelativePath(Root, p).Replace(Path.DirectorySeparatorChar, '/');
         return Task.CompletedTask;
@@ -459,8 +530,9 @@ public sealed class LocalSide : ISyncSide
 
     public Task TrashAsync(string rel, CancellationToken ct)
     {
-        SafetyPolicy.CheckLocalWrite(Root);
-        LocalFiles.SafeTrash(PathOf(rel), Root);
+        var p = PathOf(rel);
+        SafetyPolicy.CheckLocalWrite(p);   // also refuses a folder that contains an iCloud folder
+        LocalFiles.SafeTrash(p, Root);
         return Task.CompletedTask;
     }
 }
@@ -473,7 +545,7 @@ public sealed class DriveSide : ISyncSide
     readonly IReadOnlyList<string> _excludes;
     public string Label { get; }
     readonly object _lock = new();
-    Dictionary<string, DriveNode> _nodes = [];
+    Dictionary<string, DriveNode> _nodes = new(StringComparer.OrdinalIgnoreCase);
 
     public DriveSide(IDriveBackend drive, string rootID, string label, IReadOnlyList<string> excludes)
     {
@@ -485,8 +557,8 @@ public sealed class DriveSide : ISyncSide
     public async Task<Dictionary<string, SideEntry>> ScanAsync(Action<int>? progress, CancellationToken ct)
     {
         var all = await _drive.WalkAsync(_rootID, progress, ct).ConfigureAwait(false);
-        var output = new Dictionary<string, SideEntry>();
-        var map = new Dictionary<string, DriveNode>();
+        var output = new Dictionary<string, SideEntry>(StringComparer.OrdinalIgnoreCase);
+        var map = new Dictionary<string, DriveNode>(StringComparer.OrdinalIgnoreCase);
         foreach (var (rel, node) in all)
         {
             if (Glob.Excluded(rel, _excludes)) continue;

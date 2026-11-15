@@ -140,21 +140,50 @@ windows/
 
 ### Runtime switches (both platforms)
 
-| Variable | Effect |
-|---|---|
-| `CIRRUS_DEMO=1` | Adds a disk-backed demo iCloud (Drive + Photos), so everything can be tried without an Apple ID. It never touches real accounts. |
-| `CIRRUS_DEMO_FAST=1` | Demo without simulated network delays. |
-| `CIRRUS_DEBUG=1` | Verbose logging to stderr. The Windows log is always in `%LOCALAPPDATA%\Cirrus\Logs`. Logs are scrubbed of passwords, cookies, tokens and Apple IDs. |
-| `CIRRUS_PROFILE=<name>` | Separate settings, caches and secrets (`Cirrus-<name>`). |
-| `CIRRUS_NATIVE_DRIVE`, `CIRRUS_NATIVE_PHOTOS` | Windows: treat these folders as the iCloud for Windows iCloud Drive and Photos folders. They are read-only-protected like the real ones. |
-| `CIRRUS_DATA_DIR` | Windows/Core: base folder for all Cirrus data. The tests point it at a temp folder. |
+Release builds honour only the user-facing switches, `CIRRUS_DEMO` and `CIRRUS_PROFILE`. Every other `CIRRUS_*` variable is a test or automation hook and works only in Debug builds and the unit tests. Another process therefore can't redirect, script or eavesdrop on a signed-in Cirrus.
+
+| Variable | Builds | Effect |
+|---|---|---|
+| `CIRRUS_DEMO=1` | all | Adds a disk-backed demo iCloud (Drive + Photos), so everything can be tried without an Apple ID. It never touches real accounts. |
+| `CIRRUS_PROFILE=<name>` | all | Separate settings, caches and secrets (`Cirrus-<name>`). |
+| `CIRRUS_DEMO_FAST=1`, `CIRRUS_DEMO_PHOTOS=<n>` | Debug | Demo without simulated network delays; size of the demo library. |
+| `CIRRUS_DEBUG=1` | Debug | Verbose logging to stderr, including lines that may name files. |
+| `CIRRUS_NATIVE_DRIVE`, `CIRRUS_NATIVE_PHOTOS` | Debug | Windows: treat these folders as the iCloud for Windows iCloud Drive and Photos folders. They are read-only-protected like the real ones. |
+| `CIRRUS_DATA_DIR` | Debug | Windows/Core: base folder for all Cirrus data. The tests point it at a temp folder. |
 
 ### Windows-specific behaviour
 
 - **Saved passwords** are encrypted with DPAPI (current user) under `%LOCALAPPDATA%\Cirrus\Secrets`. File names are hashes, so no Apple IDs appear on disk. A saved password is only released after Windows Hello (`UserConsentVerifier`), or the Windows account password when Hello isn't set up. This can be turned off in Settings.
-- **Removals.** Local removals go to the Recycle Bin. Windows deletes permanently instead of recycling in some cases: USB sticks, network shares, items bigger than the bin, and bins set to "don't move files to the Recycle Bin". In those cases Cirrus moves the item into `.cirrus\Removed\<date>\` next to it. iCloud removals go to Recently Deleted. "Delete Immediately" exists only inside iCloud Drive's Recently Deleted, and it asks first.
-- **Names.** iCloud allows names that NTFS doesn't (`: * ? " < > | \`, trailing dots or spaces). Cirrus maps those characters to look-alike full-width characters on disk and back again, so syncs stay stable.
-- **iCloud for Windows.** When it's installed, `%USERPROFILE%\iCloudDrive` and `Pictures\iCloud Photos` appear as native locations. They count as iCloud for read-only mode, and they offer "Always Keep on This Device" and "Free Up Space".
+- **Removals.** Local removals go to the Recycle Bin, through Explorer's own dialogs, so Windows asks before anything would be deleted permanently. Windows deletes permanently instead of recycling in some cases: USB sticks, network shares, items bigger than the bin, paths that are too long, and bins or policies set to "don't move files to the Recycle Bin". In those cases Cirrus moves the item into `.cirrus\Removed\<date>\` next to it. iCloud removals go to Recently Deleted. "Delete Immediately" exists only inside iCloud Drive's Recently Deleted, and it asks first.
+- **Names.** iCloud allows names that NTFS doesn't (`: * ? " < > | \`, trailing dots or spaces, `CON` and other device names). On disk, Cirrus stores each such character as U+F000 plus its code (the mapping WSL and Cygwin use), and maps it back for iCloud. The mapping is exactly reversible, and real full-width names such as `メモ：会議.txt` are left untouched, so syncs stay stable.
+- **Sync safety.** Names match case-insensitively, so a case-only rename is never a delete. A folder that can't be read, or an incomplete iCloud listing, stops the run instead of looking empty. A two-way side that suddenly empties trips the delete guard. The guard counts every item inside removed folders, and also applies to backups that don't keep deleted files. A file edited after the scan is never overwritten.
+- **iCloud for Windows.** When it's installed, `%USERPROFILE%\iCloudDrive` and `Pictures\iCloud Photos` appear as native locations. They count as iCloud for read-only mode, including when Pictures is redirected. So does any folder that *contains* one of them, so removing or moving such a folder is refused while read-only mode is on. They offer "Always Keep on This Device" and "Free Up Space".
+
+- **Caching.** Opening a place never starts from scratch.
+  - iCloud Drive listings stay in memory for 60 s, album lists for 300 s.
+  - iCloud Drive folders are also cached on disk and shown at once while they refresh.
+  - Album contents are cached on disk with their CloudKit sync token. Within 5 minutes they open with no network at all. After that, one `changes/zone` call decides whether the cached copy is still current.
+  - Album lists are trusted for 10 minutes, library lists for a day.
+  - F5 (or Ctrl+R / Refresh) skips every cache.
+  - Favorite, hide and delete edits patch the cached listings in place. Favorites, Hidden and Recently Deleted are listed again.
+- **Privacy.**
+  - The log file holds only content-free status lines (HTTP status lines, timings, counts, error types), never file or album names. Lines that may name files go to stderr only, in Debug builds with `CIRRUS_DEBUG`.
+  - `%LOCALAPPDATA%\Cirrus` is owner-only: inheritance off, access for the current user and SYSTEM.
+  - Caches use hashed names. Thumbnails are kept per account and cache version (`v2`); older versions are pruned.
+  - Preview, relay and temporary copies are removed after a day. Copies of iCloud files that were opened are recycled after two weeks, since they may hold edits.
+  - Signing out wipes that account's listings, thumbnails and preview copies, recycles its opened copies, and forgets the Apple ID. Opened and preview copies are kept per account, so other accounts are untouched.
+  - Drag-out copies are also recycled rather than deleted, because apps often edit a dropped file in place.
+- **Network.**
+  - 30-second request and stall timeouts.
+  - Dropped connections and server errors are retried only for safe calls: GETs, listings and lookups. A change is repeated only after `429 Too Many Requests`, which means it wasn't processed. An upload is repeated only when it never left this PC (name lookup or TLS failure). Moves, deletions, photo edits and uploads are never sent twice.
+  - Photo imports record each file as done right after its own upload, so a Retry never imports a photo twice.
+  - iCloud cookies are sent only to Apple's own hosts.
+  - Downloads stream with real progress.
+  - The shared Photos library is looked up in parallel, with a 6-second limit.
+- **Previews.**
+  - iCloud Drive images and PDFs up to 25 MB are downloaded once into the preview cache and shown in the list and icon views (Settings › Browsing). iCloud.com has no thumbnail API.
+  - PDFs, videos and other files use Explorer's own thumbnails.
+  - Large photo previews fall back to the original (≤ 20 MB, cached as JPEG) when iCloud has no medium rendition.
 
 ### What can be verified where
 
@@ -164,5 +193,13 @@ On the Mac: the Core tests (`dotnet test`) and that both Windows builds compile 
 - A full sign-in, two-factor, trust and re-auth flow against a fake Apple server, including that no secrets reach the log.
 - Planner rules, a local two-way round trip, mirroring into the demo drive, and the photo export layout and incremental runs.
 - Read-only mode, safe replace, and the removal and preflight rules.
+- Regression tests from two independent safety audits: case-only renames, vanished sides, unreadable folders, reversible names, and edits made during a run.
+- Mac-parity behaviour:
+  - 24 concurrent downloads each keep their own bytes.
+  - Album caches with sync-token checks, in-place patching, Drive and list caches.
+  - The log file stays free of names, caches are owner-only, and sign-out wipes them. Opened copies are recycled after two weeks.
+  - Release lock-down of `CIRRUS_*` switches.
+  - Retries only for safe calls.
+  - Shared-library lookup can't stall discovery.
 
-These need a Windows PC: the whole WPF UI, Windows Hello and the Windows-password fallback, DPAPI, the Recycle Bin, drag and drop to and from Explorer, shell icons, and iCloud for Windows integration.
+These need a Windows PC: the whole WPF UI, Windows Hello and the Windows-password fallback, DPAPI, the owner-only folder permissions, the Recycle Bin, drag and drop to and from Explorer, shell icons and thumbnails, JPEG re-encoding of large previews, and iCloud for Windows integration.

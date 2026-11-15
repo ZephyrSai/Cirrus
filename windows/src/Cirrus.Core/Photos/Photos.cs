@@ -117,6 +117,10 @@ public interface IPhotosBackend
     Task ImportFilesAsync(IReadOnlyList<string> files, PhotoAlbum? album, PhotoLibraryRef library, Action<long, long>? progress, CancellationToken ct = default);
     Task AddAsync(IReadOnlyList<PhotoAsset> assets, PhotoAlbum album, PhotoLibraryRef library, CancellationToken ct = default);
     Task<PhotoAlbum> CreateAlbumAsync(string name, PhotoLibraryRef library, CancellationToken ct = default);
+    /// <summary>Opaque "as of" marker for a library after the last listing (null = the backend can't tell).</summary>
+    string? SyncToken(PhotoLibraryRef library);
+    /// <summary>Whether anything in the library changed since <paramref name="token"/>, with the newer token.</summary>
+    Task<(bool Changed, string? Token)> HasChangesAsync(string token, PhotoLibraryRef library, CancellationToken ct = default);
 }
 
 public static class PhotoFormats
@@ -151,17 +155,25 @@ public static class PhotoFormats
     public static bool IsVideoFile(string path) => VideoUTIs.Contains(UtiFor(path));
 }
 
-/// <summary>Small on-disk cache for remote thumbnails.</summary>
+/// <summary>
+/// Small on-disk cache for remote thumbnails: one folder per account and cache version, file names hashed (no
+/// Apple IDs or photo IDs on disk). Bump <see cref="Version"/> to drop everything written by older code.
+/// </summary>
 public static class ThumbnailDiskCache
 {
+    /// <summary>v2: new layout (per account, hashed) and nothing kept from before the download fixes.</summary>
+    public const string Version = "v2";
+
+    static string Hash(string s) => Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(s)))[..24];
+
+    public static string AccountDir(string backend) => Path.Combine(Paths.CacheDir("thumbs"), Hash(Version + backend));
+
     public static string PathFor(string backend, string id, int px)
     {
-        var safe = (backend + "_" + id).Replace("/", "_").Replace(":", "_").Replace("\\", "_");
-        uint h = 5381;
-        foreach (var b in System.Text.Encoding.UTF8.GetBytes(safe)) h = unchecked(h * 33 + b);
-        var dir = Path.Combine(Paths.CacheDir("thumbs"), (h % 64).ToString());
+        var h = Hash(id);
+        var dir = Path.Combine(AccountDir(backend), h[..2]);
         Directory.CreateDirectory(dir);
-        return Path.Combine(dir, $"{(safe.Length > 180 ? safe[..180] : safe)}-{px}.img");
+        return Path.Combine(dir, $"{h}-{px}.img");
     }
 
     public static byte[]? Read(string backend, string id, int px)
@@ -174,12 +186,39 @@ public static class ThumbnailDiskCache
         try
         {
             var p = PathFor(backend, id, px);
-            var tmp = p + ".tmp" + Environment.CurrentManagedThreadId;
+            var tmp = p + ".tmp" + Guid.NewGuid().ToString("N")[..6];
             File.WriteAllBytes(tmp, data);
             File.Move(tmp, p, overwrite: true);
         }
         catch { }
     }
+
+    /// <summary>Removes thumbnail folders from older cache versions and from accounts that are gone (Cirrus' own cache).</summary>
+    public static void PruneOldVersions(IEnumerable<string> keepingBackends)
+    {
+        var keep = keepingBackends.Select(b => Hash(Version + b)).ToHashSet();
+        try
+        {
+            foreach (var e in Directory.EnumerateFileSystemEntries(Paths.CacheDir("thumbs")))
+            {
+                if (keep.Contains(Path.GetFileName(e))) continue;
+                try { if (Directory.Exists(e)) Directory.Delete(e, true); else File.Delete(e); } catch { }
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>Forgets every thumbnail of one account (sign-out).</summary>
+    public static void Wipe(string backend)
+    {
+        try { var d = AccountDir(backend); if (Directory.Exists(d)) Directory.Delete(d, true); } catch { }
+    }
+}
+
+/// <summary>Platform hook: re-encode an image to a JPEG of at most <c>maxPixel</c> (the Windows app uses WPF/WIC).</summary>
+public static class ImageReencoder
+{
+    public static Func<byte[], int, byte[]?>? ToJpeg { get; set; }
 }
 
 /// <summary>Pairs a still with its Live Photo .MOV (same name stem) for imports.</summary>

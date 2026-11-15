@@ -38,7 +38,7 @@ public sealed class FileSecretStore : ISecretStore
 
     public FileSecretStore(string dir, ISecretProtector protector) { _dir = dir; _protector = protector; Directory.CreateDirectory(dir); }
 
-    static string Prefix => Environment.GetEnvironmentVariable("CIRRUS_PROFILE") is { Length: > 0 } p ? $"[{p}] " : "";
+    static string Prefix => Env.Get("CIRRUS_PROFILE") is { } p ? $"[{p}] " : "";
 
     static byte[] Entropy(string service, string account) => SHA256.HashData(Encoding.UTF8.GetBytes("Cirrus/v1|" + Prefix + service + "|" + account.ToLowerInvariant()));
 
@@ -52,7 +52,7 @@ public sealed class FileSecretStore : ISecretStore
             var f = FileFor(service, account);
             if (!File.Exists(f)) return null;
             try { return _protector.Unprotect(File.ReadAllBytes(f), Entropy(service, account)); }
-            catch (Exception e) { Log.Error("couldn’t unlock a saved secret: " + e.GetType().Name); return null; }
+            catch (Exception e) { Log.Status("couldn’t unlock a saved secret: " + e.GetType().Name); return null; }
         }
     }
 
@@ -188,7 +188,7 @@ public sealed class CredentialGate
                 bool ok;
                 try { ok = await _presence.VerifyAsync(reason, cts.Token).ConfigureAwait(false); }
                 catch (OperationCanceledException) { ok = false; }
-                catch (Exception e) { Log.Error("user verification failed: " + e.GetType().Name); ok = false; }
+                catch (Exception e) { Log.Status("user verification failed: " + e.GetType().Name); ok = false; }
                 if (!ok) return null;
             }
             var pw = Encoding.UTF8.GetString(data);

@@ -64,6 +64,7 @@ public partial class BrowserTab : UserControl
         DragOver += OnDragOver;
         Drop += OnDrop;
         Catalog.Shared.Invalidated += OnInvalidated;
+        Catalog.Shared.PhotosPatched += OnPhotosPatched;
         PreviewKeyDown += OnKey;
         DetailsList.ContextMenu = new ContextMenu();
         IconsList.ContextMenu = new ContextMenu();
@@ -75,10 +76,29 @@ public partial class BrowserTab : UserControl
 
     void OnInvalidated(Location loc) => Dispatcher.InvokeAsync(() => { if (loc == Current) Reload(keepSelection: true); });
 
+    /// <summary>F5 / Refresh: ask the server again, skipping every cache for this place.</summary>
+    public async void Refresh()
+    {
+        await Catalog.Shared.ForceRefresh(Current);
+        Reload(keepSelection: true);
+    }
+
+    /// <summary>Our own favorite/hide/delete edits: update the shown photos in place (no re-download).</summary>
+    void OnPhotosPatched(string account, string library, IReadOnlyList<PhotoAsset> updated, IReadOnlySet<string> removed) => Dispatcher.InvokeAsync(() =>
+    {
+        if (Current.Kind != LocKind.Album || Current.Account != account || Current.Library != library || ListingCache.EditSensitive.Contains(Current.Id)) return;
+        var byID = updated.GroupBy(u => u.Id).ToDictionary(g => g.Key, g => g.First());
+        foreach (var gone in _items.Where(i => i.Photo is { } p && removed.Contains(p.Id)).ToList()) _items.Remove(gone);
+        foreach (var i in _items) if (i.Photo is { } p && byID.TryGetValue(p.Id, out var u)) { i.Photo = u; i.Refresh(); }
+        BuildRows();
+        UpdateStatus();
+    });
+
     /// <summary>Called when the tab closes: stop listening and cancel any listing in flight.</summary>
     public void Detach()
     {
         Catalog.Shared.Invalidated -= OnInvalidated;
+        Catalog.Shared.PhotosPatched -= OnPhotosPatched;
         _loadCts?.Cancel();
     }
 
@@ -177,7 +197,7 @@ public partial class BrowserTab : UserControl
             if (cts.IsCancellationRequested) return;
             var signIn = e is ICloudException { Kind: ICloudErrorKind.NeedsSignIn };
             ShowOverlay(e.Message, spinner: false, button: signIn ? "Sign In…" : "Try Again");
-            Log.Info("listing failed: " + e.GetType().Name);
+            Log.Status("listing failed: " + e.GetType().Name);
         }
         finally
         {
@@ -279,7 +299,15 @@ public partial class BrowserTab : UserControl
 
     void IconCell_Loaded(object sender, RoutedEventArgs e)
     {
-        if (sender is FrameworkElement { DataContext: Item item } && item.IsImage) _ = Thumbnails.Load(item, 160, _loadCts?.Token ?? default);
+        if (sender is FrameworkElement { DataContext: Item item } && Thumbnails.CanPreview(item)) _ = Thumbnails.Load(item, 160, _loadCts?.Token ?? default);
+    }
+
+    /// <summary>Details view: small previews too (rows are recycled, so also when a row gets a new item).</summary>
+    void NameCell_Loaded(object sender, RoutedEventArgs e) => NameCell(sender);
+    void NameCell_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e) => NameCell(sender);
+    void NameCell(object sender)
+    {
+        if (sender is FrameworkElement { DataContext: Item item, IsLoaded: true } && Thumbnails.CanPreview(item)) _ = Thumbnails.Load(item, 64, _loadCts?.Token ?? default);
     }
 
     void Tile_MouseDown(object sender, MouseButtonEventArgs e)
@@ -463,10 +491,10 @@ public partial class BrowserTab : UserControl
         if (items.Count == 0 || items.Any(i => i.Volume is not null)) return;
         var data = new CirrusDataObject(items, Current);
         var localOnly = items.All(i => i.LocalPath is not null);
-        var lockedICloud = items.Any(i => i.LocalPath is { } p && SafetyPolicy.IsICloudPath(p)) && SafetyPolicy.ReadOnlyICloud;
+        var lockedICloud = SafetyPolicy.ReadOnlyICloud && items.Any(i => i.LocalPath is { } p && SafetyPolicy.TouchesICloud(p));
         var effects = localOnly && !lockedICloud ? DragDropEffects.Copy | DragDropEffects.Move | DragDropEffects.Link : DragDropEffects.Copy;
         try { DragDrop.DoDragDrop(this, data, effects); }
-        catch (Exception e) { Log.Error("drag failed: " + e.GetType().Name); }
+        catch (Exception e) { Log.Status("drag failed: " + e.GetType().Name); }
         finally { data.Finish(); }
     }
 

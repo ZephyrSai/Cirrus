@@ -106,7 +106,7 @@ public static class LocalFiles
     public static string? SafeTrash(string path, string? root)
     {
         if (!Exists(path)) return null;
-        if (Recycler.TryRecycle(path)) return null;
+        if (Recycler.TryRecycle(path)) return null;      // RemovalDeclinedException propagates: nothing is moved
         return Quarantine(path, root);
     }
 
@@ -120,23 +120,27 @@ public static class LocalFiles
         var dest = Path.Combine(bin, name);
         if (Exists(dest)) dest = Path.Combine(bin, Guid.NewGuid().ToString("N")[..6] + "-" + name);
         MoveItem(path, dest);
-        Log.Info("moved a removed item into .cirrus/Removed (no Recycle Bin on that volume)");
+        Log.Status("moved a removed item into .cirrus/Removed (no Recycle Bin on that volume)");
         return dest;
     }
 
+    /// <summary>Bytes in a file or folder tree; long.MaxValue when any part can't be read (so it's never under-counted).</summary>
     public static long TreeSize(string path)
     {
         if (File.Exists(path)) return new FileInfo(path).Length;
         long total = 0;
         try
         {
-            foreach (var f in new DirectoryInfo(path).EnumerateFiles("*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = 0 }))
+            foreach (var f in new DirectoryInfo(path).EnumerateFiles("*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = false, AttributesToSkip = 0 }))
                 total += f.Length;
         }
-        catch { }
+        catch { return long.MaxValue; }
         return total;
     }
 }
+
+/// <summary>The user declined a removal in Windows' own dialog; the item was left in place.</summary>
+public sealed class RemovalDeclinedException(string name) : IOException($"“{name}” was left in place (removal declined).") { }
 
 public interface IRecycler
 {
@@ -168,18 +172,25 @@ public sealed class WindowsRecycleBin : IRecycler
             if (vol is null || !vol.IsFixed) return false;                               // USB sticks and card readers: none
             var size = LocalFiles.TreeSize(full);
             if (!BinAccepts(vol.Root, size, vol.Total)) return false;
+            if (full.Length >= 248) return false;   // the shell can't recycle long paths reliably
+            // AllDialogs = Explorer's own behaviour: no prompt for a normal recycle (unless the user turned on delete
+            // confirmations), but Windows asks before anything would be deleted permanently instead of recycled.
             if (Directory.Exists(full))
-                Microsoft.VisualBasic.FileIO.FileSystem.DeleteDirectory(full, Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs,
+                Microsoft.VisualBasic.FileIO.FileSystem.DeleteDirectory(full, Microsoft.VisualBasic.FileIO.UIOption.AllDialogs,
                     Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin, Microsoft.VisualBasic.FileIO.UICancelOption.ThrowException);
             else
-                Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(full, Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs,
+                Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(full, Microsoft.VisualBasic.FileIO.UIOption.AllDialogs,
                     Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin, Microsoft.VisualBasic.FileIO.UICancelOption.ThrowException);
             return true;
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException)
+        {
+            // The user said no in Windows' dialog: leave the item exactly where it is.
+            throw new RemovalDeclinedException(Path.GetFileName(path));
+        }
         catch (Exception e)
         {
-            Log.Error("recycle failed, will move aside instead: " + e.GetType().Name);
+            Log.Status("recycle failed, will move aside instead: " + e.GetType().Name);
             return false;
         }
     }

@@ -100,7 +100,7 @@ sealed class SignInWindow : Window
         SetBusy(false);
         _status.Foreground = Brushes.IndianRed;
         _status.Text = e is AppleSRPClient.SRPException or ICloudException or TimeoutException or HttpRequestException ? e.Message : "Sign-in failed: " + e.Message;
-        Log.Info("sign-in step failed: " + e.GetType().Name);
+        Log.Status("sign-in step failed: " + e.GetType().Name);
     }
 
     void Primary()

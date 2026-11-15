@@ -14,14 +14,63 @@ public static class Paths
     {
         get
         {
-            var baseDir = Environment.GetEnvironmentVariable("CIRRUS_DATA_DIR");
+            var baseDir = Env.Get("CIRRUS_DATA_DIR");
             if (string.IsNullOrEmpty(baseDir)) baseDir = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.Create);
             if (string.IsNullOrEmpty(baseDir)) baseDir = Path.GetTempPath();
-            var profile = Environment.GetEnvironmentVariable("CIRRUS_PROFILE");
+            var profile = Env.Get("CIRRUS_PROFILE");
+            // A profile is only a short label: never a path that could turn another folder into Cirrus' data folder.
+            if (profile is not null && (profile.Length > 32 || !profile.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_'))) profile = null;
             var dir = Path.Combine(baseDir, string.IsNullOrEmpty(profile) ? "Cirrus" : "Cirrus-" + profile);
-            Directory.CreateDirectory(dir);
+            PrivateDir(dir);
             return dir;
         }
+    }
+
+    static readonly HashSet<string> Secured = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Owner-only, so other accounts on this PC can't read cached iCloud content: on Windows the folder stops
+    /// inheriting permissions and grants only the current user (and SYSTEM); elsewhere it's mode 0700.
+    /// Everything Cirrus stores (settings, secrets, caches, logs) lives below it.
+    /// </summary>
+    internal static void PrivateDir(string dir)
+    {
+        var created = !Directory.Exists(dir);
+        Directory.CreateDirectory(dir);
+        lock (Secured) { if (!Secured.Add(dir) && !created) return; }
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                var info = new DirectoryInfo(dir);
+                var sec = new System.Security.AccessControl.DirectorySecurity();
+                sec.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+                var inherit = System.Security.AccessControl.InheritanceFlags.ContainerInherit | System.Security.AccessControl.InheritanceFlags.ObjectInherit;
+                var me = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+                sec.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(me, System.Security.AccessControl.FileSystemRights.FullControl,
+                    inherit, System.Security.AccessControl.PropagationFlags.None, System.Security.AccessControl.AccessControlType.Allow));
+                sec.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.LocalSystemSid, null),
+                    System.Security.AccessControl.FileSystemRights.FullControl, inherit, System.Security.AccessControl.PropagationFlags.None, System.Security.AccessControl.AccessControlType.Allow));
+                info.SetAccessControl(sec);
+            }
+            else File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+        catch (Exception e) { Log.Status("couldn’t restrict the Cirrus data folder: " + e.GetType().Name); }
+    }
+
+    static bool IsAccountDir(string name) => name.Length == 16 && name.All(char.IsAsciiHexDigitLower);
+
+    /// <summary>The newest modification time of a file, or of a folder and anything inside it.</summary>
+    static DateTime LatestWrite(string path)
+    {
+        if (File.Exists(path)) return File.GetLastWriteTimeUtc(path);
+        var latest = Directory.GetLastWriteTimeUtc(path);
+        foreach (var f in Directory.EnumerateFileSystemEntries(path, "*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = 0 }))
+        {
+            var m = File.GetLastWriteTimeUtc(f);
+            if (m > latest) latest = m;
+        }
+        return latest;
     }
 
     public static string Caches
@@ -30,7 +79,51 @@ public static class Paths
     }
 
     public static string CacheDir(string name) { var d = Path.Combine(Caches, name); Directory.CreateDirectory(d); return d; }
+
+    /// <summary>A cache folder for one account (hashed name), so sign-out can clear exactly that account's copies.</summary>
+    public static string AccountCacheDir(string name, string accountID) =>
+        Path.Combine(CacheDir(name), Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(accountID ?? "")))[..16]);
     public static string SupportDir(string name) { var d = Path.Combine(AppSupport, name); Directory.CreateDirectory(d); return d; }
+
+    /// <summary>Cache folders holding temporary copies, with how long their entries may live.</summary>
+    public static readonly (string Name, TimeSpan MaxAge)[] ScratchCaches =
+    [
+        ("preview", TimeSpan.FromDays(1)), ("relay", TimeSpan.FromDays(1)), ("tmp", TimeSpan.FromDays(1)), ("dragout", TimeSpan.FromDays(1)),
+        ("open", TimeSpan.FromDays(14)),
+    ];
+
+    /// <summary>
+    /// Removes temporary copies (previews, relays, partial downloads) after a day, drag-out copies after a day and
+    /// copies of iCloud files that were opened after two weeks, counted from the last time anything inside changed.
+    /// Opened and dragged-out copies may hold the user's edits (apps often open a dropped file in place), so they go to
+    /// the Recycle Bin (or .cirrus\Removed) instead of being deleted; the rest is Cirrus' own scratch data.
+    /// </summary>
+    public static void CleanCaches(DateTimeOffset? now = null)
+    {
+        var t = (now ?? DateTimeOffset.UtcNow).UtcDateTime;
+        foreach (var (name, maxAge) in ScratchCaches)
+        {
+            string dir;
+            try { dir = CacheDir(name); } catch { continue; }
+            List<string> entries;
+            try { entries = Directory.EnumerateFileSystemEntries(dir).Where(e => Path.GetFileName(e) != ".cirrus").ToList(); } catch { continue; }
+            // Opened and preview copies are grouped per account: age each copy, not the whole account folder.
+            if (name is "open" or "preview")
+                entries = entries.SelectMany(e => Directory.Exists(e) && IsAccountDir(Path.GetFileName(e))
+                    ? Directory.EnumerateFileSystemEntries(e).Where(x => Path.GetFileName(x) != ".cirrus") : [e]).ToList();
+            foreach (var e in entries)
+            {
+                try
+                {
+                    if (t - LatestWrite(e) <= maxAge) continue;
+                    if (name is "open" or "dragout") LocalFiles.SafeTrash(e, dir);
+                    else if (Directory.Exists(e)) Directory.Delete(e, true);
+                    else File.Delete(e);
+                }
+                catch { }
+            }
+        }
+    }
 
     /// <summary>A unique scratch file location (its own folder) for downloads in flight.</summary>
     public static string TempFile(string name)
@@ -44,8 +137,7 @@ public static class Paths
     public static string SafeName(string name)
     {
         var s = (name ?? "").Replace("\0", "");
-        s = s.Replace("/", WinNames.MapsLocally ? "／" : ":");
-        if (WinNames.MapsLocally) s = WinNames.ToLocal(s);
+        s = WinNames.MapsLocally ? WinNames.ToLocal(s) : s.Replace("/", ":");
         if (s == "." || s == ".." || s.Length == 0) s = "_" + s;
         return s;
     }
@@ -55,67 +147,53 @@ public static class Paths
 }
 
 /// <summary>
-/// iCloud names may contain characters Windows can't store (: * ? " &lt; &gt; | \ and trailing dots or spaces).
-/// Cirrus maps them to look-alike full-width characters on disk and back again when talking to iCloud,
-/// so a sync between iCloud Drive and an NTFS folder stays stable (no re-copies, no false deletes).
+/// iCloud names may contain characters Windows can't store (: * ? " &lt; &gt; | \ /, control characters, trailing dots
+/// or spaces, device names like CON). Cirrus stores each such character as U+F000 + its code (the private-use mapping
+/// WSL and Cygwin use) and maps it back when talking to iCloud. The mapping is exactly reversible: real names
+/// (including full-width CJK punctuation such as ： ？) never change, so a sync between iCloud Drive and an
+/// NTFS folder stays stable — no re-copies, no false deletes.
 /// </summary>
 public static class WinNames
 {
     /// <summary>On by default on Windows; tests can switch it on elsewhere.</summary>
     public static bool MapsLocally { get; set; } = OperatingSystem.IsWindows();
 
-    static readonly (char ascii, char wide)[] Map =
-    [
-        (':', '：'), ('*', '＊'), ('?', '？'), ('"', '＂'), ('<', '＜'), ('>', '＞'), ('|', '｜'), ('\\', '＼'),
-    ];
+    const int Base = 0xF000;
+    const string Invalid = ":*?\"<>|\\/";
 
     static readonly HashSet<string> Reserved = new(StringComparer.OrdinalIgnoreCase)
     {
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     };
-    const char ReservedMark = '＿';   // full-width low line
-    const char TrailingDot = '．';
-    const char TrailingSpace = ' ';
+
+    static char Escape(char c) => (char)(Base + c);
+    static bool IsEscaped(char c) => c >= Base && c < Base + 0x80;
 
     /// <summary>iCloud name → name safe to create on NTFS/FAT/exFAT.</summary>
     public static string ToLocal(string name)
     {
         if (string.IsNullOrEmpty(name)) return name;
-        var sb = new StringBuilder(name.Length);
-        foreach (var c in name)
-        {
-            if (c < 32) { sb.Append((char)(0x2400 + c)); continue; }    // control pictures (e.g. "Icon\r")
-            var m = Array.FindIndex(Map, p => p.ascii == c);
-            sb.Append(m >= 0 ? Map[m].wide : c);
-        }
-        int end = sb.Length;
-        while (end > 0 && (sb[end - 1] == '.' || sb[end - 1] == ' ')) end--;
-        for (int i = end; i < sb.Length; i++) sb[i] = sb[i] == '.' ? TrailingDot : TrailingSpace;
-        var s = sb.ToString();
-        var stem = s.Split('.')[0];
-        if (Reserved.Contains(stem)) s = stem + ReservedMark + s[stem.Length..];
+        var chars = name.ToCharArray();
+        for (int i = 0; i < chars.Length; i++)
+            if (chars[i] < 32 || Invalid.Contains(chars[i])) chars[i] = Escape(chars[i]);
+        int end = chars.Length;
+        while (end > 0 && (chars[end - 1] == '.' || chars[end - 1] == ' ')) end--;
+        for (int i = end; i < chars.Length; i++) chars[i] = Escape(chars[i]);
+        var s = new string(chars);
+        var dot = s.IndexOf('.');
+        var stem = dot < 0 ? s : s[..dot];
+        if (Reserved.Contains(stem)) s = stem[..^1] + Escape(stem[^1]) + s[stem.Length..];
         return s;
     }
 
-    /// <summary>On-disk name → the name iCloud should see.</summary>
+    /// <summary>On-disk name → the name iCloud should see (exact inverse of <see cref="ToLocal"/>).</summary>
     public static string FromLocal(string name)
     {
         if (string.IsNullOrEmpty(name)) return name;
-        var stemEnd = name.IndexOf('.');
-        var stem = stemEnd < 0 ? name : name[..stemEnd];
-        if (stem.Length > 1 && stem[^1] == ReservedMark && Reserved.Contains(stem[..^1])) name = stem[..^1] + name[stem.Length..];
-        var sb = new StringBuilder(name.Length);
-        foreach (var c in name)
-        {
-            if (c >= 0x2400 && c < 0x2420) { sb.Append((char)(c - 0x2400)); continue; }
-            var m = Array.FindIndex(Map, p => p.wide == c);
-            sb.Append(m >= 0 ? Map[m].ascii : c);
-        }
-        int k = sb.Length;
-        while (k > 0 && (sb[k - 1] == TrailingDot || sb[k - 1] == TrailingSpace)) k--;
-        for (int i = k; i < sb.Length; i++) sb[i] = sb[i] == TrailingDot ? '.' : ' ';
-        return sb.ToString();
+        var chars = name.ToCharArray();
+        for (int i = 0; i < chars.Length; i++) if (IsEscaped(chars[i])) chars[i] = (char)(chars[i] - Base);
+        return new string(chars);
     }
 
     public static string RelToLocal(string rel) => MapsLocally ? string.Join('/', rel.Split('/').Select(ToLocal)) : rel;

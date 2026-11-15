@@ -64,7 +64,9 @@ public static class DriveBackendExtensions
             var listed = await drive.ListManyAsync(batch.Select(b => b.Id).ToList(), ct).ConfigureAwait(false);
             foreach (var (fid, prefix) in batch)
             {
-                if (!listed.TryGetValue(fid, out var items)) continue;
+                // A folder missing from the answer must not look empty (that would read as "everything deleted").
+                if (!listed.TryGetValue(fid, out var items))
+                    throw ICloudException.Server($"iCloud Drive didn’t list “{(prefix.Length == 0 ? "iCloud Drive" : prefix)}”. Nothing was changed; try again.");
                 foreach (var node in items)
                 {
                     var rel = prefix.Length == 0 ? node.Name : prefix + "/" + node.Name;
@@ -135,6 +137,10 @@ public sealed class WebDrive : IDriveBackend
             var folder = arr[i];
             var fid = folder["drivewsid"].Str ?? (i < folderIDs.Count ? folderIDs[i] : "");
             if (folder["status"].Str == "NOT_FOUND") throw ICloudException.NotFound();
+            if (folder["status"].Str is { } st && st != "OK") throw ICloudException.Server($"iCloud Drive couldn’t list a folder ({st}). Nothing was changed.");
+            if (!folder["errorCode"].IsNull) throw ICloudException.Server("iCloud Drive couldn’t list a folder. Nothing was changed; try again.");
+            if (folder["items"].IsNull && (folder["directChildrenCount"].Int ?? folder["numberOfItems"].Int ?? 0) > 0)
+                throw ICloudException.Server("iCloud Drive returned an incomplete folder listing. Nothing was changed; try again.");
             output[fid] = folder["items"].Array.Select(x => Node(x, fid)).OfType<DriveNode>().ToList();
         }
         return output;

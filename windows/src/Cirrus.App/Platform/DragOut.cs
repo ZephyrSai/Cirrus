@@ -106,18 +106,4 @@ sealed class CirrusDataObject : IDataObject
     public void SetData(string format, object data) { }
     public void SetData(Type format, object data) { }
     public void SetData(string format, object data, bool autoConvert) { }
-
-    /// <summary>Clears Cirrus' own scratch copies (drag-out staging, relays, temp downloads) older than a day.</summary>
-    public static void CleanupOldStaging()
-    {
-        foreach (var name in new[] { "dragout", "relay", "tmp", "open" })
-        {
-            try
-            {
-                foreach (var d in Directory.EnumerateDirectories(Paths.CacheDir(name)))
-                    if (Directory.GetLastWriteTimeUtc(d) < DateTime.UtcNow.AddDays(-1)) Directory.Delete(d, true);
-            }
-            catch { }
-        }
-    }
 }

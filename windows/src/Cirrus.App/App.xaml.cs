@@ -10,15 +10,21 @@ public partial class App : Application
 {
     protected override void OnStartup(StartupEventArgs e)
     {
+#if !DEBUG
+        // Release builds honour only the user-facing switches (CIRRUS_DEMO, CIRRUS_PROFILE): no test or automation hooks.
+        Env.LockDown();
+#endif
         base.OnStartup(e);
         DispatcherUnhandledException += OnUnhandled;
-        AppDomain.CurrentDomain.UnhandledException += (_, a) => Log.Error("unhandled: " + (a.ExceptionObject as Exception)?.GetType().Name);
-        TaskScheduler.UnobservedTaskException += (_, a) => { Log.Error("unobserved task: " + a.Exception.InnerException?.GetType().Name); a.SetObserved(); };
+        AppDomain.CurrentDomain.UnhandledException += (_, a) => Log.Status("unhandled: " + (a.ExceptionObject as Exception)?.GetType().Name);
+        TaskScheduler.UnobservedTaskException += (_, a) => { Log.Status("unobserved task: " + a.Exception.InnerException?.GetType().Name); a.SetObserved(); };
 
         // Safety first: the read-only switch is applied before any account or job exists.
         var settings = Settings.Load(BuildInfo.IsTester);
-        Log.Info($"Cirrus {BuildInfo.Version} for Windows starting{(BuildInfo.IsTester ? " (tester build)" : "")}; read-only iCloud: {SafetyPolicy.ReadOnlyICloud}");
+        Log.Status($"Cirrus {BuildInfo.Version} for Windows starting{(BuildInfo.IsTester ? " (tester build)" : "")}; read-only iCloud: {SafetyPolicy.ReadOnlyICloud}");
 
+        Paths.CleanCaches();                                   // previews/relays/temp after a day, opened copies after two weeks
+        ImageReencoder.ToJpeg = Services.Thumbnails.ToJpeg;    // originals used as large previews are cached as JPEG
         ISecretStore secrets = OperatingSystem.IsWindows()
             ? new FileSecretStore(Paths.SupportDir("Secrets"), new DpapiProtector())
             : new MemorySecretStore();
@@ -44,6 +50,7 @@ public partial class App : Application
     void OnUnhandled(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         Log.Error("UI error: " + e.Exception.GetType().Name + ": " + e.Exception.Message);
+        Log.Status("UI error: " + e.Exception.GetType().Name);
         Dialogs.Error(null, "Something went wrong", e.Exception.Message);
         e.Handled = true;
     }

@@ -16,7 +16,76 @@ public sealed class Catalog
 
     /// <summary>Raised (on any thread) when a location's contents changed and open tabs should reload.</summary>
     public event Action<Location>? Invalidated;
-    public void Invalidate(Location loc) => Invalidated?.Invoke(loc);
+    /// <summary>Our own photo edits, applied in place: (account, library, updated assets, removed asset ids).</summary>
+    public event Action<string, string, IReadOnlyList<PhotoAsset>, IReadOnlySet<string>>? PhotosPatched;
+
+    // In-memory listings, trusted for a while before asking the server again (our own edits invalidate sooner).
+    readonly Dictionary<Location, (List<Item> Items, DateTimeOffset At)> _memory = [];
+    readonly HashSet<Location> _forceNext = [];
+    /// <summary>Bumped by every invalidation: a listing that started before it may not store its (older) result.</summary>
+    readonly Dictionary<Location, long> _generation = [];
+
+    long Generation(Location loc) { lock (_lock) return _generation.TryGetValue(loc, out var g) ? g : 0; }
+
+    static TimeSpan Ttl(Location loc) => loc.Kind switch
+    {
+        // Recently Deleted is never served from memory: it feeds Delete Immediately.
+        LocKind.Drive => TimeSpan.FromSeconds(60),
+        LocKind.Photos => TimeSpan.FromSeconds(300),
+        _ => TimeSpan.Zero,          // albums check freshness themselves (sync token); local folders are cheap
+    };
+
+    /// <summary>Our own change: the next listing of this place goes to the server, skipping caches. Open tabs reload.</summary>
+    public void Invalidate(Location loc)
+    {
+        lock (_lock) { _memory.Remove(loc); _forceNext.Add(loc); _generation[loc] = Generation(loc) + 1; }
+        if (loc.Kind == LocKind.Album && loc.Account is { } a && loc.Library is { } l) ListingCache.Shared.MarkAlbumStale(a, l, loc.Id!);
+        Invalidated?.Invoke(loc);
+    }
+
+    /// <summary>F5 / Refresh: skip every cache for this place (for Photos, the album list too).</summary>
+    public async Task ForceRefresh(Location loc)
+    {
+        lock (_lock) { _memory.Remove(loc); _forceNext.Add(loc); _generation[loc] = Generation(loc) + 1; }
+        if (loc.Kind is LocKind.Photos or LocKind.Album && loc.AccountRef is { } a)
+        {
+            try { await Albums(a, loc.Library!, fresh: true); } catch { }
+        }
+    }
+
+    /// <summary>Forget everything cached in memory for an account (sign-out).</summary>
+    public void ForgetAccount(string accountID)
+    {
+        lock (_lock)
+        {
+            foreach (var k in _memory.Keys.Where(k => k.Account == accountID).ToList()) _memory.Remove(k);
+            foreach (var k in _albums.Keys.Where(k => k.StartsWith(accountID + "|", StringComparison.Ordinal)).ToList()) _albums.Remove(k);
+            _libraries.Remove(accountID);
+            foreach (var k in _driveNames.Keys.Where(k => k.StartsWith(accountID + "|", StringComparison.Ordinal)).ToList()) _driveNames.Remove(k);
+        }
+        Services.Thumbnails.Forget(accountID);
+    }
+
+    /// <summary>
+    /// Reflect our own favorite/hide/delete edits everywhere without re-downloading: cached listings (memory and disk)
+    /// are patched; Favorites, Hidden and Recently Deleted are re-listed next time.
+    /// </summary>
+    public void PatchPhotos(string accountID, string library, IReadOnlyList<PhotoAsset> updated, IReadOnlySet<string> removed)
+    {
+        var byID = new Dictionary<string, PhotoAsset>();
+        foreach (var u in updated) byID.TryAdd(u.Id, u);
+        lock (_lock)
+            foreach (var k in _memory.Keys.Where(k => k.Kind == LocKind.Album && k.Account == accountID && k.Library == library).ToList())
+            {
+                if (ListingCache.EditSensitive.Contains(k.Id)) { _memory.Remove(k); _forceNext.Add(k); continue; }
+                var (items, at) = _memory[k];
+                _memory[k] = (items.Where(i => i.Photo is null || !removed.Contains(i.Photo.Id)).ToList(), at);
+            }
+        ListingCache.Shared.PatchPhotos(accountID, library, updated, removed);
+        foreach (var id in ListingCache.EditSensitive) lock (_lock) _forceNext.Add(Location.Album(accountID, library, id));
+        PhotosPatched?.Invoke(accountID, library, updated, removed);
+        foreach (var id in ListingCache.EditSensitive) Invalidated?.Invoke(Location.Album(accountID, library, id));
+    }
 
     public static string Glyph(Location loc) => loc.Kind switch
     {
@@ -144,8 +213,35 @@ public sealed class Catalog
     public async Task<List<PhotoLibraryRef>> Libraries(Account acct, CancellationToken ct = default)
     {
         lock (_lock) if (_libraries.TryGetValue(acct.Id, out var l)) return l;
-        var libs = acct.Photos is { } p ? await p.LibrariesAsync(ct) : [];
+        if (acct.Photos is not { } p) return [];
+        if (acct.Kind == AccountKind.Web)
+        {
+            // Last known libraries on disk: trusted for a day; older ones are shown while a fresh list loads quietly.
+            var (cached, fresh) = ListingCache.Shared.LoadList<PhotoLibraryRef>(acct.Id, "libraries", ListingCache.LibraryListMaxAge);
+            if (cached is { Count: > 0 })
+            {
+                lock (_lock) _libraries[acct.Id] = cached;
+                if (p is WebPhotos wp) wp.Remember(cached);   // shared zones need their owner and area
+                if (!fresh)
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var f = await p.LibrariesAsync();
+                            if (p is WebPhotos { SharedLookupFailed: true }) return;   // possibly missing a Shared Library: keep the known list
+                            lock (_lock) _libraries[acct.Id] = f;
+                            ListingCache.Shared.SaveList(acct.Id, "libraries", f);
+                        }
+                        catch { }
+                    });
+                return cached;
+            }
+        }
+        var libs = await p.LibrariesAsync(ct);
+        // A list made while the shared database didn't answer may lack a Shared Library: use it, but don't keep it.
+        if (p is WebPhotos { SharedLookupFailed: true }) return libs;
         lock (_lock) _libraries[acct.Id] = libs;
+        if (acct.Kind == AccountKind.Web) ListingCache.Shared.SaveList(acct.Id, "libraries", libs);
         return libs;
     }
 
@@ -157,8 +253,30 @@ public sealed class Catalog
         var key = acct.Id + "|" + libID;
         if (!fresh) lock (_lock) if (_albums.TryGetValue(key, out var hit)) return hit;
         if (acct.Photos is not { } photos) return [];
+        if (!fresh && acct.Kind == AccountKind.Web)
+        {
+            // Last known album list on disk: trusted for 10 minutes; older ones are shown while a fresh list loads.
+            var (cached, recent) = ListingCache.Shared.LoadList<PhotoAlbum>(acct.Id, "albums|" + libID, ListingCache.AlbumListMaxAge);
+            if (cached is not null)
+            {
+                lock (_lock) _albums[key] = cached;
+                if (!recent)
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var f = await Albums(acct, libID, fresh: true);
+                            var changed = f.Count != cached.Count || f.Zip(cached).Any(x => x.First.Id != x.Second.Id || x.First.Name != x.Second.Name || x.First.Count != x.Second.Count);
+                            if (changed) Invalidated?.Invoke(Location.Photos(acct.Id, libID));
+                        }
+                        catch { }
+                    });
+                return cached;
+            }
+        }
         var albums = await photos.AlbumsAsync(await Library(acct, libID, ct), ct);
         lock (_lock) _albums[key] = albums;
+        if (acct.Kind == AccountKind.Web) ListingCache.Shared.SaveList(acct.Id, "albums|" + libID, albums);
         return albums;
     }
 
@@ -172,8 +290,36 @@ public sealed class Catalog
 
     // MARK: Listing
 
-    /// <summary>Lists a location. Photo albums stream pages through <paramref name="page"/> as they arrive.</summary>
+    /// <summary>
+    /// Lists a location through the caches. <paramref name="page"/> receives a quick first answer: the cached copy of
+    /// an iCloud Drive folder or album while it's being checked, or album pages as they stream in.
+    /// </summary>
     public async Task<List<Item>> List(Location loc, Action<IReadOnlyList<Item>>? page, CancellationToken ct)
+    {
+        bool forced;
+        long gen;
+        lock (_lock)
+        {
+            forced = _forceNext.Remove(loc);
+            gen = Generation(loc);
+            if (!forced && _memory.TryGetValue(loc, out var m) && DateTimeOffset.UtcNow - m.At < Ttl(loc)) return m.Items;
+        }
+        var started = DateTimeOffset.UtcNow;
+        List<Item> items;
+        try { items = await ListFresh(loc, forced, page, ct); }
+        catch
+        {
+            if (forced) lock (_lock) _forceNext.Add(loc);   // a failed forced listing stays forced for the retry
+            throw;
+        }
+        var secs = (DateTimeOffset.UtcNow - started).TotalSeconds;
+        if (secs > 1) Log.Status($"list {loc.Kind.ToString().ToLowerInvariant()} {items.Count} items in {secs:0.0}s");
+        // Only keep it if nothing was invalidated while it ran (otherwise it may predate our own change).
+        if (Ttl(loc) > TimeSpan.Zero) lock (_lock) if (Generation(loc) == gen) _memory[loc] = (items, DateTimeOffset.UtcNow);
+        return items;
+    }
+
+    async Task<List<Item>> ListFresh(Location loc, bool forced, Action<IReadOnlyList<Item>>? page, CancellationToken ct)
     {
         switch (loc.Kind)
         {
@@ -183,7 +329,12 @@ public sealed class Catalog
             {
                 var acct = loc.AccountRef ?? throw ICloudException.NeedsSignIn();
                 var drive = acct.Drive ?? throw ICloudException.NeedsSignIn();
+                var web = acct.Kind == AccountKind.Web;
+                if (web && !forced && ListingCache.Shared.LoadDrive(acct.Id, loc.Id!) is { } cached)
+                    page?.Invoke(cached.Nodes.Select(n => DriveItem(acct, n)).ToList());   // last known contents at once
+                var gen = Generation(loc);
                 var nodes = await drive.ListAsync(loc.Id!, ct);
+                if (web && Generation(loc) == gen) ListingCache.Shared.SaveDrive(acct.Id, loc.Id!, nodes);
                 return nodes.Select(n => DriveItem(acct, n)).ToList();
             }
             case LocKind.DriveTrash:
@@ -195,7 +346,7 @@ public sealed class Catalog
             case LocKind.Photos:
             {
                 var acct = loc.AccountRef ?? throw ICloudException.NeedsSignIn();
-                var albums = await Albums(acct, loc.Library!, fresh: true, ct);
+                var albums = await Albums(acct, loc.Library!, fresh: forced, ct);
                 return albums.Where(a => a.ParentID == loc.Id && (loc.Id is not null || a.Kind != PhotoAlbumKind.Smart || a.Id is "smart:All Photos" or "smart:Favorites" or "smart:Videos" or "smart:Live" or "smart:Hidden" or "smart:Recently Deleted" or "smart:Screenshots"))
                     .Select(a => new Item
                     {
@@ -210,7 +361,8 @@ public sealed class Catalog
                 var photos = acct.Photos ?? throw ICloudException.NeedsSignIn();
                 var lib = await Library(acct, loc.Library!, ct);
                 var album = await Album(acct, loc.Library!, loc.Id!, ct) ?? new PhotoAlbum(loc.Id!, Title(loc), PhotoAlbumKind.Smart);
-                var assets = await photos.AssetsAsync(album, lib, (batch, _) => page?.Invoke(batch.Select(a => PhotoItem(acct, a)).ToList()), ct);
+                var assets = await ListingCache.Shared.ListAlbumAsync(photos, acct.Id, lib, album, forced, useDisk: acct.Kind == AccountKind.Web,
+                    page is null ? null : batch => page(batch.Select(a => PhotoItem(acct, a)).ToList()), ct);
                 return assets.Select(a => PhotoItem(acct, a)).ToList();
             }
         }

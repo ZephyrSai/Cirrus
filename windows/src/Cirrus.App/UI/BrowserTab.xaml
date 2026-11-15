@@ -60,7 +60,7 @@
                         </GridViewColumn.Header>
                         <GridViewColumn.CellTemplate>
                             <DataTemplate>
-                                <StackPanel Orientation="Horizontal">
+                                <StackPanel Orientation="Horizontal" Loaded="NameCell_Loaded" DataContextChanged="NameCell_DataContextChanged">
                                     <Grid Width="18" Height="18" Margin="0,0,8,0">
                                         <TextBlock Text="{Binding Glyph}" Style="{StaticResource IconText}" FontSize="14" />
                                         <Image Source="{Binding Picture}" Width="18" Height="18" Stretch="Uniform" />

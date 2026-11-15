@@ -19,7 +19,7 @@ public sealed class DemoDrive : IDriveBackend
         var baseDir = Paths.CacheDir("demo");
         _root = Path.Combine(baseDir, "drive");
         _trash = Path.Combine(baseDir, "drive-trash");
-        _delayMs = Environment.GetEnvironmentVariable("CIRRUS_DEMO_FAST") is not null ? 0 : 120;
+        _delayMs = Env.Flag("CIRRUS_DEMO_FAST") ? 0 : 120;
         Seed();
     }
 
@@ -229,13 +229,15 @@ public sealed class DemoPhotos : IPhotosBackend
         public List<PhotoAsset> Assets { get; set; } = [];
         public List<PhotoAlbum> Albums { get; set; } = [];
         public Dictionary<string, List<string>> Membership { get; set; } = [];   // album id → asset ids
+        /// <summary>Bumped on every change: the demo's stand-in for a CloudKit sync token.</summary>
+        public long Version { get; set; } = 1;
     }
 
     readonly string _dir;
     readonly object _lock = new();
     Store _store;
     const int ArtVersion = 3;
-    static bool Fast => Environment.GetEnvironmentVariable("CIRRUS_DEMO_FAST") is not null;
+    static bool Fast => Env.Flag("CIRRUS_DEMO_FAST");
 
     DemoPhotos()
     {
@@ -254,11 +256,19 @@ public sealed class DemoPhotos : IPhotosBackend
         Seed();
     }
 
-    void Save() { lock (_lock) AtomicFile.Write(Path.Combine(_dir, "store.json"), JsonSerializer.SerializeToUtf8Bytes(_store)); }
+    void Save() { lock (_lock) { _store.Version++; AtomicFile.Write(Path.Combine(_dir, "store.json"), JsonSerializer.SerializeToUtf8Bytes(_store)); } }
+
+    public string? SyncToken(PhotoLibraryRef library) { lock (_lock) return "demo-" + _store.Version; }
+
+    public Task<(bool Changed, string? Token)> HasChangesAsync(string token, PhotoLibraryRef library, CancellationToken ct = default)
+    {
+        var now = SyncToken(library);
+        return Task.FromResult((token != now, now));
+    }
 
     void Seed()
     {
-        var count = int.TryParse(Environment.GetEnvironmentVariable("CIRRUS_DEMO_PHOTOS"), out var c) ? c : 96;
+        var count = int.TryParse(Env.Get("CIRRUS_DEMO_PHOTOS"), out var c) ? c : 96;
         string[] names = ["Beach", "Hike", "City", "Dinner", "Sunset", "Garden", "Snow", "Lake", "Market", "Concert", "Bridge", "Cafe"];
         var assets = new List<PhotoAsset>();
         var now = DateTimeOffset.Now;

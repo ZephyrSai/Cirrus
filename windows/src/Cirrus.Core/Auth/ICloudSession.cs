@@ -66,8 +66,9 @@ public sealed class ICloudSession : IDisposable
 {
     public const string WidgetKey = "d39ba9916b7251055b22c7f910e2ea796ee65e98b2ddecea8f5dde8d9d1a815d";
     public const string UserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3.1 Safari/605.1.15";
-    static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(60);
-    static readonly TimeSpan StallTimeout = TimeSpan.FromSeconds(90);
+    /// <summary>A stalled request or download fails fast (and is retried where that's safe), as on the Mac.</summary>
+    static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(30);
+    static readonly TimeSpan StallTimeout = TimeSpan.FromSeconds(30);
 
     readonly record struct Endpoints(string Base, string Setup, string Auth);
 
@@ -95,7 +96,7 @@ public sealed class ICloudSession : IDisposable
             UseCookies = false,                 // Cirrus keeps its own cookie jar
             AllowAutoRedirect = false,          // Apple's 330 / 302 answers are handled by hand
             AutomaticDecompression = DecompressionMethods.All,
-            MaxConnectionsPerServer = 8,
+            MaxConnectionsPerServer = 12,
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
             ConnectTimeout = TimeSpan.FromSeconds(30),
         };
@@ -170,24 +171,39 @@ public sealed class ICloudSession : IDisposable
         return req;
     }
 
-    async Task<Response> Send(Spec spec, CancellationToken ct)
+    /// <summary>
+    /// One HTTP exchange. A dropped or stale connection ("the network connection was lost", timeouts) is retried for
+    /// safe calls: GETs by default, and any call the caller marks idempotent.
+    /// </summary>
+    async Task<Response> Send(Spec spec, CancellationToken ct, bool? retryNetwork = null)
     {
-        using var req = Build(spec);
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(RequestTimeout);
-        HttpResponseMessage resp;
-        try { resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false); }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new TimeoutException("iCloud didn’t answer in time."); }
-        using (resp)
+        var started = DateTimeOffset.UtcNow;
+        async Task<Response> Once()
         {
-            var data = await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
-            Absorb(resp);
-            var uri = req.RequestUri!;
-            var line = $"{spec.Method} {uri.Host}{uri.AbsolutePath} → {(int)resp.StatusCode}";
-            // Status lines only (no query, headers, cookies or bodies) so live problems can be diagnosed safely.
-            if ((int)resp.StatusCode is >= 200 and < 300) Log.Debug(line); else Log.Info("http " + line);
-            return new Response((int)resp.StatusCode, data, resp.Headers);
+            using var req = Build(spec);
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(RequestTimeout);
+            HttpResponseMessage resp;
+            try { resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new TimeoutException("iCloud didn’t answer in time."); }
+            using (resp)
+            {
+                byte[] data;
+                try { data = await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new TimeoutException("iCloud didn’t answer in time."); }
+                Absorb(resp);
+                return new Response((int)resp.StatusCode, data, resp.Headers);
+            }
         }
+        var r = retryNetwork ?? spec.Method == "GET" ? await WithNetworkRetry(Once, ct).ConfigureAwait(false) : await Once().ConfigureAwait(false);
+        var uri = new Uri(spec.Url);
+        var secs = (DateTimeOffset.UtcNow - started).TotalSeconds;
+        // Status lines only (method, host, path, code, time: no query, headers, cookies or bodies) so live problems can be
+        // diagnosed safely. Service paths never contain file names.
+        var line = $"{spec.Method} {uri.Host}{uri.AbsolutePath} → {r.Status}";
+        if (r.Status is >= 200 and < 300) { if (secs > 2) Log.Status($"slow {line} {secs:0.0}s"); else Log.Debug($"{line} ({secs:0.00}s)"); }
+        else Log.Status("http " + line);
+        return r;
     }
 
     void Absorb(HttpResponseMessage h)
@@ -351,7 +367,7 @@ public sealed class ICloudSession : IDisposable
     {
         SessionState snapshot;
         lock (_lock) snapshot = _state.Clone();
-        try { Persister?.Invoke(snapshot); } catch (Exception e) { Log.Error("couldn’t save session: " + e.GetType().Name); }
+        try { Persister?.Invoke(snapshot); } catch (Exception e) { Log.Status("couldn’t save session: " + e.GetType().Name); }
         Notify(SessionEvent.StateChanged);
     }
 
@@ -703,7 +719,7 @@ public sealed class ICloudSession : IDisposable
         while (true)
         {
             ct.ThrowIfCancellationRequested();
-            var r = await Send(MakeRequest(url, method, query, ServiceHeaders(contentType), body), ct).ConfigureAwait(false);
+            var r = await Send(MakeRequest(url, method, query, ServiceHeaders(contentType), body), ct, retryNetwork: idempotent).ConfigureAwait(false);
             var code = r.Status;
             if (code is >= 200 and < 300) return r.Json;
             if (code is 401 or 421 && !reauthed)
@@ -719,7 +735,9 @@ public sealed class ICloudSession : IDisposable
                 await EnsurePcsAsync(p.app, p.ws, ct).ConfigureAwait(false);
                 continue;
             }
-            if ((code is 429 or 502 or 503 or 504 || (code >= 500 && idempotent)) && attempt < 5)
+            // 429 means "not processed, slow down": always safe to repeat. A 5xx may come after the change was applied,
+            // so only idempotent calls (listings, lookups) are repeated on those.
+            if ((code == 429 || (code >= 500 && idempotent)) && attempt < 5)
             {
                 attempt++;
                 var retryAfter = r.Header("Retry-After") is { } ra && double.TryParse(ra, NumberStyles.Float, CultureInfo.InvariantCulture, out var s) ? s : Math.Pow(2, attempt) * 0.5;
@@ -741,19 +759,23 @@ public sealed class ICloudSession : IDisposable
         for (int hop = 0; hop < 5; hop++)
         {
             if (!Uri.TryCreate(current, UriKind.Absolute, out var uri)) throw ICloudException.Http(0, "Bad download URL");
+            // iCloud cookies go only to Apple's own hosts, never to a host a URL or redirect happens to name.
+            var hopHeaders = new Dictionary<string, string>(headers);
+            if (!IsAppleHost(uri.Host)) hopHeaders.Remove("Cookie");
             var next = await WithNetworkRetry(async () =>
             {
-                using var req = Build(new Spec(uri.ToString(), "GET", headers, null));
+                using var req = Build(new Spec(uri.ToString(), "GET", hopHeaders, null));
                 using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
                 var code = (int)resp.StatusCode;
                 if (code is 301 or 302 or 303 or 307 or 308 or 330 && resp.Headers.Location is { } loc)
                     return loc.IsAbsoluteUri ? loc.ToString() : new Uri(uri, loc).ToString();
                 if (code is < 200 or >= 300)
                 {
-                    Log.Info($"http GET {uri.Host}{uri.AbsolutePath} → {code}");
+                    Log.Status($"download from {uri.Host} → {code}");   // content URLs can carry names: host only
                     if (code is 401 or 403 or 410) throw ICloudException.Http(code, "Download link expired");
                     throw ICloudException.Http(code, "Download failed");
                 }
+                var dlStarted = DateTimeOffset.UtcNow;
                 var total = resp.Content.Headers.ContentLength is long cl && cl > 0 ? cl : expectedSize ?? 0;
                 var dir = Path.GetDirectoryName(destination)!;
                 Directory.CreateDirectory(dir);
@@ -764,6 +786,9 @@ public sealed class ICloudSession : IDisposable
                     await using (var dst = new FileStream(part, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 16, useAsync: true))
                         await CopyWithProgress(src, dst, total, progress, ct).ConfigureAwait(false);
                     File.Move(part, destination, overwrite: true);
+                    var secs = (DateTimeOffset.UtcNow - dlStarted).TotalSeconds;
+                    var bytes = new FileInfo(destination).Length;
+                    if (secs > 1.5) Log.Status($"download {bytes.ByteString()} in {secs:0.0}s ({((long)(bytes / Math.Max(secs, 0.01))).ByteString()}/s)");
                 }
                 finally { try { if (File.Exists(part)) File.Delete(part); } catch { } }
                 return (string?)null;
@@ -814,9 +839,9 @@ public sealed class ICloudSession : IDisposable
                 Absorb(resp);
                 var bytes = await resp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
                 var u = req.RequestUri!;
-                Log.Info($"upload POST {u.Host}{u.AbsolutePath} → {(int)resp.StatusCode}");
+                Log.Status($"upload to {u.Host} → {(int)resp.StatusCode}");
                 return ((int)resp.StatusCode, bytes);
-            }, ct).ConfigureAwait(false);
+            }, ct, NothingWasSent).ConfigureAwait(false);   // an upload is repeated only when it certainly never reached the server
             if (status is 401 or 421 && !reauthed) { reauthed = true; await Reauthenticate(ct).ConfigureAwait(false); continue; }
             var json = J.Parse(data);
             if (status is < 200 or >= 300) throw ICloudException.Http(status, ErrorMessage(json) ?? "Upload failed");
@@ -824,20 +849,35 @@ public sealed class ICloudSession : IDisposable
         }
     }
 
-    /// <summary>Retries transient network failures (Wi-Fi drop, sleep/resume, timeouts, stalls) with back-off.</summary>
-    internal async Task<T> WithNetworkRetry<T>(Func<Task<T>> op, CancellationToken ct)
+    /// <summary>
+    /// Retries transient network failures (Wi-Fi drop, sleep/resume, timeouts, stalls) with back-off. Only for safe
+    /// calls; <paramref name="retryable"/> narrows which failures may be repeated (uploads: only before anything was sent).
+    /// </summary>
+    internal async Task<T> WithNetworkRetry<T>(Func<Task<T>> op, CancellationToken ct, Func<Exception, bool>? retryable = null)
     {
         int attempt = 0;
         while (true)
         {
             try { return await op().ConfigureAwait(false); }
-            catch (Exception e) when (!ct.IsCancellationRequested && IsTransient(e) && attempt < 4)
+            catch (Exception e) when (!ct.IsCancellationRequested && (retryable ?? IsTransient)(e) && attempt < 4)
             {
                 attempt++;
-                Log.Info($"network hiccup ({e.GetType().Name}), retry {attempt} of 4");
-                await Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)), ct).ConfigureAwait(false);
+                Log.Status($"network hiccup ({e.GetType().Name}), retry {attempt} of 4");
+                await Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt - 1) * 0.5), ct).ConfigureAwait(false);   // 0.5, 1, 2, 4 s
             }
         }
+    }
+
+    /// <summary>Failures that happen before a request leaves this PC (name lookup, TLS handshake).</summary>
+    internal static bool NothingWasSent(Exception e) =>
+        e is HttpRequestException { HttpRequestError: HttpRequestError.NameResolutionError or HttpRequestError.SecureConnectionError };
+
+    internal static bool IsAppleHost(string host)
+    {
+        host = host.ToLowerInvariant();
+        foreach (var d in new[] { "icloud.com", "icloud-content.com", "apple.com", "icloud.com.cn", "icloud-content.com.cn", "apple.com.cn" })
+            if (host == d || host.EndsWith("." + d, StringComparison.Ordinal)) return true;
+        return false;
     }
 
     internal static bool IsTransient(Exception e) => e switch

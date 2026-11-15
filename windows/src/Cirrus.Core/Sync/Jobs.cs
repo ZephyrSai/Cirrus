@@ -23,11 +23,12 @@ public sealed class JobEngine
 
     static AccountManager Accounts => AccountManager.Shared;
 
-    ISyncSide Side(SyncEndpoint e, IReadOnlyList<string> excludes, bool isDestination)
+    /// <param name="mayBeMissing">Only a one-way destination, or a two-way side with no baseline yet, may not exist yet.</param>
+    ISyncSide Side(SyncEndpoint e, IReadOnlyList<string> excludes, bool mayBeMissing)
     {
         switch (e.Kind)
         {
-            case EndpointKind.Local: return new LocalSide(e.Path!, excludes, allowMissing: isDestination);
+            case EndpointKind.Local: return new LocalSide(e.Path!, excludes, allowMissing: mayBeMissing);
             case EndpointKind.Drive:
                 var acct = Accounts.Account(e.Account) ?? throw ICloudException.NeedsSignIn();
                 if (acct.Drive is null) throw ICloudException.NeedsSignIn();
@@ -36,6 +37,8 @@ public sealed class JobEngine
             default: throw SyncException.Unavailable("This endpoint can’t be used for folder sync.");
         }
     }
+
+    static bool DestinationMayBeMissing(SyncJob job) => job.Mode != SyncMode.TwoWay || SyncState.Load(job.Id).Entries.Count == 0;
 
     BackupEngine BackupEngineFor(SyncJob job)
     {
@@ -53,7 +56,10 @@ public sealed class JobEngine
         if (e.Kind != EndpointKind.Photos || Accounts.Account(e.Account) is not { Photos: { } photos })
             throw SyncException.Unavailable("Choose a Photos library.");
         var libs = await photos.LibrariesAsync(ct).ConfigureAwait(false);
-        var lib = libs.FirstOrDefault(l => l.Id == e.Library) ?? libs.FirstOrDefault() ?? throw SyncException.Unavailable("That Photos library isn’t available.");
+        // Never fall back to another library: a Shared Library that's slow to answer must not turn an import or export
+        // into one of the Personal Library.
+        var lib = (e.Library is null ? libs.FirstOrDefault(l => !l.IsShared) : libs.FirstOrDefault(l => l.Id == e.Library))
+            ?? throw SyncException.Unavailable("That Photos library isn’t available right now (iCloud didn’t list it). Nothing was changed; try again later.");
         PhotoAlbum? album = null;
         if (e.Album is { } albumID)
             album = (await photos.AlbumsAsync(lib, ct).ConfigureAwait(false)).FirstOrDefault(a => a.Id == albumID)
@@ -68,7 +74,7 @@ public sealed class JobEngine
         {
             case JobKind.FolderSync:
             {
-                var a = Side(job.Source, job.Options.Excludes, false); var b = Side(job.Destination, job.Options.Excludes, true);
+                var a = Side(job.Source, job.Options.Excludes, false); var b = Side(job.Destination, job.Options.Excludes, DestinationMayBeMissing(job));
                 var (sa, sb) = await new SyncRunner(a, b).ScanAsync(p => progress?.Invoke(p.Phase), ct).ConfigureAwait(false);
                 var plan = SyncPlanner.Plan(job.Mode, sa, sb, job.Mode == SyncMode.TwoWay ? SyncState.Load(job.Id) : null);
                 return new Preview { Plan = plan, Summary = SyncPlanner.Describe(plan), GuardTripped = SyncPlanner.GuardTripped(plan, job.Mode, job.Options.MaxDeletePercent) };
@@ -171,12 +177,12 @@ public sealed class JobEngine
         {
             case JobKind.FolderSync:
             {
-                var a = Side(job.Source, job.Options.Excludes, false); var b = Side(job.Destination, job.Options.Excludes, true);
+                var a = Side(job.Source, job.Options.Excludes, false); var b = Side(job.Destination, job.Options.Excludes, DestinationMayBeMissing(job));
                 var runner = new SyncRunner(a, b);
                 var (sa, sb) = await runner.ScanAsync(Report, ct).ConfigureAwait(false);
                 var plan = SyncPlanner.Plan(job.Mode, sa, sb, job.Mode == SyncMode.TwoWay ? SyncState.Load(job.Id) : null);
                 if (!force && SyncPlanner.GuardTripped(plan, job.Mode, job.Options.MaxDeletePercent))
-                    throw SyncException.DeleteGuard(plan.TrashCount, Math.Max(plan.DestinationCount, plan.SourceCount));
+                    throw SyncException.DeleteGuard(plan.RemovedItems, Math.Max(plan.DestinationCount, plan.SourceCount));
                 foreach (var (side, label) in new[] { (b, "destination"), (a, "source") })
                 {
                     if (job.Mode != SyncMode.TwoWay && label == "source") continue;
@@ -204,14 +210,17 @@ public sealed class JobEngine
                 var st = LoadImport(job.Id);
                 var rep = new RunReport();
                 long done = 0;
-                foreach (var chunk in files.Chunk(25))
+                // One photo (with its Live Photo video) at a time, each recorded as done right after its own upload, so a
+                // failure part-way never re-uploads what already went through.
+                foreach (var g in LivePairing.GroupFiles(files))
                 {
                     ct.ThrowIfCancellationRequested();
+                    var group = g.PairedVideo is { } v ? new[] { g.Primary, v } : [g.Primary];
                     try
                     {
-                        foreach (var f in chunk) await LocalFiles.EnsureDownloadedAsync(f, ct).ConfigureAwait(false);
-                        await pb.ImportFilesAsync(chunk, album, lib, null, ct).ConfigureAwait(false);
-                        foreach (var u in chunk)
+                        foreach (var f in group) await LocalFiles.EnsureDownloadedAsync(f, ct).ConfigureAwait(false);
+                        await pb.ImportFilesAsync(group, album, lib, null, ct).ConfigureAwait(false);
+                        foreach (var u in group)
                         {
                             st.Done.Add(ImportKey(root, u));
                             done += new FileInfo(u).Length;
@@ -221,7 +230,7 @@ public sealed class JobEngine
                         AtomicFile.Write(SyncState.ImportFilePath(job.Id), JsonSerializer.SerializeToUtf8Bytes(st));
                     }
                     catch (OperationCanceledException) { throw; }
-                    catch (Exception e) { rep.Failed.Add($"{Path.GetFileName(chunk[0])} …: {e.Message}"); }
+                    catch (Exception e) { rep.Failed.Add($"{Path.GetFileName(g.Primary)}: {e.Message}"); }
                     Report(new RunProgress("Importing", rep.Copied, files.Count, done, bytes));
                 }
                 return rep;
@@ -230,7 +239,7 @@ public sealed class JobEngine
             {
                 var engine = BackupEngineFor(job);
                 var ev = await engine.EvaluateAsync(s => t?.SetDetail(s), ct).ConfigureAwait(false);
-                return await engine.RunAsync(ev, Report, ct).ConfigureAwait(false);
+                return await engine.RunAsync(ev, Report, ct, force).ConfigureAwait(false);
             }
         }
     }
@@ -246,7 +255,7 @@ public sealed class JobScheduler : IDisposable
     public void Start()
     {
         _seenVolumes = VolumeInfo.All().Select(v => v.Id ?? v.Root).ToHashSet();
-        _timer = new Timer(_ => { try { Tick(); } catch (Exception e) { Log.Error("scheduler tick failed: " + e.GetType().Name); } },
+        _timer = new Timer(_ => { try { Tick(); } catch (Exception e) { Log.Status("scheduler tick failed: " + e.GetType().Name); } },
             null, TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(60));
     }
 

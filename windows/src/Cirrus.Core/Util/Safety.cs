@@ -23,12 +23,14 @@ public static class SafetyPolicy
         {
             var roots = new List<string>();
             foreach (var env in new[] { "CIRRUS_NATIVE_DRIVE", "CIRRUS_NATIVE_PHOTOS" })
-                if (Environment.GetEnvironmentVariable(env) is { Length: > 0 } o) roots.Add(o);
+                if (Env.Get(env) is { } o) roots.Add(o);
             var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             if (!string.IsNullOrEmpty(home) && OperatingSystem.IsWindows())
             {
                 roots.Add(Path.Combine(home, "iCloudDrive"));
                 roots.Add(Path.Combine(home, "Pictures", "iCloud Photos"));
+                // Pictures may be redirected (OneDrive, another drive): protect the folder Cirrus actually shows.
+                if (Environment.GetFolderPath(Environment.SpecialFolder.MyPictures) is { Length: > 0 } pics) roots.Add(Path.Combine(pics, "iCloud Photos"));
             }
             if (ExtraNativeRoot is { Length: > 0 } x) roots.Add(x);
             return roots;
@@ -53,7 +55,25 @@ public static class SafetyPolicy
         return false;
     }
 
-    public static void CheckLocalWrite(string path) { if (IsICloudPath(path)) CheckWrite(); }
+    /// <summary>
+    /// True when a local path is inside iCloud or contains an iCloud folder (removing, moving or renaming
+    /// C:\Users\me\Pictures would take "iCloud Photos" with it).
+    /// </summary>
+    public static bool TouchesICloud(string path)
+    {
+        if (IsICloudPath(path)) return true;
+        string p;
+        try { p = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar; } catch { return false; }
+        var cmp = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        foreach (var r in NativeICloudRoots)
+        {
+            try { if (Path.GetFullPath(r).StartsWith(p, cmp)) return true; } catch { }
+        }
+        return false;
+    }
+
+    /// <summary>Throws in read-only mode when a local write, move, rename or removal would reach iCloud.</summary>
+    public static void CheckLocalWrite(string path) { if (_readOnly && TouchesICloud(path)) throw new ReadOnlyException(); }
 }
 
 public sealed class ReadOnlyException : InvalidOperationException

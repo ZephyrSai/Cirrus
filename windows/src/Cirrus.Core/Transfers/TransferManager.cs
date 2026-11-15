@@ -174,6 +174,7 @@ public sealed class TransferManager
                     if (t.Cts.IsCancellationRequested) t.SetState(TransferState.Cancelled);
                     else t.SetState(TransferState.Failed, e.Message);
                     Log.Error("transfer failed: " + e.Message);
+                    Log.Status("transfer failed: " + e.GetType().Name);
                 }
                 Pump();
                 Post();
@@ -212,7 +213,7 @@ public sealed class TransferManager
         _ = Task.Delay(150).ContinueWith(_ => { Interlocked.Exchange(ref _notifyPending, 0); Post(); }, TaskScheduler.Default);
     }
 
-    void Post() { try { Changed?.Invoke(); } catch (Exception e) { Log.Error("transfer listener failed: " + e.GetType().Name); } }
+    void Post() { try { Changed?.Invoke(); } catch (Exception e) { Log.Status("transfer listener failed: " + e.GetType().Name); } }
 
     /// <summary>Wait until every transfer in a group has finished (used by relays, sync and backup runs).</summary>
     public async Task WaitForGroup(string group, CancellationToken ct = default)

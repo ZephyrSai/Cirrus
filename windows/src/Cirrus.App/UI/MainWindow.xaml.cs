@@ -34,7 +34,6 @@ public partial class MainWindow : Window
         PreviewKeyDown += OnKey;
         Loaded += (_, _) =>
         {
-            CirrusDataObject.CleanupOldStaging();
             BuildSidebar();
             OpenTab(StartLocation());
             UpdateReadOnlyBanner();
@@ -149,7 +148,7 @@ public partial class MainWindow : Window
     void Back_Click(object sender, RoutedEventArgs e) => ActiveTab?.Back();
     void Forward_Click(object sender, RoutedEventArgs e) => ActiveTab?.Forward();
     void Up_Click(object sender, RoutedEventArgs e) => ActiveTab?.Up();
-    void Refresh_Click(object sender, RoutedEventArgs e) => ActiveTab?.Reload(keepSelection: true);
+    void Refresh_Click(object sender, RoutedEventArgs e) => ActiveTab?.Refresh();
     void NewTab_Click(object sender, RoutedEventArgs e) => OpenTab(ActiveTab?.Current ?? Location.Home());
     void Filter_Changed(object sender, TextChangedEventArgs e) => ActiveTab?.SetFilter(FilterBox.Text);
     void View_Click(object sender, RoutedEventArgs e) { if (sender is ToggleButton { Tag: string mode }) ActiveTab?.SetViewMode(mode); SyncToolbar(); }
@@ -262,7 +261,7 @@ public partial class MainWindow : Window
         if (alt && key == Key.Left) tab?.Back();
         else if (alt && key == Key.Right) tab?.Forward();
         else if (alt && key == Key.Up) tab?.Up();
-        else if (key == Key.F5) tab?.Reload(keepSelection: true);
+        else if (key == Key.F5 || (ctrl && key == Key.R)) tab?.Refresh();
         else if (ctrl && key == Key.T) OpenTab(tab?.Current ?? Location.Home());
         else if (ctrl && key == Key.W && Tabs.SelectedItem is TabItem ti) CloseTab(ti);
         else if (ctrl && key == Key.N && !shift) new MainWindow().Show();
@@ -381,7 +380,7 @@ public partial class MainWindow : Window
         {
             if (caps.CanCreateFolder) m.Items.Add(MenuItem(caps.NewFolderTitle, "\uE8F4", () => _ = Ops.NewFolder(loc, this), "Ctrl+Shift+N"));
             if (caps.AcceptsDrops) m.Items.Add(MenuItem("Paste", "\uE77F", () => _ = Paste(tab), "Ctrl+V"));
-            m.Items.Add(MenuItem("Refresh", "\uE72C", () => tab.Reload(true), "F5"));
+            m.Items.Add(MenuItem("Refresh", "\uE72C", () => tab.Refresh(), "F5"));
             if (loc.Kind == LocKind.Local) m.Items.Add(MenuItem("Open in Explorer", "\uEC50", () => Ops.ShowInExplorer(loc.Path!)));
             if (loc.Kind == LocKind.Local && !Settings.Current.Favorites.Contains(loc.Path!, StringComparer.OrdinalIgnoreCase))
                 m.Items.Add(MenuItem("Add to Favorites", "\uE734", () => { Settings.Current.Favorites.Add(loc.Path!); Settings.Current.Save(); BuildSidebar(); }));
@@ -525,7 +524,10 @@ public partial class MainWindow : Window
                 m.Items.Add(MenuItem("Sign Out…", "\uF3B1", () =>
                 {
                     if (Dialogs.Confirm(this, $"Sign out of {a.AppleID}?", "Cirrus forgets this session and any saved password. Nothing in iCloud changes.", "Sign Out"))
+                    {
                         AccountManager.Shared.SignOut(a);
+                        Catalog.Shared.ForgetAccount(a.Id);
+                    }
                 }));
                 return m;
             default: return null;

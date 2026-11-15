@@ -105,9 +105,16 @@ public class SyncPlannerTests
         var p = SyncPlanner.Plan(SyncMode.Mirror, a, b, null);
         Assert.Equal(40, p.TrashCount);
         Assert.True(SyncPlanner.GuardTripped(p, SyncMode.Mirror, 50));
-        // A handful of removals (≤ 20) never trips it.
-        var small = SyncPlanner.Plan(SyncMode.Mirror, a, b.Take(10).ToDictionary(), null);
+        // A handful of removals (≤ 20) doesn't trip it while most of the destination stays…
+        var kept = new Dictionary<string, SideEntry> { ["keep.txt"] = E(1, 1) };
+        var smallB = b.Take(10).ToDictionary();
+        smallB["keep.txt"] = E(1, 1);
+        var small = SyncPlanner.Plan(SyncMode.Mirror, kept, smallB, null);
         Assert.False(SyncPlanner.GuardTripped(small, SyncMode.Mirror, 50));
+        // …but a run that would empty a side always stops for review, however small.
+        var wipe = SyncPlanner.Plan(SyncMode.Mirror, a, b.Take(3).ToDictionary(), null);
+        Assert.True(wipe.WipesSide);
+        Assert.True(SyncPlanner.GuardTripped(wipe, SyncMode.Mirror, 50));
     }
 
     [Fact]

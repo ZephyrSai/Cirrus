@@ -28,13 +28,13 @@ sealed class WindowsPresence : IUserPresence
                 var result = hwnd != IntPtr.Zero
                     ? await UserConsentVerifierInterop.RequestVerificationForWindowAsync(hwnd, reason).AsTask(ct)
                     : await UserConsentVerifier.RequestVerificationAsync(reason).AsTask(ct);
-                Log.Info("Windows Hello: " + result);
+                Log.Status("Windows Hello: " + result);
                 return result == UserConsentVerificationResult.Verified;
             }
-            Log.Info("Windows Hello unavailable (" + availability + "); asking for the Windows password");
+            Log.Status("Windows Hello unavailable (" + availability + "); asking for the Windows password");
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception e) { Log.Error("Windows Hello failed: " + e.GetType().Name); }
+        catch (Exception e) { Log.Status("Windows Hello failed: " + e.GetType().Name); }
         return await Application.Current.Dispatcher.InvokeAsync(() => WindowsPassword.Verify(hwnd, reason));
     }
 

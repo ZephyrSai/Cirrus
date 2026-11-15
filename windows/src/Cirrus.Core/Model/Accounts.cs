@@ -49,7 +49,7 @@ public sealed class AccountManager
     readonly object _lock = new();
     List<Account> _accounts = [];
     public CredentialGate Gate { get; }
-    public bool DemoMode { get; set; } = Environment.GetEnvironmentVariable("CIRRUS_DEMO") is { Length: > 0 } d && d != "0";
+    public bool DemoMode { get; set; } = Env.Flag("CIRRUS_DEMO");
     /// <summary>Raised on any thread when accounts or their status change.</summary>
     public event Action? Changed;
 
@@ -69,7 +69,7 @@ public sealed class AccountManager
     {
         get
         {
-            if (Environment.GetEnvironmentVariable("CIRRUS_NATIVE_DRIVE") is { Length: > 0 } o) return Directory.Exists(o) ? o : null;
+            if (Env.Get("CIRRUS_NATIVE_DRIVE") is { } o) return Directory.Exists(o) ? o : null;
             if (!OperatingSystem.IsWindows()) return null;
             var p = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "iCloudDrive");
             return Directory.Exists(p) ? p : null;
@@ -81,7 +81,7 @@ public sealed class AccountManager
     {
         get
         {
-            if (Environment.GetEnvironmentVariable("CIRRUS_NATIVE_PHOTOS") is { Length: > 0 } o) return Directory.Exists(o) ? o : null;
+            if (Env.Get("CIRRUS_NATIVE_PHOTOS") is { } o) return Directory.Exists(o) ? o : null;
             if (Settings.Current.NativePhotosFolder is { Length: > 0 } s && Directory.Exists(s)) return s;
             if (!OperatingSystem.IsWindows()) return null;
             var p = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "iCloud Photos");
@@ -114,6 +114,8 @@ public sealed class AccountManager
             list.Add(previous.FirstOrDefault(p => p.Kind == AccountKind.Demo)
                 ?? new Account("demo", AccountKind.Demo, "Demo iCloud") { AppleID = "demo@example.com", Drive = DemoDrive.Shared, Photos = DemoPhotos.Shared });
         lock (_lock) _accounts = list;
+        ThumbnailDiskCache.PruneOldVersions(list.Select(a => a.Photos?.CacheKey).OfType<string>());
+        ListingCache.Shared.PruneAccounts(list.Select(a => a.Id));
         Changed?.Invoke();
     }
 
@@ -130,7 +132,7 @@ public sealed class AccountManager
         a.Session = session;
         a.Drive = new WebDrive(session);
         a.Photos = new WebPhotos(session, id);
-        if (state.AccountInfo["dsInfo"]["fullName"].Str is { Length: > 0 } name) a.Title = name;
+        if (state.AccountInfo["dsInfo"]["fullName"].Str is { } full && string.Join(' ', full.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)) is { Length: > 0 } name) a.Title = name;
         if (state.Cookies.Count == 0) a.Status = AccountStatus.NeedsSignIn;
         session.PasswordProvider = () => Gate.PasswordAsync(id, "Sign back in to iCloud with your saved Apple ID password");
         session.Event += (e, detail) =>
@@ -167,6 +169,7 @@ public sealed class AccountManager
         SaveState(state);
         var ids = LoadIDs();
         if (!ids.Contains(id)) { ids.Add(id); SaveIDs(ids); }
+        ListingCache.Shared.Revive("web:" + id);
         var account = MakeWebAccount(id, state);
         account.Status = AccountStatus.Ready;
         lock (_lock)
@@ -192,7 +195,22 @@ public sealed class AccountManager
         SaveIDs(ids);
         lock (_lock) _accounts.RemoveAll(a => a.Id == account.Id);
         account.Session?.Dispose();
+        WipeCaches(account);
         Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// Sign-out forgets everything cached for the account: listings and thumbnails (deleted: Cirrus' own cache), preview
+    /// copies (deleted) and opened copies (to the Recycle Bin, since they may hold the user's edits).
+    /// </summary>
+    static void WipeCaches(Account account)
+    {
+        ListingCache.Shared.WipeAccount(account.Id);
+        if (account.Photos is { } p) ThumbnailDiskCache.Wipe(p.CacheKey);
+        // Preview and opened copies are kept per account (other accounts' copies, relays and drags are left alone).
+        try { var d = Paths.AccountCacheDir("preview", account.Id); if (Directory.Exists(d)) Directory.Delete(d, true); } catch { }
+        try { var d = Paths.AccountCacheDir("open", account.Id); if (Directory.Exists(d)) LocalFiles.SafeTrash(d, Paths.CacheDir("open")); }
+        catch (Exception e) { Log.Status("couldn’t clear opened copies at sign-out: " + e.GetType().Name); }
     }
 
     public void NotifyChanged() => Changed?.Invoke();

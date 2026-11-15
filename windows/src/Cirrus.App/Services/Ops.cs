@@ -102,30 +102,47 @@ static class Ops
         return $"{stem} {Guid.NewGuid().ToString("N")[..6]}{ext}";
     }
 
-    /// <summary>Asks about name clashes. Returns name → final name (null = skip), with "!replace:" marking replacements; null = stop.</summary>
-    static async Task<Dictionary<string, string?>?> ResolveNames(IEnumerable<string> names, Destination dest, DependencyObject? owner)
+    /// <summary>
+    /// Asks about clashes with existing items. Returns one final name per input (same order): null = skip,
+    /// "!replace:" + name = replace; null overall = stop. Two items of the same batch with the same name are
+    /// never merged: the later ones get a number.
+    /// </summary>
+    static async Task<List<string?>?> ResolveNames(IReadOnlyList<string> names, Destination dest, DependencyObject? owner)
     {
-        var taken = await ExistingNames(dest);
-        var output = new Dictionary<string, string?>();
+        var existing = await ExistingNames(dest);
+        var taken = new HashSet<string>(existing);
+        var claimed = new HashSet<string>();
+        var output = new List<string?>();
         ConflictChoice? all = null;
-        var list = names.ToList();
-        for (int i = 0; i < list.Count; i++)
+        for (int i = 0; i < names.Count; i++)
         {
-            var n = list[i];
-            if (!taken.Contains(n.ToLowerInvariant())) { output[n] = n; taken.Add(n.ToLowerInvariant()); continue; }
+            var n = names[i];
+            var key = n.ToLowerInvariant();
+            if (claimed.Contains(key))
+            {
+                var u = UniqueName(n, taken);
+                taken.Add(u.ToLowerInvariant()); claimed.Add(u.ToLowerInvariant());
+                output.Add(u);
+                continue;
+            }
+            if (!existing.Contains(key)) { taken.Add(key); claimed.Add(key); output.Add(n); continue; }
             ConflictChoice choice;
             if (all is { } remembered) choice = remembered;
             else
             {
-                choice = AskConflict(n, Title(dest), owner, list.Skip(i + 1).Any(x => taken.Contains(x.ToLowerInvariant())), out var applyAll);
+                choice = AskConflict(n, Title(dest), owner, names.Skip(i + 1).Any(x => existing.Contains(x.ToLowerInvariant())), out var applyAll);
                 if (applyAll) all = choice;
             }
             switch (choice)
             {
                 case ConflictChoice.Stop: return null;
-                case ConflictChoice.Skip: output[n] = null; break;
-                case ConflictChoice.Replace: output[n] = "!replace:" + n; break;
-                default: var u = UniqueName(n, taken); taken.Add(u.ToLowerInvariant()); output[n] = u; break;
+                case ConflictChoice.Skip: output.Add(null); break;
+                case ConflictChoice.Replace: output.Add("!replace:" + n); claimed.Add(key); break;
+                default:
+                    var u = UniqueName(n, taken);
+                    taken.Add(u.ToLowerInvariant()); claimed.Add(u.ToLowerInvariant());
+                    output.Add(u);
+                    break;
             }
         }
         return output;
@@ -179,18 +196,19 @@ static class Ops
     static async Task DeliverLocal(List<string> files, Destination.Local dest, bool move, bool fromRelay, string? group, DependencyObject? owner)
     {
         try { SafetyPolicy.CheckLocalWrite(dest.Dir); } catch (Exception e) { ShowError(e, "iCloud is read-only", owner); return; }
-        var names = await ResolveNames(files.Select(Path.GetFileName)!, dest, owner);
+        var names = await ResolveNames(files.Select(f => Path.GetFileName(f)!).ToList(), dest, owner);
         if (names is null) return;
-        foreach (var f in files)
+        for (int idx = 0; idx < files.Count; idx++)
         {
-            if (!names.TryGetValue(Path.GetFileName(f), out var target) || target is null) continue;
+            var f = files[idx];
+            if (names[idx] is not { } target) continue;
             var replace = target.StartsWith("!replace:");
             var finalName = replace ? target[9..] : target;
             var dst = Path.Combine(dest.Dir, finalName);
             if (string.Equals(Path.GetFullPath(f), Path.GetFullPath(dst), StringComparison.OrdinalIgnoreCase)) continue;
             var sameVolume = Preflight.SameVolume(f, dest.Dir);
             var isMove = move || fromRelay;
-            if (move && SafetyPolicy.IsICloudPath(f)) { try { SafetyPolicy.CheckWrite(); } catch (Exception e) { ShowError(e, "iCloud is read-only", owner); return; } }
+            if (move) { try { SafetyPolicy.CheckLocalWrite(f); } catch (Exception e) { ShowError(e, "iCloud is read-only", owner); return; } }
             var size = File.Exists(f) ? new FileInfo(f).Length : LocalFiles.TreeSize(f);
             TM.Enqueue(Path.GetFileName(f), async (t, ct) =>
             {
@@ -223,13 +241,15 @@ static class Ops
     static async Task DeliverDrive(List<string> files, Destination.Drive dest, bool move, string? group, DependencyObject? owner)
     {
         if (dest.Account.Drive is not { } drive) return;
-        var names = await ResolveNames(files.Select(f => WinNames.FromLocal(Path.GetFileName(f))), dest, owner);
+        var names = await ResolveNames(files.Select(f => WinNames.FromLocal(Path.GetFileName(f))).ToList(), dest, owner);
         if (names is null) return;
         var existing = await SafeList(drive, dest.FolderID);
         var quota = Preflight.ICloudKey(dest.Account);
-        foreach (var f in files)
+        for (int idx = 0; idx < files.Count; idx++)
         {
-            if (!names.TryGetValue(WinNames.FromLocal(Path.GetFileName(f)), out var target) || target is null) continue;
+            var f = files[idx];
+            if (names[idx] is not { } target) continue;
+            if (move) { try { SafetyPolicy.CheckLocalWrite(f); } catch (Exception e) { ShowError(e, "iCloud is read-only", owner); return; } }
             var replace = target.StartsWith("!replace:");
             var finalName = replace ? target[9..] : target;
             var old = existing.FirstOrDefault(n => n.Name.Equals(finalName, StringComparison.OrdinalIgnoreCase));
@@ -258,7 +278,18 @@ static class Ops
                         await drive.TrashAsync([retire], ct);
                         await drive.RenameAsync(folder, finalName, ct);
                     }
-                    if (move) LocalFiles.SafeTrash(f, null);
+                    if (move)
+                    {
+                        // Only retire the original when every item in it is now in iCloud: excluded names (desktop.ini, ._*),
+                        // links, skipped clashes and files left alone because iCloud's copy differs keep it in place.
+                        var copied = plan.Actions.Where(x => x.Kind == SyncActionKind.CopyAB).Select(x => x.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                        var allThere = rep.Skipped == 0 && sa.All(kv => kv.Value.IsDir || copied.Contains(kv.Key) || (sb.TryGetValue(kv.Key, out var there) && there.Size == kv.Value.Size));
+                        int onDisk;
+                        try { onDisk = Directory.EnumerateFileSystemEntries(f, "*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = false, AttributesToSkip = 0 }).Count(); }
+                        catch { onDisk = -1; }
+                        if (allThere && onDisk == sa.Count) LocalFiles.SafeTrash(f, null);
+                        else t.SetDetail("Uploaded. The original folder was kept because some of its items weren’t uploaded (excluded, links or already different in iCloud).");
+                    }
                     Refresh(dest);
                 }, "Uploading folder to " + Title(dest), TransferDirection.Upload, LocalFiles.TreeSize(f), group, quota);
             }
@@ -284,11 +315,26 @@ static class Ops
         var all = files.SelectMany(ImportableFiles).ToList();
         if (all.Count == 0) { Dialogs.Error(owner, "Nothing to import", "None of these files are photos or videos."); return; }
         var total = all.Sum(f => new FileInfo(f).Length);
+        // Remembered across Retry (same work delegate): what was already imported is never uploaded again.
+        var imported = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         TM.Enqueue($"Importing {all.Count} item{(all.Count == 1 ? "" : "s")}", async (t, ct) =>
         {
-            foreach (var f in all) await LocalFiles.EnsureDownloadedAsync(f, ct);
-            await photos.ImportFilesAsync(all, dest.Album, dest.Library, (d, tot) => t.Report(d, tot), ct);
-            Refresh(dest);
+            long done = 0;
+            try
+            {
+                foreach (var g in LivePairing.GroupFiles(all))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var group = (g.PairedVideo is { } v ? new[] { g.Primary, v } : [g.Primary]).Where(f => !imported.Contains(f)).ToArray();
+                    if (group.Length == 0) continue;
+                    foreach (var f in group) await LocalFiles.EnsureDownloadedAsync(f, ct);
+                    var before = done;
+                    await photos.ImportFilesAsync(group, dest.Album, dest.Library, (d, _) => t.Report(before + d, total), ct);
+                    foreach (var f in group) { imported.Add(f); done += new FileInfo(f).Length; }
+                    t.Report(done, total);
+                }
+            }
+            finally { Refresh(dest); }
         }, "To " + (dest.Album?.Name ?? "Photos"), TransferDirection.Upload, total, group, Preflight.ICloudKey(dest.Account));
     }
 
@@ -408,30 +454,36 @@ static class Ops
         var items = input.Where(i => !blocked.Contains(i.Name)).ToList();
         if (items.Count == 0) return;
         var vol = Preflight.VolumeKey(dir);
-        var names = await ResolveNames(items.Select(OutputName), dest, owner);
+        var names = await ResolveNames(items.Select(OutputName).ToList(), dest, owner);
         if (names is null) return;
         var exportLive = Prefs.ExportLive; var edited = Prefs.ExportEdited;
         var photoBatch = new List<(PhotoAsset Asset, string Name, bool Replace, Account Acct)>();
-        foreach (var item in items)
+        for (int idx = 0; idx < items.Count; idx++)
         {
-            if (!names.TryGetValue(OutputName(item), out var target) || target is null) continue;
+            var item = items[idx];
+            if (names[idx] is not { } target) continue;
             var replace = target.StartsWith("!replace:");
             var finalName = replace ? target[9..] : target;
             if (item.Photo is { } p && AccountManager.Shared.Account(item.AccountID) is { } acct) { photoBatch.Add((p, finalName, replace, acct)); continue; }
             TM.Enqueue(finalName, async (t, ct) =>
             {
-                var staging = Path.Combine(Paths.CacheDir("tmp"), Guid.NewGuid().ToString("N"));
+                // Stage next to the target (same drive), so moving it into place can't fail after the old copy was retired.
+                var staging = Path.Combine(dir, ".cirrus-dl-" + Guid.NewGuid().ToString("N")[..8]);
+                bool retired = false, placed = false;
                 try
                 {
+                    Directory.CreateDirectory(staging);
+                    try { File.SetAttributes(staging, File.GetAttributes(staging) | FileAttributes.Hidden); } catch { }
                     await Materialize(item, staging, exportLive, finalName, (d, tot) => t.Report(d, tot), ct);
                     var target = Path.Combine(dir, finalName);
-                    if (replace) LocalFiles.SafeTrash(target, null);
-                    foreach (var f in Directory.EnumerateFileSystemEntries(staging))
+                    if (replace && LocalFiles.Exists(target)) { LocalFiles.SafeTrash(target, null); retired = true; }
+                    foreach (var f in Directory.EnumerateFileSystemEntries(staging).ToList())
                     {
                         var dst = Path.Combine(dir, Path.GetFileName(f));
-                        if (LocalFiles.Exists(dst) && Path.GetFileName(f) != finalName) continue;
+                        if (LocalFiles.Exists(dst) && Path.GetFileName(f) != finalName) continue;   // a companion (Live .MOV) that's already there
                         LocalFiles.MoveItem(f, dst);
                     }
+                    placed = true;
                     t.ResultPath = target;
                     if (moveSource && item.Node is { } n && AccountManager.Shared.Account(item.AccountID)?.Drive is { } drive)
                     {
@@ -440,7 +492,13 @@ static class Ops
                     }
                     Refresh(dest);
                 }
-                finally { try { if (Directory.Exists(staging)) Directory.Delete(staging, true); } catch { } }   // our own staging folder
+                finally
+                {
+                    // The staging folder only ever holds Cirrus' fresh download. If the old copy was retired but the new one
+                    // couldn't be put in place, keep the download where it is rather than lose both.
+                    if (!retired || placed) { try { if (Directory.Exists(staging)) Directory.Delete(staging, true); } catch { } }
+                    else Log.Status("download left in its .cirrus-dl staging folder after it couldn’t be moved into place");
+                }
             }, "Downloading to " + Title(dest), TransferDirection.Download, item.TransferSize, quotaKey: vol);
         }
         if (photoBatch.Count > 0)
@@ -459,7 +517,7 @@ static class Ops
                         if (b.Acct.Photos is not { } backend) return;
                         var target = Path.Combine(dir, b.Name);
                         var kind = edited && b.Asset.Resource(PhotoResourceKind.Edited) is not null ? PhotoResourceKind.Edited : PhotoResourceKind.Original;
-                        var tmp = Path.Combine(dir, ".cirrus-part-" + b.Name);
+                        var tmp = Path.Combine(dir, ".cirrus-part-" + Guid.NewGuid().ToString("N")[..8] + "-" + b.Name);
                         long baseDone; lock (gate) baseDone = done;
                         await backend.ExportAsync(b.Asset, kind, tmp, (d, _) => t.Report(baseDone + d, 0), ct);
                         if (b.Replace) LocalFiles.SafeTrash(target, null);
@@ -551,15 +609,32 @@ static class Ops
         return h.ToString("x");
     }
 
-    /// <summary>A local path for opening/previewing, downloading into a cache when needed.</summary>
+    /// <summary>
+    /// A local path for opening, downloading into the account's "open" cache when needed. A copy that changed since it
+    /// was downloaded (the user edited it) is never overwritten: it's retired to the Recycle Bin, and if that isn't
+    /// possible the new download goes into a separate folder.
+    /// </summary>
     public static async Task<string> LocalCopy(Item item, string? progressTitle)
     {
         if (item.LocalPath is { } lp) { await LocalFiles.EnsureDownloadedAsync(lp); return lp; }
-        var dir = Path.Combine(Paths.CacheDir("open"), StableKey(item.Key));
+        var root = Paths.AccountCacheDir("open", item.AccountID ?? "");
+        var dir = Path.Combine(root, StableKey(item.Key));
         var target = Path.Combine(dir, Paths.SafeName(item.Name));
-        if (File.Exists(target) && (item.Size is null || new FileInfo(target).Length == item.Size || item.IsPhoto)) return target;
-        try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }   // stale cache copy
-        var t = TM.Enqueue(progressTitle ?? item.Name, async (t, ct) => { await Materialize(item, dir, false, null, (d, tot) => t.Report(d, tot), ct); },
+        // Reuse a cached copy only when it's the same version (size and modified time match).
+        if (File.Exists(target) && (item.Size is null || new FileInfo(target).Length == item.Size || item.IsPhoto)
+            && (item.IsPhoto || item.Modified is not { } m || Math.Abs((File.GetLastWriteTimeUtc(target) - m.UtcDateTime).TotalSeconds) < 2)) return target;
+        if (Directory.Exists(dir))
+        {
+            try { LocalFiles.SafeTrash(dir, root); }
+            catch (Exception e) { Log.Status("couldn’t retire an old opened copy: " + e.GetType().Name); }
+            if (Directory.Exists(dir))
+            {
+                dir = Path.Combine(root, StableKey(item.Key) + "-" + Guid.NewGuid().ToString("N")[..8]);   // never overwrite it
+                target = Path.Combine(dir, Paths.SafeName(item.Name));
+            }
+        }
+        var into = dir;
+        var t = TM.Enqueue(progressTitle ?? item.Name, async (t, ct) => { await Materialize(item, into, false, null, (d, tot) => t.Report(d, tot), ct); },
             "Downloading to open", TransferDirection.Download, item.TransferSize);
         await TM.WaitFor(t);
         if (t.State == TransferState.Failed) throw ICloudException.Server(t.Error ?? "Download failed");
@@ -642,7 +717,7 @@ static class Ops
     {
         if (items.Count == 0) return;
         var local = items.Where(i => i.LocalPath is not null && i.Volume is null && !i.Key.StartsWith("native")).Select(i => i.LocalPath!).ToList();
-        if (local.FirstOrDefault(SafetyPolicy.IsICloudPath) is not null && SafetyPolicy.ReadOnlyICloud) { ShowError(new ReadOnlyException(), "iCloud is read-only", owner); return; }
+        if (SafetyPolicy.ReadOnlyICloud && local.Any(SafetyPolicy.TouchesICloud)) { ShowError(new ReadOnlyException(), "iCloud is read-only", owner); return; }
         if (local.Count > 0)
         {
             var aside = new List<string>();
@@ -672,8 +747,7 @@ static class Ops
             try
             {
                 await photos.DeleteAsync(assets);
-                Catalog.Shared.Invalidate(loc);
-                Catalog.Shared.Invalidate(Location.Album(loc.Account!, loc.Library!, "smart:Recently Deleted"));
+                PatchAndShow(loc, [], assets.Select(a => a.Id).ToHashSet());
             }
             catch (Exception e) { ShowError(e, "Couldn’t delete", owner); }
         }
@@ -704,6 +778,14 @@ static class Ops
         if (loc.Kind != LocKind.DriveTrash || loc.AccountRef?.Drive is not { } drive) return;
         var nodes = items.Where(i => i.Node is { IsInTrash: true }).Select(i => i.Node!).ToList();
         if (nodes.Count == 0) return;
+        // Re-check Recently Deleted right now: act only on items still there and unchanged (not restored elsewhere).
+        try
+        {
+            var current = await drive.ListTrashAsync();
+            nodes = nodes.Select(n => current.FirstOrDefault(c => c.Id == n.Id && c.Etag == n.Etag)).OfType<DriveNode>().ToList();
+        }
+        catch (Exception e) { ShowError(e, "Couldn’t check Recently Deleted", owner); return; }
+        if (nodes.Count == 0) { Catalog.Shared.Invalidate(loc); Dialogs.Info(owner, "Nothing to delete", "Those items are no longer in Recently Deleted."); return; }
         if (!Dialogs.Confirm(owner, $"Delete {nodes.Count} item{(nodes.Count == 1 ? "" : "s")} immediately?",
                 "They’ll be removed from iCloud for good, on all your devices. You can’t undo this.", "Delete Immediately", destructive: true)) return;
         try { await drive.DeleteForeverAsync(nodes); Catalog.Shared.Invalidate(loc); }
@@ -717,7 +799,7 @@ static class Ops
         {
             var updated = await photos.SetFavoriteAsync(items.Where(i => i.Photo is not null).Select(i => i.Photo!).ToList(), value);
             foreach (var u in updated) if (items.FirstOrDefault(i => i.Photo?.Id == u.Id) is { } it) { it.Photo = u; it.Refresh(); }
-            Catalog.Shared.Invalidate(Location.Album(loc.Account!, loc.Library!, "smart:Favorites"));
+            PatchAndShow(loc, updated, new HashSet<string>());
         }
         catch (Exception e) { ShowError(e, "Couldn’t update favorites", owner); }
     }
@@ -725,8 +807,20 @@ static class Ops
     public static async Task SetHidden(IReadOnlyList<Item> items, bool value, Location loc, DependencyObject? owner)
     {
         if (loc.AccountRef?.Photos is not { } photos) return;
-        try { await photos.SetHiddenAsync(items.Where(i => i.Photo is not null).Select(i => i.Photo!).ToList(), value); Catalog.Shared.Invalidate(loc); }
+        try
+        {
+            var updated = await photos.SetHiddenAsync(items.Where(i => i.Photo is not null).Select(i => i.Photo!).ToList(), value);
+            PatchAndShow(loc, updated, updated.Select(u => u.Id).ToHashSet());   // hiding or unhiding takes it out of this view
+        }
         catch (Exception e) { ShowError(e, "Couldn’t update", owner); }
+    }
+
+    /// <summary>Our own photo edits: patch every cached listing in place instead of re-downloading them.</summary>
+    static void PatchAndShow(Location loc, IReadOnlyList<PhotoAsset> updated, IReadOnlySet<string> removed)
+    {
+        if (loc.Kind != LocKind.Album || loc.Account is not { } a || loc.Library is not { } lib) { Catalog.Shared.Invalidate(loc); return; }
+        Catalog.Shared.PatchPhotos(a, lib, updated, removed);
+        if (ListingCache.EditSensitive.Contains(loc.Id)) Catalog.Shared.Invalidate(loc);
     }
 
     // iCloud for Windows folders

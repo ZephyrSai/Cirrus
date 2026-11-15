@@ -103,16 +103,22 @@ public class LocalSyncTests
         WinNames.MapsLocally = true;
         try
         {
-            Assert.Equal("Notes 10：30.txt", WinNames.ToLocal("Notes 10:30.txt"));
-            foreach (var n in new[] { "a:b*c?.txt", "trailing. ", "CON", "con.txt", "Icon\r", "q\"<>|\\.md", "plain.txt" })
+            Assert.Equal("Notes 1030.txt", WinNames.ToLocal("Notes 10:30.txt"));
+            foreach (var n in new[] { "a:b*c?.txt", "trailing. ", "CON", "con.txt", "Icon\r", "q\"<>|\\.md", "plain.txt", "メモ：会議？.txt", "a：b" })
                 Assert.Equal(n, WinNames.FromLocal(WinNames.ToLocal(n)));
-            Assert.Equal("CON＿", WinNames.ToLocal("CON"));
+            Assert.Equal("CO", WinNames.ToLocal("CON"));
+            // Real full-width names (common in Chinese and Japanese) are stored as they are and never change.
+            Assert.Equal("メモ：会議.txt", WinNames.ToLocal("メモ：会議.txt"));
+            Assert.Equal("メモ：会議.txt", WinNames.FromLocal("メモ：会議.txt"));
+            Assert.NotEqual(WinNames.ToLocal("a:b"), WinNames.ToLocal("a：b"));
             // A Drive-side name with a colon lands as a full-width colon locally and maps back on the next scan.
             string src = TestEnv.TempDir("wsrc"), dst = TestEnv.TempDir("wdst");
             TestEnv.Write("x", Path.Combine(src, WinNames.ToLocal("Meeting 10:30.txt")), 5_000);
+            TestEnv.Write("y", Path.Combine(src, "メモ：会議.txt"), 5_000);
             var side = new LocalSide(src, []);
             var scan = await side.ScanAsync(null, default);
             Assert.True(scan.ContainsKey("Meeting 10:30.txt"));
+            Assert.True(scan.ContainsKey("メモ：会議.txt"));
             var runner = new SyncRunner(side, new LocalSide(dst, []));
             var (a, b) = await runner.ScanAsync(null);
             await runner.RunAsync(SyncPlanner.Plan(SyncMode.Mirror, a, b, null), a, b, null);

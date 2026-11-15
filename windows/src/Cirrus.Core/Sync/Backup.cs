@@ -110,13 +110,14 @@ public sealed class PhotoExporter
             {
                 var dir = Folder(a.Created, _options.PhotoLayout);
                 var stem = Path.GetFileNameWithoutExtension(a.Filename);
-                var ext = Path.GetExtension(a.Filename).TrimStart('.');
-                string Rel(string s) { var n = s + (ext.Length == 0 ? "" : "." + ext); return dir.Length == 0 ? n : dir + "/" + n; }
-                if (taken.TryGetValue(Rel(stem).ToLowerInvariant(), out var owner) && owner != a.Id)
-                    stem += "-" + Suffix(a.Id);
-                else if (!taken.ContainsKey(Rel(stem).ToLowerInvariant()) && LocalSize(Paths.Combine(_dest, WinNames.RelToLocal(Rel(stem)))) is var size && size >= 0 && size != a.Size && a.Size > 0)
-                    stem += "-" + Suffix(a.Id);   // a different file already sits at this path (not ours): keep it, suffix ours
+                // Suffix the name when any of its files (original, Live .MOV, -edited, RAW) would land on a path that
+                // belongs to another asset or to a different file that's already there (not ours: keep it).
+                bool Clashes(List<PlannedFile> files) => files.Any(p =>
+                    (taken.TryGetValue(p.Rel.ToLowerInvariant(), out var owner) && owner != a.Id) ||
+                    (!taken.ContainsKey(p.Rel.ToLowerInvariant()) && LocalSize(Paths.Combine(_dest, WinNames.RelToLocal(p.Rel))) is var size && size >= 0 && (p.Size <= 0 || size != p.Size)));
                 planned = PlannedFiles(a, dir, stem);
+                if (Clashes(planned)) { stem += "-" + Suffix(a.Id); planned = PlannedFiles(a, dir, stem); }
+                for (int n = 2; Clashes(planned) && n < 100; n++) planned = PlannedFiles(a, dir, stem + "-" + n);
                 foreach (var p in planned) taken[p.Rel.ToLowerInvariant()] = a.Id;
                 manifest.Assets[a.Id] = new Manifest.Entry { Files = planned.Select(p => p.Rel).ToList(), Created = a.Created, Favorite = a.IsFavorite, Hidden = a.IsHidden };
             }
@@ -220,6 +221,7 @@ public sealed class PhotoExporter
                                 try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }   // our own partial download
                                 if (attempt < 2) { attempt++; await Task.Delay(1500, ct).ConfigureAwait(false); continue; }
                                 Log.Error("photo export failed for an item: " + e.Message);
+                                Log.Status("photo export failed for an item: " + e.GetType().Name);
                                 lock (gate) report.Failed.Add($"{p.Rel}: {e.Message}");
                                 break;
                             }
@@ -280,7 +282,7 @@ public sealed class PhotoExporter
                 if (File.Exists(link) || Directory.Exists(link) || new FileInfo(link).LinkTarget is not null) continue;
                 var target = Path.Combine("..", "..", local.Replace('/', Path.DirectorySeparatorChar));
                 try { File.CreateSymbolicLink(link, target); }
-                catch (Exception e) { Log.Info("album folders skipped: can’t create links here (" + e.GetType().Name + ")"); return; }
+                catch (Exception e) { Log.Status("album folders skipped: can’t create links here (" + e.GetType().Name + ")"); return; }
             }
         }
     }
@@ -352,6 +354,16 @@ public sealed class BackupEngine
                 var a = await src.ScanAsync(n => progress?.Invoke($"Scanning {label}… {n} items"), ct).ConfigureAwait(false);
                 var b = await dst.ScanAsync(null, ct).ConfigureAwait(false);
                 var plan = SyncPlanner.Plan(_options.KeepDeleted ? SyncMode.Copy : SyncMode.Mirror, a, b, null);
+                // A backup never loses what it holds because iCloud briefly answered with an empty or partial list.
+                if (plan.WipesSide || (plan.TrashItemsB > 20 && (long)plan.TrashItemsB * 2 > b.Count))
+                {
+                    ev.Warnings.Add($"{label}: this run would have removed {plan.TrashItemsB} of {b.Count} backed-up items. They were kept; if you really deleted them in iCloud, remove them from the backup yourself.");
+                    plan = new SyncPlan
+                    {
+                        Actions = plan.Actions.Where(x => !x.IsDestructive).ToList(), SourceCount = plan.SourceCount, DestinationCount = plan.DestinationCount,
+                        TrashItemsA = plan.TrashItemsA, TrashItemsB = 0, RemovedItems = plan.TrashItemsA,
+                    };
+                }
                 ev.DriveFiles += a.Values.Count(x => !x.IsDir);
                 ev.DriveBytes += a.Values.Where(x => !x.IsDir).Sum(x => x.Size);
                 ev.DrivePendingBytes += plan.Bytes;
@@ -361,6 +373,8 @@ public sealed class BackupEngine
         if (_options.IncludePhotos && _sources.Photos is { } pb)
         {
             var libs = await pb.LibrariesAsync(ct).ConfigureAwait(false);
+            if (_options.IncludeSharedLibrary && pb is WebPhotos { SharedLookupFailed: true })
+                ev.Warnings.Add("iCloud didn’t answer about a Shared Library in time, so any Shared Library isn’t part of this backup. Check Space again later to include it.");
             foreach (var lib in libs.Where(l => !l.IsShared || _options.IncludeSharedLibrary))
             {
                 var dir = Path.Combine(AccountRoot, "Photos", Paths.SafeName(lib.Name));
@@ -397,11 +411,16 @@ public sealed class BackupEngine
         return ev;
     }
 
-    public async Task<RunReport> RunAsync(Evaluation ev, Action<RunProgress>? progress, CancellationToken ct = default)
+    /// <param name="force">Run even when "keep deleted" is off and the mirror would remove a large share of the backup.</param>
+    public async Task<RunReport> RunAsync(Evaluation ev, Action<RunProgress>? progress, CancellationToken ct = default, bool force = false)
     {
         if (ev.DestinationIsICloud || SafetyPolicy.IsICloudPath(_destination))
             throw SyncException.Unavailable("Backups can’t be written into an iCloud folder. Choose a folder or drive outside iCloud.");
         if (!ev.Fits) throw SyncException.NotEnoughSpace(ev.RequiredFree, ev.Free);
+        if (!force && !_options.KeepDeleted)
+            foreach (var p in ev.DrivePlans)
+                if (SyncPlanner.GuardTripped(p.Plan, SyncMode.Mirror, _options.MaxDeletePercent))
+                    throw SyncException.DeleteGuard(p.Plan.RemovedItems, Math.Max(1, p.Plan.DestinationCount));
         Directory.CreateDirectory(AccountRoot);
         var total = new RunReport();
         var overall = ev.PendingBytes;

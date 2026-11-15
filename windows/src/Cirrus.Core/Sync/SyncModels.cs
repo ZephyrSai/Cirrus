@@ -148,7 +148,7 @@ public sealed class SyncStore
             if (File.Exists(FilePath) && JsonSerializer.Deserialize<List<SyncJob>>(File.ReadAllBytes(FilePath), Json) is { } j)
                 lock (_lock) _jobs = j;
         }
-        catch (Exception e) { Log.Error("couldn’t read sync jobs: " + e.GetType().Name); }
+        catch (Exception e) { Log.Status("couldn’t read sync jobs: " + e.GetType().Name); }
         Changed?.Invoke();
     }
 
@@ -256,6 +256,6 @@ public static class AtomicFile
             File.WriteAllBytes(tmp, data);
             File.Move(tmp, path, overwrite: true);
         }
-        catch (Exception e) { Log.Error("couldn’t write " + System.IO.Path.GetFileName(path) + ": " + e.GetType().Name); }
+        catch (Exception e) { Log.Status("couldn’t write a Cirrus data file (" + System.IO.Path.GetFileName(path) + ")" + ": " + e.GetType().Name); }
     }
 }

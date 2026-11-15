@@ -59,7 +59,7 @@ sealed class SettingsWindow : Window
             var signOut = Ui.Button("Sign Out…", () =>
             {
                 if (Dialogs.Confirm(this, $"Sign out of {a.AppleID}?", "Cirrus forgets this session and any saved password. Nothing in iCloud changes.", "Sign Out"))
-                { AccountManager.Shared.SignOut(a); Close(); }
+                { AccountManager.Shared.SignOut(a); Cirrus.App.Model.Catalog.Shared.ForgetAccount(a.Id); Close(); }
             });
             var forget = Ui.Button("Forget Saved Password", () => { AccountManager.Shared.Gate.Delete(a.AppleID!); Dialogs.Info(this, "Forgotten", "The saved password was removed from this PC."); });
             forget.IsEnabled = AccountManager.Shared.Gate.HasSavedPassword(a.AppleID!);

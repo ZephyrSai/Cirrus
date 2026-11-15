@@ -17,6 +17,38 @@ public sealed class WebPhotos : IPhotosBackend
     internal const int PageLimit = 200;
     readonly object _lock = new();
     readonly Dictionary<string, PhotoLibraryRef> _libs = [];
+    readonly Dictionary<string, string> _tokens = [];   // library → latest CloudKit syncToken seen
+    /// <summary>How long the optional shared-library lookup may take before Cirrus goes on without it.</summary>
+    internal TimeSpan SharedZoneTimeout { get; set; } = TimeSpan.FromSeconds(6);
+
+    /// <summary>The last library lookup couldn't reach the shared database: the list may be missing a Shared Library.</summary>
+    public bool SharedLookupFailed { get; private set; }
+
+    /// <summary>Libraries known from an earlier run (disk cache): needed to address shared zones correctly.</summary>
+    public void Remember(IEnumerable<PhotoLibraryRef> libs) { lock (_lock) foreach (var l in libs) _libs.TryAdd(l.Id, l); }
+
+    void NoteToken(J r, string library)
+    {
+        if (r["syncToken"].Str is { Length: > 0 } t) lock (_lock) _tokens[library] = t;
+    }
+
+    public string? SyncToken(PhotoLibraryRef library) { lock (_lock) return _tokens.TryGetValue(library.Id, out var t) ? t : null; }
+
+    /// <summary>CloudKit change feed: no records since <paramref name="token"/> means every cached listing of the library is current.</summary>
+    public async Task<(bool Changed, string? Token)> HasChangesAsync(string token, PhotoLibraryRef library, CancellationToken ct = default)
+    {
+        var lib = Library(library.Id);
+        var body = new JsonObject
+        {
+            ["zones"] = new JsonArray(new JsonObject { ["zoneID"] = ZoneID(lib), ["syncToken"] = token, ["desiredKeys"] = new JsonArray("isDeleted") }),
+        };
+        var r = await Call(lib.Area, "changes/zone", body, ct: ct).ConfigureAwait(false);
+        var zone = r["zones"][0];
+        var newToken = zone["syncToken"].Str;
+        if (newToken is not null) lock (_lock) _tokens[library.Id] = newToken;
+        var unchanged = !zone.IsNull && zone["records"].Array.Count == 0 && zone["moreComing"].Bool != true && zone["serverErrorCode"].IsNull;
+        return (!unchanged, newToken);
+    }
 
     public WebPhotos(ICloudSession session, string appleID)
     {
@@ -80,12 +112,22 @@ public sealed class WebPhotos : IPhotosBackend
 
     public async Task<List<PhotoLibraryRef>> LibrariesAsync(CancellationToken ct = default)
     {
-        var found = new List<PhotoLibraryRef>();
-        foreach (var area in new[] { "private", "shared" })
+        // Private and shared databases in parallel; the shared one is optional and gets a short leash.
+        var privateTask = Call("private", "changes/database", new JsonObject(), ct: ct);
+        using var sharedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        sharedCts.CancelAfter(SharedZoneTimeout);
+        var sharedTask = Task.Run(async () =>
         {
-            J r;
-            try { r = await Call(area, "changes/database", new JsonObject(), ct: ct).ConfigureAwait(false); }
-            catch (Exception) when (area == "shared" && !ct.IsCancellationRequested) { continue; }
+            try { return (J?)await Call("shared", "changes/database", new JsonObject(), ct: sharedCts.Token).ConfigureAwait(false); }
+            catch (Exception e) { Log.Status("photos: shared libraries unavailable (" + e.GetType().Name + ")"); return null; }
+        }, CancellationToken.None);
+        var priv = await privateTask.ConfigureAwait(false);
+        var sharedOrNull = await sharedTask.ConfigureAwait(false);
+        SharedLookupFailed = sharedOrNull is null;
+        var shared = sharedOrNull ?? J.Null;
+        var found = new List<PhotoLibraryRef>();
+        foreach (var (area, r) in new[] { ("private", priv), ("shared", shared) })
+        {
             foreach (var z in r["zones"].Array)
             {
                 if (z["deleted"].Bool == true) continue;
@@ -233,6 +275,7 @@ public sealed class WebPhotos : IPhotosBackend
                     try
                     {
                         var r = await Call(lib.Area, "records/query", ListQuery(album, lib, i * stride), ct: ct).ConfigureAwait(false);
+                        NoteToken(r, lib.Id);
                         var recs = r["records"].Array;
                         var batch = Parse(recs, lib.Id);
                         lock (pageLock)
@@ -379,12 +422,22 @@ public sealed class WebPhotos : IPhotosBackend
         var kind = maxPixel > 400 ? PhotoResourceKind.Medium : PhotoResourceKind.Thumbnail;
         var px = kind == PhotoResourceKind.Medium ? 1024 : 360;
         if (ThumbnailDiskCache.Read(CacheKey, asset.Id, px) is { } cached) return cached;
-        if ((asset.Resource(kind) ?? asset.Resource(PhotoResourceKind.Thumbnail)) is not { } r) return null;
-        var tmp = Paths.TempFile("t.jpg");
+        // No medium rendition (common for uploads): use the original for big previews when it's small enough.
+        var r = asset.Resource(kind);
+        if (r is null && kind == PhotoResourceKind.Medium && asset.Resource(PhotoResourceKind.Original) is { Size: > 0 and <= 20_000_000 } o && !asset.IsVideo) r = o;
+        r ??= asset.Resource(PhotoResourceKind.Thumbnail);
+        if (r is null) return null;
+        var tmp = Paths.TempFile("t.img");
         try
         {
             await Fetch(r, asset.Library, tmp, null, ct).ConfigureAwait(false);
             var data = await File.ReadAllBytesAsync(tmp, ct).ConfigureAwait(false);
+            if (r.Kind == PhotoResourceKind.Original)
+            {
+                // Keep a JPEG preview, not a copy of the original, in the cache.
+                if (ImageReencoder.ToJpeg?.Invoke(data, px) is not { Length: > 0 } jpeg) return data;
+                data = jpeg;
+            }
             ThumbnailDiskCache.Write(data, CacheKey, asset.Id, px);
             return data;
         }
