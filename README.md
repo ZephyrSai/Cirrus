@@ -7,7 +7,7 @@ A native app for browsing, moving, syncing and backing up iCloud Drive and iClou
 
 <p align="center"><a href="https://zephyrsai.github.io/Cirrus/">Website</a> · <a href="https://github.com/ZephyrSai/Cirrus/releases/latest">Download</a> · <a href="BUILDING.md">Build it yourself</a></p>
 
-![Cirrus showing an iCloud Photos library grouped by month](docs/img/light/photos.webp)
+![Cirrus showing an iCloud Photos library grouped by month](docs/img/mac/light/photos.webp)
 
 ## What it does
 
