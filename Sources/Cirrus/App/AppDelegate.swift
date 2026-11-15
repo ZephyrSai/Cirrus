@@ -15,7 +15,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Prefs.register()
         SafetyPolicy.readOnlyICloud = Prefs.readOnlyICloud || ProcessInfo.processInfo.environment["CIRRUS_READ_ONLY"] != nil
-        if !SingleInstance.claim() { NSApp.terminate(nil); return }
         NSApp.setActivationPolicy(Debug.headless ? .accessory : .regular)
         #if DEBUG
         if let a = ProcessInfo.processInfo.environment["CIRRUS_APPEARANCE"] { NSApp.appearance = NSAppearance(named: a == "light" ? .aqua : .darkAqua) }
@@ -247,18 +246,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 /// One Cirrus per user (two instances would race on the same transfers and sync state).
 enum SingleInstance {
-    static var fd: Int32 = -1
+    nonisolated(unsafe) static var fd: Int32 = -1
+    /// Every Cirrus build (release, tester, QA) shares this bundle ID prefix.
+    static let family = "io.github.zephyrsai.cirrus"
+
+    /// One lock per user, shared by every build and profile (it doesn't live in a profile folder), plus a check
+    /// for any running Cirrus copy in case one was started from somewhere else.
     static func claim() -> Bool {
-        if ProcessInfo.processInfo.environment["CIRRUS_ALLOW_MULTIPLE"] != nil { return true }
-        let path = Paths.appSupport.appendingPathComponent("instance.lock").path
-        fd = open(path, O_CREAT | O_RDWR, 0o644)
-        guard fd >= 0 else { return true }
-        if flock(fd, LOCK_EX | LOCK_NB) != 0 {
-            let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
-            others.first { $0 != .current }?.activate()
-            return false
+        let dir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support/Cirrus", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        fd = open(dir.appendingPathComponent("instance.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        let lockHeldElsewhere = fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) != 0
+        let others = NSWorkspace.shared.runningApplications.filter {
+            $0.processIdentifier != getpid() && ($0.bundleIdentifier?.hasPrefix(family) ?? false)
         }
-        return true
+        guard lockHeldElsewhere || !others.isEmpty else { return true }
+        FileHandle.standardError.write(Data("Cirrus is already running; bringing it to the front.\n".utf8))
+        // A real second launch brings the open one forward; a headless test launch just leaves quietly.
+        if ProcessInfo.processInfo.environment["CIRRUS_HEADLESS"] == nil { others.first?.activate() }
+        if fd >= 0 { close(fd); fd = -1 }
+        return false
     }
     static func release() { if fd >= 0 { flock(fd, LOCK_UN); close(fd) } }
 }
