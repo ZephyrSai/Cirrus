@@ -50,9 +50,10 @@ final class DriveFolderModel {
         }
     }
 
-    /// Folders first, then names the way Finder and Files sort them. Cirrus's own in-flight upload names are hidden.
+    /// Folders first, then names the way Finder and Files sort them. Temporary ".cirrus-upload-…" copies stay
+    /// visible: if a replace was interrupted, that copy may be the newest version of the file.
     static func sorted(_ nodes: [DriveNode]) -> [DriveNode] {
-        nodes.filter { !$0.name.hasPrefix(".cirrus-") && $0.name != ".DS_Store" }
+        nodes.filter { $0.name != ".DS_Store" }
             .sorted { a, b in
                 if a.isFolder != b.isFolder { return a.isFolder }
                 return a.name.localizedStandardCompare(b.name) == .orderedAscending

@@ -100,7 +100,12 @@ public enum Paths {
     public static let fetchedMarker = ".cirrus-fetched"
     /// Stamped when a download into an opened-copy folder finishes; later changes inside mean local edits.
     public static func markFetched(_ dir: URL) {
-        FileManager.default.createFile(atPath: dir.appendingPathComponent(fetchedMarker).path, contents: nil)
+        let marker = dir.appendingPathComponent(fetchedMarker)
+        FileManager.default.createFile(atPath: marker.path, contents: nil)
+        // Downloaded files carry iCloud's modification date, which can be ahead of this clock: date the
+        // marker no earlier than them, or an untouched copy would look edited forever.
+        let newest = newestChange(dir, includeSelf: false)
+        if newest > Date() { try? FileManager.default.setAttributes([.modificationDate: newest], ofItemAtPath: marker.path) }
     }
 
     /// True when a file inside was changed after Cirrus finished downloading it. Without a marker (older
@@ -116,11 +121,18 @@ public enum Paths {
 
     /// Opened copies can hold edits that were never uploaded: those go to the Trash, the rest are removed.
     public static func retireOpenCopy(_ u: URL) {
+        #if os(iOS)
+        // The iOS app never edits opened copies (Quick Look editing is off), so they're always just removed;
+        // the app's Trash would keep iCloud content outside the caches that sign-out wipes.
+        try? FileManager.default.removeItem(at: u)
+        return
+        #else
         if wasEditedLocally(u) {
             if (try? FileManager.default.trashItem(at: u, resultingItemURL: nil)) != nil { return }
             return   // couldn't trash it: keep it rather than lose edits
         }
         try? FileManager.default.removeItem(at: u)
+        #endif
     }
 
     public static var caches: URL {

@@ -48,15 +48,11 @@ enum Ops {
                 let m = attrs[.modificationDate] as? Date
                 if node.modified == nil || m == nil || abs(m!.timeIntervalSince(node.modified!)) < 2 { return target }
             }
+            // An outdated copy. On iOS opened copies are never edited (Quick Look editing is off; the share
+            // sheet hands out copies), so it is simply replaced.
+            if fm.fileExists(atPath: dir.path) { try? fm.removeItem(at: dir) }
             if fm.fileExists(atPath: dir.path) {
-                if Paths.wasEditedLocally(dir) {
-                    // Never throw away a copy that was changed here: put it aside and download beside it.
-                    if (try? fm.trashItem(at: dir, resultingItemURL: nil)) == nil {
-                        dir = dir.deletingLastPathComponent().appendingPathComponent(ListingCache.stableKey(key) + "-" + UUID().uuidString.prefix(6), isDirectory: true)
-                    }
-                } else {
-                    try? fm.removeItem(at: dir)
-                }
+                dir = dir.deletingLastPathComponent().appendingPathComponent(ListingCache.stableKey(key) + "-" + UUID().uuidString.prefix(6), isDirectory: true)
             }
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
             let fresh = dir.appendingPathComponent(name)
@@ -122,6 +118,25 @@ enum Ops {
         }
     }
 
+    /// Transfers are tagged with their account so signing out can stop them (and their Retry).
+    static func group(_ account: Account) -> String { "acct:" + account.id }
+
+    /// Stops this account's previews and opened-copy downloads (sign-out) and returns them to wait on.
+    static func cancelInFlight(account: String) -> [Task<URL, Error>] {
+        let mine = inFlight.filter { $0.key.hasPrefix("drive:" + account + ":") || $0.key.hasPrefix("photo:" + account + ":") }
+        for t in mine.values { t.cancel() }
+        return Array(mine.values)
+    }
+
+    /// Downloads are staged in Cirrus's caches on this device before they move to their destination, and
+    /// uploads are staged as one request body: the device itself needs room for the largest file.
+    static func internalSpaceProblem(largest: Int64, copies: Int64 = 1) -> String? {
+        guard largest > 0, let free = VolumeInfo.freeSpace(at: Paths.caches) else { return nil }
+        let need = largest * copies + 200_000_000
+        guard need > free else { return nil }
+        return "This device needs about \(need.byteString) free to stage the largest file (\(largest.byteString)), and \(free.byteString) is free. Free up space on this device first."
+    }
+
     static func volumeKey(_ dir: URL) -> String {
         "vol:" + ((try? dir.resourceValues(forKeys: [.volumeURLKey]).volume)?.path ?? "/")
     }
@@ -170,15 +185,19 @@ enum Ops {
         if isFAT(folder), let big = plans.flatMap(\.files).first(where: { $0.node.size > Limits.fat32Max }) {
             throw OpsError(message: "“\(big.node.name)” is larger than 4 GB, which this drive’s FAT format can’t hold. Nothing was downloaded.")
         }
+        // Packages (Pages, Keynote…) need room for the zip and the unpacked copy.
+        if let p = internalSpaceProblem(largest: plans.flatMap(\.files).map(\.node.size).max() ?? 0, copies: 2) { throw OpsError(message: p) }
         let vol = volumeKey(folder)
         for p in plans {
             // The top-level name is fixed now, so a retry continues in the same place.
             let root = uniqueURL(in: folder, name: Paths.safeName(p.node.name), isDirectory: p.node.isFolder)
             let files = p.files
             TransferManager.shared.enqueue(p.node.name, detail: p.node.isFolder ? "\(files.count) files" : "", direction: .download,
-                                           total: p.bytes, quotaKey: vol) { t in
+                                           total: p.bytes, group: group(account), quotaKey: vol) { t in
                 let scoped = folder.startAccessingSecurityScopedResource()
                 defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+                // Checked again here: read-only mode may have been turned on before this ran (or a Retry).
+                try SafetyPolicy.checkLocalWrite(folder)
                 let fm = FileManager.default
                 var done: Int64 = 0
                 var failures = [String]()
@@ -197,8 +216,13 @@ enum Ops {
                         try? fm.removeItem(at: part)
                         let base = done
                         try await drive.download(f.node, to: part) { d, _ in t.report(base + d, p.bytes) }
-                        let final = fm.fileExists(atPath: target.path) ? uniqueURL(in: target.deletingLastPathComponent(), name: target.lastPathComponent) : target
-                        try fm.moveItem(at: part, to: final)
+                        var source = part, name = target.lastPathComponent
+                        // A package that couldn't be unpacked arrives as its zip: keep that, under a visible name.
+                        let zip = part.appendingPathExtension("zip")
+                        if !fm.fileExists(atPath: part.path), fm.fileExists(atPath: zip.path) { source = zip; name += ".zip" }
+                        let final = fm.fileExists(atPath: target.deletingLastPathComponent().appendingPathComponent(name).path)
+                            ? uniqueURL(in: target.deletingLastPathComponent(), name: name) : target.deletingLastPathComponent().appendingPathComponent(name)
+                        try fm.moveItem(at: source, to: final)
                         done += f.node.size
                         t.report(done, p.bytes)
                     } catch let e where e is CancellationError || (e as? ICloudError) == .cancelled {
@@ -249,6 +273,8 @@ enum Ops {
             cautions.append("“\(big.name)” is over 10 GB. Uploads that large through iCloud.com often fail; the Files app on a device signed in to this Apple ID is more reliable for it.")
         }
         let conflicts = ok.filter { names.contains($0.name.lowercased()) }.map(\.name)
+        // The engine writes each upload's request body to a temporary file on this device first.
+        if let p = internalSpaceProblem(largest: ok.map(\.size).max() ?? 0) { blocked.append(p); return UploadCheck(files: [], bytes: 0, blocked: blocked, cautions: cautions, conflicts: [], iCloudFree: nil) }
         return UploadCheck(files: ok, bytes: ok.reduce(0) { $0 + $1.size }, blocked: blocked, cautions: cautions, conflicts: conflicts,
                            iCloudFree: await iCloudFree(account))
     }
@@ -266,7 +292,8 @@ enum Ops {
             if old != nil && replace { name = old!.name } else { name = uniqueName(f.name, taken: taken) }
             taken.insert(name)
             let target = replace ? old : nil
-            TransferManager.shared.enqueue(name, detail: "To iCloud Drive", direction: .upload, total: f.size, quotaKey: "icloud:" + account.id) { t in
+            TransferManager.shared.enqueue(name, detail: "To iCloud Drive", direction: .upload, total: f.size, group: group(account),
+                                           quotaKey: "icloud:" + account.id) { t in
                 let s = f.scoped && f.url.startAccessingSecurityScopedResource()
                 defer { if s { f.url.stopAccessingSecurityScopedResource() } }
                 if let target {

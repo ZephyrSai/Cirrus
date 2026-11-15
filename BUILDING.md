@@ -143,20 +143,29 @@ Available screens:
 
 - **Accounts.**
   - Sign in to any number of Apple IDs the way iCloud.com does, with two-factor codes (SMS codes AutoFill) and Advanced Data Protection approval.
-  - Passwords AutoFill from the Passwords app. A saved password stays in this device's keychain (`ThisDeviceOnly`, never synced) and is released only after Face ID, Touch ID or the passcode; this can be turned off in Settings.
+  - Passwords AutoFill from the Passwords app. A saved password stays in this device's keychain (`ThisDeviceOnly`, never synced) and is released only after Face ID, Touch ID or the passcode.
+    - Turning that off in Settings needs Face ID or the passcode itself.
+    - Unlocked passwords are dropped from memory when the setting changes, and when Cirrus goes to the background with nothing running.
+  - iOS keeps keychain items after an app is deleted, so a fresh install first removes any Cirrus sessions and saved passwords left from an earlier one.
+  - Signing out stops that account's transfers and previews. Its session can't store itself again, and its caches are wiped a second time once in-flight work has stopped.
   - **This iPhone/iPad** shows the device's own Photos library through PhotoKit. iOS doesn't let apps read the device's iCloud Drive folder, so iCloud Drive always comes from an Apple ID signed in to Cirrus.
 - **Downloads keep going in the background.** Files of 4 MB or more download through a background `URLSession`. That session never carries iCloud cookies: the system follows redirects for it, so Cirrus couldn't keep cookies away from other hosts. When a download there is refused (401/403), it's retried in the normal session. Uploads ask for the usual background grace period.
 - **Long runs.**
   - Back Up iCloud and Export use `BGContinuedProcessingTask` on iOS 26 and later (identifiers `<bundle id>.run.*`). The system shows their progress and lets you stop them; running again continues where it stopped.
+  - That progress can appear on the Lock Screen, so it shows only counts and sizes, never file, album or account names.
   - On iOS 17–25 they get the background grace period, and the screen stays awake while Cirrus is in front.
 - **Files and drives.**
   - Downloads, exports and backups go to a folder you pick with the document picker: this device, a USB drive or SD card, or a file server. Cirrus remembers it as a bookmark.
   - Nothing already there is overwritten: new files get " 2" names, and a re-run skips files that are already complete.
-  - Backups refuse folders in iCloud Drive. In read-only mode, exports refuse them too.
-  - A space check (free space minus queued transfers) and the FAT32 4 GB check run before anything starts.
+  - Photo exports also check every companion file (Live Photo `.MOV`, `-edited`, RAW) and give the whole item a suffixed name if any of its paths is taken. When Cirrus's own earlier copy has changed, the old copy goes to the Trash or `.cirrus/Removed` rather than being deleted. This fix is in the shared engine, so the Mac app gets it too.
+  - Backups refuse folders in iCloud Drive. In read-only mode, exports refuse them too, and the engine checks again when the work runs.
+  - Before anything starts:
+    - a space check at the destination (free space minus queued transfers)
+    - the FAT32 4 GB check
+    - a check that this device has room to stage the largest file (downloads land in Cirrus's caches first; uploads are staged as one request body)
 - **Packages** from iCloud Drive (Pages, Keynote, Numbers bundles) arrive as zips. On iOS they're expanded in-process by `ZipReader`, which refuses unsafe paths and checks every CRC. The Mac keeps using `ditto`.
 - **Caches** live in `Library/Caches/Cirrus` with the Mac's layout: listings, hashed thumbnails, and per-account Open and Preview copies.
-  - Quick Look editing is off, so preview copies never hold edits.
+  - Quick Look editing is off, so preview copies never hold edits. On iOS they're always removed outright, never moved to a Trash outside the caches.
   - Signing out wipes that account's caches. **Settings › Clear Caches** wipes them all.
   - `Documents` (Files › On My iPhone › Cirrus) holds only what you save there.
 - **Not in this version** (possible later phases):

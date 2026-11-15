@@ -150,6 +150,15 @@ public final class AccountManager {
 
     public func signOut(_ account: Account) {
         guard account.kind == .web, let id = account.appleID else { return }
+        // Stop the live session, so work still running can't sign in again and store it back. A
+        // re-authentication that finished just before may already have stored it: remove it again after.
+        if let s = account.session {
+            let accountID = account.id
+            Task { @MainActor in
+                await s.signOut()
+                if AccountManager.shared.account(id: accountID) == nil { Keychain.delete(service: Keychain.sessionService, account: id) }
+            }
+        }
         Keychain.delete(service: Keychain.sessionService, account: id)
         Keychain.delete(service: Keychain.passwordService, account: id)
         Task { await CredentialGate.shared.forget(id) }

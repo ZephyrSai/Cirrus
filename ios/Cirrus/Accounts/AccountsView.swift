@@ -34,13 +34,36 @@ struct AccountsView: View {
 
     func signOut(_ a: Account) {
         if state.selection?.accountID == a.id { state.selection = .accounts }
-        // Like the Mac app: the engine deletes the keychain items and this account's caches.
+        // Stop everything still using this account (its transfers, previews and opened copies) first.
+        let group = Ops.group(a)
+        for t in TransferManager.shared.active where t.group == group { TransferManager.shared.cancel(t) }
+        let inFlight = Ops.cancelInFlight(account: a.id)
+        let cacheKey = a.photos?.cacheKey
+        // Like the Mac app: the engine ends the session, deletes the keychain items and this account's caches.
         AccountManager.shared.signOut(a)
         PhotoCatalog.libraries[a.id] = nil
+        PhotoCatalog.albums = PhotoCatalog.albums.filter { !$0.key.hasPrefix(a.id + "|") }
         DriveFolderModel.memory = DriveFolderModel.memory.filter { !$0.key.hasPrefix(a.id + "|") }
         AlbumModel.memory = AlbumModel.memory.filter { !$0.key.hasPrefix(a.id + "|") }
         Thumbs.shared.purgeMemory()
+        if UserDefaults.standard.string(forKey: "backupAccount") == a.id { UserDefaults.standard.removeObject(forKey: "backupAccount") }
+        // Work that was already running when we cancelled it may still write a file or two: wipe again after.
+        let id = a.id
+        Task { @MainActor in
+            for t in inFlight { _ = try? await t.value }
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            AccountsView.wipeCaches(accountID: id, photosCacheKey: cacheKey)
+        }
         state.show("Signed out of \(a.displayTitle)")
+    }
+
+    /// The same removals as the engine's sign-out (listings, thumbnails, Open and Preview copies).
+    static func wipeCaches(accountID: String, photosCacheKey: String?) {
+        let fm = FileManager.default
+        try? fm.removeItem(at: Paths.cacheDir("listings").appendingPathComponent(accountID.replacingOccurrences(of: ":", with: "_")))
+        if let k = photosCacheKey { try? fm.removeItem(at: ThumbnailDiskCache.accountDir(k)) }
+        let mine = Paths.accountCacheName(accountID)
+        for name in ["Preview", "Open"] { try? fm.removeItem(at: Paths.caches.appendingPathComponent(name).appendingPathComponent(mine)) }
     }
 }
 

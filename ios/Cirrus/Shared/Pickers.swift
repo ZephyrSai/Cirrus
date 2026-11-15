@@ -133,6 +133,9 @@ struct PhotoPicker: UIViewControllerRepresentable {
                 _ = p.loadFileRepresentation(forTypeIdentifier: typeID) { url, _ in
                     // The provider deletes its file when this returns: copy it into our temp folder first.
                     guard let url else { cont.resume(returning: nil); return }
+                    // Don't fill the device: skip an item that wouldn't leave room for its upload body too.
+                    let size = Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                    if let free = VolumeInfo.freeSpace(at: Paths.caches), size * 2 + 200_000_000 > free { cont.resume(returning: nil); return }
                     let name = (p.suggestedName.map { $0 + "." + url.pathExtension }) ?? url.lastPathComponent
                     let dst = Paths.tempFile(named: Paths.safeName(name))
                     do { try FileManager.default.copyItem(at: url, to: dst); cont.resume(returning: dst) } catch { cont.resume(returning: nil) }

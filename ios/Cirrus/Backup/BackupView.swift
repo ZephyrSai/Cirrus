@@ -80,7 +80,7 @@ struct BackupView: View {
                     HStack { ProgressView(); Text(evaluating).foregroundStyle(.secondary).lineLimit(2) }
                 } else if let e = evaluation {
                     Button { start(e) } label: { Label("Back Up Now", systemImage: "externaldrive.badge.checkmark") }
-                        .disabled(!e.fits || (e.drivePlans.allSatisfy { $0.plan.isEmpty } && e.photos.allSatisfy { $0.pending.isEmpty }))
+                        .disabled(!e.fits || stagingProblem(e) != nil || (e.drivePlans.allSatisfy { $0.plan.isEmpty } && e.photos.allSatisfy { $0.pending.isEmpty }))
                     Button("Check Again") { Task { await evaluate() } }
                 } else {
                     Button { Task { await evaluate() } } label: { Label("Check Sizes", systemImage: "gauge.with.dots.needle.33percent") }
@@ -115,6 +115,7 @@ struct BackupView: View {
             if !e.fits {
                 Label("Needs \(e.requiredFree.byteString) free, including headroom.", systemImage: "xmark.octagon.fill").foregroundStyle(.red)
             }
+            if let p = stagingProblem(e) { Label(p, systemImage: "xmark.octagon.fill").foregroundStyle(.red) }
             ForEach(e.warnings, id: \.self) { w in
                 Label(w, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.orange)
             }
@@ -122,6 +123,14 @@ struct BackupView: View {
     }
 
     func reset() { evaluation = nil; engine = nil; error = nil }
+
+    /// Files are downloaded into Cirrus's caches on this device before they're copied to the drive, up to
+    /// four at a time (twice for iCloud Drive packages, which arrive zipped).
+    func stagingProblem(_ e: BackupEngine.Evaluation) -> String? {
+        let drive = e.drivePlans.flatMap { $0.plan.actions.map(\.bytes) }.max() ?? 0
+        let photos = e.photos.flatMap { $0.pending.map(\.size) }.max() ?? 0
+        return Ops.internalSpaceProblem(largest: max(drive, photos), copies: 4)
+    }
 
     func makeEngine(_ account: Account, _ dest: URL) -> BackupEngine {
         var storage: (@Sendable () async -> StorageUsage?)?
@@ -160,10 +169,11 @@ struct BackupView: View {
         let first = EvalBox(e)
         let title = "Back Up " + account.displayTitle
         TransferManager.shared.enqueue(title, detail: FolderBookmarks.displayName(folder), direction: .download, total: e.pendingBytes,
-                                       quotaKey: Ops.volumeKey(folder)) { t in
+                                       group: Ops.group(account), quotaKey: Ops.volumeKey(folder)) { t in
             let scoped = folder.startAccessingSecurityScopedResource()
             defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
-            let run = await MainActor.run { LongRun.start(title: "Backing up iCloud", subtitle: title) { TransferManager.shared.cancel(t) } }
+            // The system shows this progress on the Lock Screen: counts and sizes only, no names.
+            let run = await MainActor.run { LongRun.start(title: "Backing up iCloud", subtitle: "Starting…") { TransferManager.shared.cancel(t) } }
             var ok = false
             defer { Task { @MainActor in run.finish(success: ok) } }
             // A retry evaluates again, so it copies only what's still missing.
@@ -172,7 +182,8 @@ struct BackupView: View {
             let report = try await eng.run(ev) { p in
                 t.report(p.bytesDone, max(p.bytesTotal, 1))
                 t.setDetail(p.phase)
-                Task { @MainActor in run.update(done: p.bytesDone, total: p.bytesTotal, subtitle: p.phase) }
+                let line = p.bytesTotal > 0 ? "\(p.bytesDone.byteString) of \(p.bytesTotal.byteString)" : "\(p.filesDone) of \(p.filesTotal) files"
+                Task { @MainActor in run.update(done: p.bytesDone, total: p.bytesTotal, subtitle: line) }
             }
             if !report.failed.isEmpty {
                 throw OpsError(message: "\(report.failed.count) items didn’t copy (see “Backup Info.txt”). Retry continues with those.")

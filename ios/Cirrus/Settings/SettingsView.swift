@@ -1,4 +1,5 @@
 import CirrusCore
+import LocalAuthentication
 import SwiftUI
 
 struct SettingsView: View {
@@ -21,7 +22,7 @@ struct SettingsView: View {
                      + "Even with it off, removals only go to Recently Deleted, and replacing a file uploads the new copy before the old one is moved there.")
             }
             Section {
-                Toggle(isOn: Binding(get: { faceID }, set: { faceID = $0; Prefs.requireFaceID = $0 })) {
+                Toggle(isOn: Binding(get: { faceID }, set: { on in setFaceID(on) })) {
                     Label("Face ID for saved passwords", systemImage: "faceid")
                 }
             } footer: {
@@ -61,12 +62,34 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
+        .onAppear { faceID = Prefs.requireFaceID }
         .task { cacheSize = await Task.detached { ListingCache.size() }.value }
         .alert("Allow changes to iCloud?", isPresented: $confirmWrite) {
             Button("Allow Changes", role: .destructive) { state.setReadOnly(false) }
             Button("Stay Read-only", role: .cancel) {}
         } message: {
             Text("Cirrus will be able to upload, rename, create folders and move items to Recently Deleted in iCloud.")
+        }
+    }
+
+    /// Turning protection off needs the device owner (Face ID, Touch ID or passcode); either change drops
+    /// passwords already unlocked in memory, so the new setting applies at once.
+    func setFaceID(_ on: Bool) {
+        if on {
+            faceID = true; Prefs.requireFaceID = true
+            state.forgetUnlockedPasswords()
+            return
+        }
+        Task {
+            let ctx = LAContext()
+            var err: NSError?
+            let ok: Bool
+            if ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &err) {
+                ok = (try? await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "turn off Face ID for saved Apple ID passwords")) ?? false
+            } else {
+                ok = false   // no passcode on this device: nothing to protect them with, so keep the setting on
+            }
+            if ok { faceID = false; Prefs.requireFaceID = false; state.forgetUnlockedPasswords() } else { faceID = true }
         }
     }
 }

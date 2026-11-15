@@ -81,6 +81,13 @@ final class AppState {
         }
     }
 
+    /// Passwords unlocked with Face ID stay in memory only while needed: dropped when the setting changes,
+    /// and when Cirrus goes to the background with nothing running (a running job may need to sign in again).
+    func forgetUnlockedPasswords() {
+        let ids = accounts.compactMap { $0.kind == .web ? $0.appleID : nil }
+        Task { for id in ids { await CredentialGate.shared.forget(id) } }
+    }
+
     /// Turns on or off the built-in demo account (a fake iCloud on this device; never touches real accounts).
     func setDemo(_ on: Bool) {
         Prefs.showDemoAccount = on

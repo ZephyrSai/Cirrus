@@ -73,6 +73,13 @@ public extension DriveBackend {
         let temp = ".cirrus-upload-\(UUID().uuidString.prefix(8))-" + name
         let uploaded = try await upload(file, name: temp, into: folderID, modified: modified, progress: progress)
         try await trash([existing])
-        return try await rename(uploaded, to: name)
+        do {
+            return try await rename(uploaded, to: name)
+        } catch {
+            // Don't leave the only visible copy in Recently Deleted: put the old file back (best effort).
+            // The new upload stays under its temporary name next to it.
+            _ = try? await restore([existing])
+            throw error
+        }
     }
 }

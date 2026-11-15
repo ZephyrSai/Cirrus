@@ -4,6 +4,7 @@ import SwiftUI
 struct RootView: View {
     @Bindable var state = AppState.shared
     @State private var columns = NavigationSplitViewVisibility.all
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columns) {
@@ -28,6 +29,9 @@ struct RootView: View {
             }
         }
         .animation(.spring(duration: 0.3), value: state.toast)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background, TransferManager.shared.active.isEmpty { state.forgetUnlockedPasswords() }
+        }
     }
 }
 

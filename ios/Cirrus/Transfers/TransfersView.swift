@@ -68,13 +68,23 @@ struct TransferRow: View {
                 Button { TransferManager.shared.cancel(t) } label: { Image(systemName: "xmark.circle.fill").font(.title3).foregroundStyle(.secondary) }
                     .buttonStyle(.borderless).accessibilityLabel("Stop")
             case .failed, .cancelled:
-                Button { TransferManager.shared.retry(t) } label: { Image(systemName: "arrow.clockwise.circle.fill").font(.title3) }
-                    .buttonStyle(.borderless).accessibilityLabel("Retry")
+                // A transfer of an account that was signed out can't be retried.
+                if accountGone {
+                    Image(systemName: "person.crop.circle.badge.xmark").font(.title3).foregroundStyle(.secondary).accessibilityLabel("Signed out")
+                } else {
+                    Button { TransferManager.shared.retry(t) } label: { Image(systemName: "arrow.clockwise.circle.fill").font(.title3) }
+                        .buttonStyle(.borderless).accessibilityLabel("Retry")
+                }
             case .done:
                 Image(systemName: "checkmark.circle.fill").font(.title3).foregroundStyle(.green)
             }
         }
         .padding(.vertical, 2)
+    }
+
+    var accountGone: Bool {
+        guard let g = transfer.group, g.hasPrefix("acct:") else { return false }
+        return AccountManager.shared.account(id: String(g.dropFirst(5))) == nil
     }
 
     var icon: String {

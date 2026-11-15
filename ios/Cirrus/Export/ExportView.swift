@@ -135,12 +135,19 @@ struct ExportView: View {
             if let free, e.pendingBytes + 100_000_000 > free {
                 Label("Not enough space: \(e.pendingBytes.byteString) needed, \(free.byteString) free.", systemImage: "xmark.octagon.fill").foregroundStyle(.red)
             }
+            if let p = stagingProblem(e) { Label(p, systemImage: "xmark.octagon.fill").foregroundStyle(.red) }
         }
     }
 
     func canExport(_ e: PhotoExporter.Evaluation) -> Bool {
+        if stagingProblem(e) != nil { return false }
         guard let free else { return !e.pending.isEmpty }
         return !e.pending.isEmpty && e.pendingBytes + 100_000_000 <= free
+    }
+
+    /// Up to four originals download at once and are staged on this device first.
+    func stagingProblem(_ e: PhotoExporter.Evaluation) -> String? {
+        Ops.internalSpaceProblem(largest: e.pending.map(\.size).max() ?? 0, copies: 4)
     }
 
     func makeExporter(_ dest: URL) -> PhotoExporter? {
@@ -179,10 +186,11 @@ struct ExportView: View {
         let first = EvalBox(e)
         let title = "Export: " + sourceTitle
         TransferManager.shared.enqueue(title, detail: FolderBookmarks.displayName(folder), direction: .download, total: e.pendingBytes,
-                                       quotaKey: Ops.volumeKey(folder)) { t in
+                                       group: Ops.group(request.account), quotaKey: Ops.volumeKey(folder)) { t in
             let scoped = folder.startAccessingSecurityScopedResource()
             defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
-            let run = await MainActor.run { LongRun.start(title: "Exporting photos", subtitle: title) { TransferManager.shared.cancel(t) } }
+            // The system shows this progress on the Lock Screen: counts only, no album, file or account names.
+            let run = await MainActor.run { LongRun.start(title: "Exporting photos", subtitle: "Starting…") { TransferManager.shared.cancel(t) } }
             var ok = false
             defer { Task { @MainActor in run.finish(success: ok) } }
             // A retry re-checks what's still missing (the manifest makes this incremental).

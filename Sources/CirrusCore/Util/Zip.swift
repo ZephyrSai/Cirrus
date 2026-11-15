@@ -52,6 +52,12 @@ public enum ZipReader {
             if let first = rel.split(separator: "/").first { tops[String(first)] = directory.appendingPathComponent(String(first)) }
             plan.append((e, target))
         }
+        // Declared sizes are enforced while writing; refuse up front when they can't fit at all.
+        let needed = plan.reduce(UInt64(0)) { $0 &+ $1.entry.size }
+        if let free = (try? root.resourceValues(forKeys: [.volumeAvailableCapacityKey]).volumeAvailableCapacity).map({ UInt64(max(0, $0)) }),
+           needed > free {
+            throw ZipError(message: "Not enough space to unpack the archive (\(Int64(clamping: needed).byteString) needed).")
+        }
         for (e, target) in plan {
             if e.isDirectory {
                 try fm.createDirectory(at: target, withIntermediateDirectories: true)
@@ -105,7 +111,7 @@ public enum ZipReader {
             cdSize = rec.u64(40)
             cdOffset = rec.u64(48)
         }
-        guard cdOffset + cdSize <= fileSize, cdSize < 1 << 31 else { throw ZipError(message: "The archive's directory is damaged.") }
+        guard cdSize <= fileSize, cdOffset <= fileSize - cdSize, cdSize < 1 << 31 else { throw ZipError(message: "The archive's directory is damaged.") }
         let cd = try readExactly(fh, at: cdOffset, count: Int(cdSize))
         var entries = [Entry]()
         var p = 0
@@ -125,6 +131,7 @@ public enum ZipReader {
             let xEnd = x + extraLen
             while x + 4 <= xEnd {
                 let id = cd.u16(x), len = Int(cd.u16(x + 2))
+                guard x + 4 + len <= xEnd else { throw ZipError(message: "The archive's directory is damaged.") }
                 if id == 0x0001 {
                     var q = x + 4
                     if usize == 0xFFFF_FFFF, q + 8 <= x + 4 + len { usize = cd.u64(q); q += 8 }
