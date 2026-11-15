@@ -4,9 +4,9 @@ import CirrusCore
 /// Apple ID sign-in sheet: password (SRP — the password never leaves this Mac except to Apple),
 /// two-factor code (device or SMS), then Advanced Data Protection approval if the account needs it.
 @MainActor
-final class SignInController: NSWindowController, NSTextFieldDelegate {
+final class SignInController: NSWindowController, NSTextFieldDelegate, NSComboBoxDelegate {
     var onFinish: ((String?) -> Void)?
-    let appleField = NSTextField()
+    let appleField = NSComboBox()
     let passField = NSSecureTextField()
     let remember = NSButton(checkboxWithTitle: "Remember password (unlocks with Touch ID when the session expires)", target: nil, action: nil)
     let codeField = NSTextField()
@@ -32,23 +32,48 @@ final class SignInController: NSWindowController, NSTextFieldDelegate {
         w.title = "Sign In"
         super.init(window: w)
         build()
-        appleField.stringValue = appleID ?? ""
-        if appleID != nil { w.initialFirstResponder = passField } else { w.initialFirstResponder = appleField }
+        let known = AccountManager.knownAppleIDs
+        appleField.addItems(withObjectValues: known)
+        appleField.stringValue = appleID ?? known.first ?? ""
+        w.initialFirstResponder = appleField.stringValue.isEmpty ? appleField : passField
+        // One linked Tab order lets the Passwords picker treat the two fields as one login form
+        // and fill both from a single pick.
+        w.autorecalculatesKeyViewLoop = false
+        appleField.nextKeyView = passField
+        passField.nextKeyView = appleField
         remember.state = .on
-        if let id = appleID, CredentialGate.hasSavedPassword(id) {
-            savedButton.isHidden = false
-            savedButton.title = "Sign In with Saved Password"
-            w.initialFirstResponder = savedButton
-        }
+        updateSavedButton()
+        if !savedButton.isHidden { w.initialFirstResponder = savedButton }
+    }
+
+    /// Shows one-click “Sign In with Saved Password (Touch ID)” whenever the chosen Apple ID has one.
+    func updateSavedButton() {
+        let id = appleField.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
+        let has = !id.isEmpty && CredentialGate.hasSavedPassword(id)
+        savedButton.isHidden = !has
+        savedButton.title = "Sign In with Saved Password"
+        fillButton.isHidden = has
+    }
+
+    func comboBoxSelectionDidChange(_ notification: Notification) {
+        DispatchQueue.main.async { self.updateSavedButton() }
     }
 
     let savedButton = NSButton(title: "", target: nil, action: nil)
     let fillButton = NSButton(title: "Fill from Passwords…", target: nil, action: nil)
 
+    /// After the Passwords picker fills the Apple ID, bring the password field forward so a
+    /// second pick (if macOS fills only one field) is one click away.
+    func controlTextDidEndEditing(_ obj: Notification) {
+        if (obj.object as? NSComboBox) === appleField, passField.stringValue.isEmpty, !appleField.stringValue.isEmpty {
+            window?.makeFirstResponder(passField)
+        }
+    }
+
     /// Opens the system Passwords AutoFill picker for the Apple ID field. macOS only suggests
     /// logins inline for apps tied to the website, so this triggers Edit › AutoFill › Passwords… directly.
     @objc func fillFromPasswords() {
-        window?.makeFirstResponder(appleField.stringValue.isEmpty ? appleField : passField)
+        window?.makeFirstResponder(appleField)
         func find(_ menu: NSMenu?) -> (NSMenu, Int)? {
             guard let menu else { return nil }
             for (i, item) in menu.items.enumerated() {
@@ -95,6 +120,8 @@ final class SignInController: NSWindowController, NSTextFieldDelegate {
         passField.placeholderString = "Password"
         // AutoFill from the Passwords app (key icon / Edit › AutoFill › Passwords…).
         appleField.contentType = .username
+        appleField.completes = true
+        appleField.numberOfVisibleItems = 6
         passField.contentType = .password
         for f in [appleField, passField, codeField] { f.delegate = self; f.font = .systemFont(ofSize: 13); f.bezelStyle = .roundedBezel }
         remember.font = .systemFont(ofSize: 11)
@@ -257,6 +284,7 @@ final class SignInController: NSWindowController, NSTextFieldDelegate {
     }
 
     func controlTextDidChange(_ obj: Notification) {
+        if (obj.object as? NSComboBox) === appleField { updateSavedButton() }
         if step == .code, (obj.object as? NSTextField) === codeField, codeField.stringValue.filter(\.isNumber).count == 6 { submitCode() }
     }
 

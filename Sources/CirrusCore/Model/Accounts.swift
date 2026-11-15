@@ -129,6 +129,7 @@ public final class AccountManager {
     /// Called by the sign-in sheet once Apple accepted the login.
     public func finishSignIn(appleID: String, session: ICloudSession, rememberPassword: String?) async {
         let id = appleID.lowercased()
+        Self.rememberAppleID(id)
         if let pw = rememberPassword { Keychain.set(Data(pw.utf8), service: Keychain.passwordService, account: id) }
         else { Keychain.delete(service: Keychain.passwordService, account: id) }
         let state = await session.state
@@ -156,4 +157,12 @@ public final class AccountManager {
     }
 
     public func account(id: String) -> Account? { accounts.first { $0.id == id } }
+
+    /// Apple IDs used on this Mac (most recent first) for the sign-in suggestions.
+    public static var knownAppleIDs: [String] { UserDefaults.standard.stringArray(forKey: "knownAppleIDs") ?? [] }
+    static func rememberAppleID(_ id: String) {
+        var list = knownAppleIDs.filter { $0 != id }
+        list.insert(id, at: 0)
+        UserDefaults.standard.set(Array(list.prefix(8)), forKey: "knownAppleIDs")
+    }
 }
