@@ -93,6 +93,7 @@ enum MainMenu {
         ])
         _ = top("Sync", [
             item("Back Up iCloud…", #selector(AppDelegate.showBackup(_:)), "b", [.command, .shift], target: app),
+            item("Move to or from Google…", #selector(AppDelegate.showMigration(_:)), target: app),
             item("Sync Jobs…", #selector(AppDelegate.showSyncMenu(_:)), "j", [.command, .shift], target: app),
             item("Run All Scheduled Jobs Now", #selector(AppDelegate.runAllJobs(_:)), target: app),
         ])

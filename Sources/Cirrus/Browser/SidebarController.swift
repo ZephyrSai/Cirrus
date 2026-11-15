@@ -136,6 +136,7 @@ final class SidebarController: NSViewController, NSOutlineViewDataSource, NSOutl
 
         let sync = SidebarNode(.section, "Sync & Backup")
         sync.children.append(SidebarNode(.action("backup"), "Back Up iCloud…", "externaldrive.badge.icloud", tint: .systemGreen))
+        sync.children.append(SidebarNode(.action("migrate"), "Move to or from Google…", "arrow.left.arrow.right.square", tint: .systemBlue))
         for j in SyncStore.shared.jobs {
             let n = SidebarNode(.job(j.id), j.name, j.kind == .backup ? "externaldrive.badge.timemachine" : (j.mode == .twoWay ? "arrow.triangle.2.circlepath" : "arrow.right.circle"),
                                 tint: j.lastSuccess == false ? .systemRed : .secondaryLabelColor)
@@ -271,6 +272,7 @@ final class SidebarController: NSViewController, NSOutlineViewDataSource, NSOutl
         case .action(let a):
             outline.deselectAll(nil)
             if a == "backup" { app?.showBackup(nil) }
+            else if a == "migrate" { app?.showMigration(nil) }
             else if a == "newsync" { app?.showSync(nil) }
             else if a.hasPrefix("signin") { app?.signIn(appleID: a.hasPrefix("signin:") ? String(a.dropFirst(7)) : nil, window: view.window) }
         case .job(let id):

@@ -13,6 +13,10 @@ public enum GoogleScopes {
     /// Add photos and videos to the library and create albums (no read access to the library).
     public static let photosAppend = "https://www.googleapis.com/auth/photoslibrary.appendonly"
     public static let all = [driveFile, photosAppend]
+    /// Google → iCloud only: read all of My Drive (asked for when the user starts that direction).
+    public static let driveReadonly = "https://www.googleapis.com/auth/drive.readonly"
+    /// Google → iCloud only: photos the user picks in Google Photos' own picker.
+    public static let photosPicker = "https://www.googleapis.com/auth/photospicker.mediaitems.readonly"
 }
 
 /// The user's own OAuth client ("Desktop app" type). Google treats desktop clients as public:

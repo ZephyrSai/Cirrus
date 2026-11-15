@@ -269,7 +269,7 @@ enum Debug {
             if wh.count == 2, let w = lastWindow ?? b?.window { w.setContentSize(NSSize(width: wh[0], height: wh[1])); offscreen(w) }
             try? await Task.sleep(nanoseconds: 300_000_000)
         case "quit": NSApp.terminate(nil)
-        default: log("unknown step \(cmd)")
+        default: if !(await MigrationDebug.step(cmd, arg, app)) { log("unknown step \(cmd)") }
         }
     }
 
