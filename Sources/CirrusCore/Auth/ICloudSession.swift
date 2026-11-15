@@ -138,8 +138,16 @@ public actor ICloudSession {
 
     struct Response { let data: Data; let http: HTTPURLResponse; var json: JSON { (try? JSON(data: data)) ?? .null } }
 
+    /// iCloud session cookies only ever go to Apple's own domains, never to a host a redirect points at.
+    static func sendsCookies(to url: URL?) -> Bool {
+        guard let host = url?.host?.lowercased(), url?.scheme == "https" else { return false }
+        return ["icloud.com", "icloud.com.cn", "apple.com", "apple.com.cn", "icloud-content.com", "icloud-content.com.cn", "apple-cloudkit.com"]
+            .contains { host == $0 || host.hasSuffix("." + $0) }
+    }
+
     func send(_ request: URLRequest, retryNetwork: Bool? = nil) async throws -> Response {
         var req = request
+        if !Self.sendsCookies(to: req.url) { req.setValue(nil, forHTTPHeaderField: "Cookie") }
         req.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         let (data, resp): (Data, URLResponse)
         let started = Date()
@@ -243,7 +251,7 @@ public actor ICloudSession {
         guard let url = comps.url else { throw ICloudError.http(0, "Bad URL") }
         var req = URLRequest(url: url)
         req.httpMethod = method
-        for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
+        for (k, v) in headers where k != "Cookie" || Self.sendsCookies(to: url) { req.setValue(v, forHTTPHeaderField: k) }
         req.httpBody = body
         if body == nil && (method == "POST" || method == "PUT") { req.setValue("0", forHTTPHeaderField: "Content-Length") }
         return req
@@ -555,7 +563,8 @@ public actor ICloudSession {
                 try await ensurePCS(app: pcs.app, webservice: pcs.ws)
                 continue
             }
-            if (code == 429 || code == 503 || code == 502 || code == 504 || (code >= 500 && idempotent)) && attempt < 5 {
+            // 429 means the call wasn't processed; a 5xx might have been, so only idempotent calls are repeated.
+            if (code == 429 || (code >= 500 && idempotent)) && attempt < 5 {
                 attempt += 1
                 let retryAfter = r.http.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init) ?? pow(2, Double(attempt)) * 0.5
                 try await Task.sleep(nanoseconds: UInt64(min(retryAfter, 30) * 1_000_000_000))
@@ -575,7 +584,7 @@ public actor ICloudSession {
         for _ in 0..<5 {
             guard let url = URL(string: current) else { throw ICloudError.http(0, "Bad download URL") }
             var req = URLRequest(url: url)
-            for (k, v) in headers where k != "Content-Type" { req.setValue(v, forHTTPHeaderField: k) }
+            for (k, v) in headers where k != "Content-Type" && (k != "Cookie" || Self.sendsCookies(to: url)) { req.setValue(v, forHTTPHeaderField: k) }
             req.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
             let started = Date()
             let (tmp, h) = try await Self.withNetworkRetry { try await ContentDownloader.shared.fetch(req, expected: expectedSize ?? 0, progress: progress) }
@@ -621,7 +630,8 @@ public actor ICloudSession {
             let size = (try? FileManager.default.attributesOfItem(atPath: bodyFile.path)[.size] as? Int64) ?? 0
             let delegate = ProgressDelegate(expected: size, progress: progress)
             defer { if cleanup { try? FileManager.default.removeItem(at: bodyFile) } }
-            let (data, resp) = try await Self.withNetworkRetry { try await self.http.upload(for: req, fromFile: bodyFile, delegate: delegate) }
+            // A drop mid-upload may still have created the file: only retry when nothing was sent.
+            let (data, resp) = try await Self.withNetworkRetry(connectOnly: true) { try await self.http.upload(for: req, fromFile: bodyFile, delegate: delegate) }
             guard let h = resp as? HTTPURLResponse else { throw ICloudError.http(0, "No response") }
             absorb(h)
             if (h.statusCode == 401 || h.statusCode == 421) && !reauthed { reauthed = true; try await reauthenticate(); continue }
@@ -634,12 +644,14 @@ public actor ICloudSession {
 
 extension ICloudSession {
     /// Retries transient network failures (Wi-Fi drop, sleep/wake, timeouts) with back-off.
-    static func withNetworkRetry<T>(_ op: () async throws -> T) async throws -> T {
+    static func withNetworkRetry<T>(connectOnly: Bool = false, _ op: () async throws -> T) async throws -> T {
         var attempt = 0
         while true {
             do { return try await op() } catch let e as URLError {
-                let transient: Set<URLError.Code> = [.networkConnectionLost, .notConnectedToInternet, .timedOut, .cannotConnectToHost,
-                                                     .dnsLookupFailed, .cannotFindHost, .secureConnectionFailed, .internationalRoamingOff]
+                // `connectOnly`: failures before any byte left this Mac (no connection, DNS, TLS).
+                let beforeSending: Set<URLError.Code> = [.notConnectedToInternet, .cannotConnectToHost, .dnsLookupFailed, .cannotFindHost,
+                                                         .secureConnectionFailed, .internationalRoamingOff]
+                let transient = connectOnly ? beforeSending : beforeSending.union([.networkConnectionLost, .timedOut])
                 if e.code == .cancelled { throw ICloudError.cancelled }
                 guard transient.contains(e.code), attempt < 4 else { throw e }
                 attempt += 1

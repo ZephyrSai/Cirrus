@@ -471,19 +471,30 @@ final class Catalog {
         if AccountManager.shared.account(id: account)?.kind == .web, let d = try? Data(contentsOf: file),
            let cached = try? JSONDecoder().decode([PhotoLibraryRef].self, from: d), !cached.isEmpty {
             libraryIndex[account] = cached
+            photos.remember(cached)
             let age = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate).map { Date().timeIntervalSince($0) } ?? .infinity
             if age < 86_400 { return cached }
-            Task { @MainActor in if let fresh = try? await photos.libraries() { Catalog.shared.libraryIndex[account] = fresh; if let d = try? JSONEncoder().encode(fresh) { try? d.write(to: file, options: .atomic) } } }
+            Task { @MainActor in
+                if let fresh = try? await photos.libraries(), photos.librariesComplete() {
+                    Catalog.shared.libraryIndex[account] = fresh
+                    if let d = try? JSONEncoder().encode(fresh) { try? d.write(to: file, options: .atomic) }
+                }
+            }
             return cached
         }
         let libs = try await photos.libraries()
-        libraryIndex[account] = libs
-        if let d = try? JSONEncoder().encode(libs) { try? d.write(to: file, options: .atomic) }
+        // A list missing the Shared Library (it timed out) is used now but never cached.
+        if photos.librariesComplete() {
+            libraryIndex[account] = libs
+            if let d = try? JSONEncoder().encode(libs) { try? d.write(to: file, options: .atomic) }
+        }
         return libs
     }
 
     func library(account: String, id: String) async throws -> PhotoLibraryRef {
-        try await libraries(account: account).first { $0.id == id } ?? PhotoLibraryRef(id: id, name: id, isShared: false)
+        if let l = try await libraries(account: account).first(where: { $0.id == id }) { return l }
+        // Never substitute another library (a job could export or import the wrong one).
+        throw ICloudError.server(id.hasPrefix("SharedSync") ? "The Shared Library didn’t respond. Try again in a moment." : "That Photos library isn’t available.")
     }
 
     func albums(account: String, library: String, refresh: Bool = false) async throws -> [PhotoAlbum] {
@@ -547,13 +558,16 @@ final class Catalog {
             }
         }
         let hadCache = cache != nil
+        // The change token must date from *before* the listing: one taken after it could hide changes
+        // made while it ran, and the cache would then look current forever. No token yet = no shortcut.
+        let tokenBefore = photos.syncToken(library: lib)
         let box = PartialBox()
         let assets = try await photos.assets(in: album, library: lib) { batch, _ in
             guard !hadCache else { return }
             let all = box.append(batch)
             Task { @MainActor in partial(all.map { Catalog.shared.photoItem($0, account: account) }) }
         }
-        if useDiskCache { save(AlbumCache(assets: assets, token: photos.syncToken(library: lib), savedAt: Date()), to: cacheURL) }
+        if useDiskCache { save(AlbumCache(assets: assets, token: tokenBefore, savedAt: Date()), to: cacheURL) }
         return assets.map { photoItem($0, account: account) }
     }
 

@@ -520,7 +520,9 @@ final class PreferencesWindowController: NSWindowController {
         TransferManager.shared.maxConcurrent = n
     }
     @objc func clearCaches() {
-        for d in ["thumbs", "listings", "Preview", "Open", "relay", "tmp"] { try? FileManager.default.removeItem(at: Paths.caches.appendingPathComponent(d)) }
+        // Opened copies may hold edits that were never uploaded: those go to the Trash instead.
+        for u in Paths.itemDirs(in: Paths.caches.appendingPathComponent("Open")) { Paths.retireOpenCopy(u) }
+        for d in ["thumbs", "listings", "Preview", "relay", "tmp"] { try? FileManager.default.removeItem(at: Paths.caches.appendingPathComponent(d)) }
         Thumbnails.shared.cache.removeAllObjects()
         Catalog.shared.memory.removeAll()
     }

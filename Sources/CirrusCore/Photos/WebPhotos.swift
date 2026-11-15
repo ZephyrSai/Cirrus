@@ -21,7 +21,7 @@ public final class WebPhotos: PhotosBackend, @unchecked Sendable {
 
     /// CloudKit change feed: no records since `token` ⇒ every cached listing for the library is current.
     public func hasChanges(since token: String, library: PhotoLibraryRef) async throws -> (changed: Bool, token: String?) {
-        let lib = self.library(library.id)
+        let lib = self.resolve(library)
         let body: JSON = ["zones": [["zoneID": zoneID(lib), "syncToken": .string(token), "desiredKeys": ["isDeleted"]]]]
         let r = try await call(lib.area, "changes/zone", body)
         let zone = r["zones"][0]
@@ -84,6 +84,17 @@ public final class WebPhotos: PhotosBackend, @unchecked Sendable {
         return libs[id] ?? PhotoLibraryRef(id: id, name: id, isShared: id != "PrimarySync")
     }
 
+    /// The registered library, or the caller's own ref (which carries its database and zone owner).
+    func resolve(_ ref: PhotoLibraryRef) -> PhotoLibraryRef {
+        lock.withLock { libs[ref.id] ?? ref }
+    }
+
+    private var partialDiscovery = false
+    public func librariesComplete() -> Bool { lock.withLock { !partialDiscovery } }
+    public func remember(_ libraries: [PhotoLibraryRef]) {
+        lock.withLock { for l in libraries where libs[l.id] == nil { libs[l.id] = l } }
+    }
+
     // MARK: Libraries & albums
 
     public func libraries() async throws -> [PhotoLibraryRef] {
@@ -111,8 +122,14 @@ public final class WebPhotos: PhotosBackend, @unchecked Sendable {
             }
         }
         if found.isEmpty { found = [PhotoLibraryRef(id: "PrimarySync", name: "Personal Library", isShared: false)] }
+        // The Shared Library didn't answer in time: keep any we already know rather than dropping it.
+        let partial = shared == nil
+        if partial {
+            let known = lock.withLock { libs.values.filter { $0.isShared } }
+            for l in known where !found.contains(where: { $0.id == l.id }) { found.append(l) }
+        }
         found.sort { !$0.isShared && $1.isShared }
-        lock.withLock { for l in found { libs[l.id] = l } }
+        lock.withLock { for l in found { libs[l.id] = l }; partialDiscovery = partial }
         return found
     }
 
@@ -188,7 +205,7 @@ public final class WebPhotos: PhotosBackend, @unchecked Sendable {
     public func assets(in album: PhotoAlbum, library: PhotoLibraryRef,
                        page: @escaping @Sendable ([PhotoAsset], Int?) -> Void) async throws -> [PhotoAsset] {
         guard album.kind != .folder else { return [] }
-        let lib = self.library(library.id).ownerRecordName == nil ? library : self.library(library.id)
+        let lib = self.resolve(library)
         var total = album.count
         if total == nil {
             let r = try? await call(lib.area, "records/query", countQuery(objectType(for: album), lib))
@@ -424,7 +441,7 @@ public final class WebPhotos: PhotosBackend, @unchecked Sendable {
     public func add(_ assets: [PhotoAsset], to album: PhotoAlbum, library: PhotoLibraryRef) async throws {
         try SafetyPolicy.checkWrite()
         guard album.kind == .album else { throw ICloudError.server("Photos can only be added to regular albums.") }
-        let lib = self.library(library.id)
+        let lib = self.resolve(library)
         let albumRecord = album.id.replacingOccurrences(of: "album:", with: "")
         for chunk in assets.chunked(100) {
             let ops = JSON.array(chunk.enumerated().map { i, a in
@@ -444,7 +461,7 @@ public final class WebPhotos: PhotosBackend, @unchecked Sendable {
 
     public func createAlbum(_ name: String, in library: PhotoLibraryRef) async throws -> PhotoAlbum {
         try SafetyPolicy.checkWrite()
-        let lib = self.library(library.id)
+        let lib = self.resolve(library)
         let record = UUID().uuidString.uppercased()
         let op: JSON = ["operationType": "create",
                         "record": ["recordName": .string(record), "recordType": "CPLAlbum",

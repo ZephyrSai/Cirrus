@@ -113,6 +113,31 @@ import Testing
         await #expect(throws: (any Error).self) { _ = try await d.walk("root") }
     }
 
+    @Test func profileNamesCanNotBePaths() {
+        #expect(Paths.profileName("../../Library") == "Library")
+        #expect(Paths.profileName("qa-1_x") == "qa-1_x")
+        #expect(Paths.profileName("/") == "invalid")
+        #expect(Paths.profileName(String(repeating: "a", count: 99)).count == 32)
+    }
+
+    // Opened copies: untouched downloads are disposable, edited ones are not.
+    @Test func editedOpenedCopiesAreDetected() throws {
+        let dir = tmp("open").appendingPathComponent("acct-x/key", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        put("v1", dir.appendingPathComponent("Report.pages"), mtime: 1_000_000)   // iCloud's older date
+        Paths.markFetched(dir)
+        #expect(!Paths.wasEditedLocally(dir))
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(10)], ofItemAtPath: dir.appendingPathComponent("Report.pages").path)
+        #expect(Paths.wasEditedLocally(dir))
+        // Unedited copies are simply removed when retired.
+        let clean = tmp("open2").appendingPathComponent("k", isDirectory: true)
+        put("v1", clean.appendingPathComponent("a.txt"), mtime: 1_000_000)
+        Paths.markFetched(clean)
+        Paths.retireOpenCopy(clean)
+        #expect(!FileManager.default.fileExists(atPath: clean.path))
+        #expect(Paths.itemDirs(in: dir.deletingLastPathComponent().deletingLastPathComponent()).map(\.lastPathComponent) == ["key"])
+    }
+
     @Test func readOnlyCoversFoldersThatContainICloud() {
         let home = FileManager.default.homeDirectoryForCurrentUser
         #expect(SafetyPolicy.touchesICloud(home.appendingPathComponent("Library")))

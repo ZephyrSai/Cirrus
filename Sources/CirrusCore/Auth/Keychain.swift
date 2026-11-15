@@ -8,7 +8,7 @@ public enum Keychain {
     public static let passwordService = "Cirrus Apple ID Password"
 
     static var servicePrefix: String {
-        ProcessInfo.processInfo.environment["CIRRUS_PROFILE"].map { "[\($0)] " } ?? ""
+        Paths.profile.map { "[\($0)] " } ?? ""
     }
 
     public static func set(_ data: Data, service: String, account: String) {

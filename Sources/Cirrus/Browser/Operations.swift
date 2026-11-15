@@ -533,7 +533,8 @@ final class Ops {
     /// A local URL for opening/previewing, downloading into a cache when needed.
     func localCopy(_ item: Item, cache: String, progressTitle: String?) async throws -> URL {
         if let u = item.localURL { try await LocalFiles.ensureDownloaded(u); return u }
-        let dir = Paths.cacheDir(cache).appendingPathComponent(Self.stableKey(item.key), isDirectory: true)
+        var dir = Paths.cacheDir(cache).appendingPathComponent(Paths.accountCacheName(item.account ?? "local"), isDirectory: true)
+            .appendingPathComponent(Self.stableKey(item.key), isDirectory: true)
         let name = Paths.safeName(item.name)
         let target = dir.appendingPathComponent(name)
         // Reuse a cached copy if it's the same version (size and modified date match).
@@ -542,17 +543,31 @@ final class Ops {
             let m = attrs[.modificationDate] as? Date
             if item.modified == nil || m == nil || abs(m!.timeIntervalSince(item.modified!)) < 2 || item.isPhoto { return target }
         }
-        try? FileManager.default.removeItem(at: dir)
+        if FileManager.default.fileExists(atPath: dir.path) {
+            if cache == "Open" && Paths.wasEditedLocally(dir) {
+                // Edited but never uploaded: keep those edits (Trash), and download beside them if that fails.
+                if (try? FileManager.default.trashItem(at: dir, resultingItemURL: nil)) == nil {
+                    dir = dir.deletingLastPathComponent().appendingPathComponent(Self.stableKey(item.key) + "-" + UUID().uuidString.prefix(6), isDirectory: true)
+                }
+            } else {
+                try? FileManager.default.removeItem(at: dir)
+            }
+        }
+        let into = dir
+        let fresh = dir.appendingPathComponent(name)
         if let progressTitle {
             let t = TransferManager.shared.enqueue(progressTitle, detail: "Downloading to open", direction: .download, total: item.transferSize) { t in
-                _ = try await Ops.materialize(item, into: dir, exportLive: false) { d, tot in t.report(d, tot) }
+                _ = try await Ops.materialize(item, into: into, exportLive: false) { d, tot in t.report(d, tot) }
+                Paths.markFetched(into)
             }
             while !t.isFinished { try await Task.sleep(nanoseconds: 150_000_000) }
             if case .failed(let m) = t.state { throw ICloudError.server(m) }
             if t.state == .cancelled { throw ICloudError.cancelled }
-            return target
+            return fresh
         }
-        return try await Ops.materialize(item, into: dir, exportLive: false) { _, _ in }
+        let u = try await Ops.materialize(item, into: into, exportLive: false) { _, _ in }
+        Paths.markFetched(into)
+        return u
     }
 
     func open(_ items: [Item], window: NSWindow?) {

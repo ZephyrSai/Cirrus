@@ -156,7 +156,11 @@ public final class AccountManager {
         // Forget everything cached for this account: listings, thumbnails, opened/preview copies.
         try? FileManager.default.removeItem(at: Paths.cacheDir("listings").appendingPathComponent(account.id.replacingOccurrences(of: ":", with: "_")))
         if let photos = account.photos { try? FileManager.default.removeItem(at: ThumbnailDiskCache.accountDir(photos.cacheKey)) }
-        for d in ["Open", "Preview", "relay"] { try? FileManager.default.removeItem(at: Paths.caches.appendingPathComponent(d)) }
+        let mine = Paths.accountCacheName(account.id)
+        try? FileManager.default.removeItem(at: Paths.caches.appendingPathComponent("Preview").appendingPathComponent(mine))
+        let opened = Paths.caches.appendingPathComponent("Open").appendingPathComponent(mine)
+        for u in (try? FileManager.default.contentsOfDirectory(at: opened, includingPropertiesForKeys: nil)) ?? [] { Paths.retireOpenCopy(u) }
+        if ((try? FileManager.default.contentsOfDirectory(atPath: opened.path)) ?? []).isEmpty { try? FileManager.default.removeItem(at: opened) }
         var known = Self.knownAppleIDs; known.removeAll { $0 == id }; UserDefaults.standard.set(known, forKey: "knownAppleIDs")
         NotificationCenter.default.post(name: Self.changed, object: self)
     }

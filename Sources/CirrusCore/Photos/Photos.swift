@@ -116,6 +116,10 @@ public protocol PhotosBackend: AnyObject, Sendable {
     /// Requirements (not just extension methods) so calls through `any PhotosBackend` reach the real implementation.
     func syncToken(library: PhotoLibraryRef) -> String?
     func hasChanges(since token: String, library: PhotoLibraryRef) async throws -> (changed: Bool, token: String?)
+    /// Libraries served from a disk cache, so later calls address the right database and zone.
+    func remember(_ libraries: [PhotoLibraryRef])
+    /// False when the last `libraries()` couldn't reach every database (e.g. the Shared Library timed out).
+    func librariesComplete() -> Bool
 }
 
 public extension PhotosBackend {
@@ -123,6 +127,8 @@ public extension PhotosBackend {
     func syncToken(library: PhotoLibraryRef) -> String? { nil }
     /// Whether anything changed since `token`; returns the newer token. Default: assume it did.
     func hasChanges(since token: String, library: PhotoLibraryRef) async throws -> (changed: Bool, token: String?) { (true, nil) }
+    func remember(_ libraries: [PhotoLibraryRef]) {}
+    func librariesComplete() -> Bool { true }
 }
 
 public enum PhotoFormats {

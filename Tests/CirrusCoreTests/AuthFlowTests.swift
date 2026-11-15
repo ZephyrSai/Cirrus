@@ -112,6 +112,23 @@ final class MockApple: URLProtocol, @unchecked Sendable {
         #expect(await s.dsid == "123")
     }
 
+    // A 5xx may come after the server already acted: non-idempotent calls are never repeated.
+    @Test func serverErrorsAreNotRetriedForNonIdempotentCalls() async throws {
+        MockApple.reset(["POST /ws/move": .init(status: 503)])
+        let s = session()
+        await #expect(throws: ICloudError.self) { _ = try await s.request("https://p1-drivews.icloud.com/ws/move", json: [:], idempotent: false) }
+        #expect(MockApple.log.filter { $0 == "POST /ws/move" }.count == 1)
+    }
+
+    @Test func cookiesOnlyGoToAppleHosts() {
+        #expect(ICloudSession.sendsCookies(to: URL(string: "https://p31-drivews.icloud.com/x")))
+        #expect(ICloudSession.sendsCookies(to: URL(string: "https://idmsa.apple.com/appleauth")))
+        #expect(ICloudSession.sendsCookies(to: URL(string: "https://cvws.icloud-content.com/B/x")))
+        #expect(!ICloudSession.sendsCookies(to: URL(string: "https://icloud.com.evil.example/x")))
+        #expect(!ICloudSession.sendsCookies(to: URL(string: "https://example.com/redirect")))
+        #expect(!ICloudSession.sendsCookies(to: URL(string: "http://p31-drivews.icloud.com/x")))
+    }
+
     @Test func wrongPasswordIsReported() async throws {
         var r = Self.base
         r["POST /appleauth/auth/signin/complete"] = .init(status: 401, json: ["serviceErrors": [["code": "-20101", "message": "Your Apple ID or password was incorrect."]]])
