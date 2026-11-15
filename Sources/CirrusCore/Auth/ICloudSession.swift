@@ -86,7 +86,7 @@ public actor ICloudSession {
     public private(set) var needs2FA = false
     nonisolated let http: URLSession
     var eventHandler: (@Sendable (SessionEvent) -> Void)?
-    var passwordProvider: (@Sendable () -> String?)?
+    var passwordProvider: (@Sendable () async -> String?)?
     var reauthTask: Task<Void, Error>?
     var pcsTasks: [String: Task<Void, Error>] = [:]
 
@@ -104,7 +104,7 @@ public actor ICloudSession {
     }
 
     public func setEventHandler(_ h: @escaping @Sendable (SessionEvent) -> Void) { eventHandler = h }
-    public func setPasswordProvider(_ p: @escaping @Sendable () -> String?) { passwordProvider = p }
+    public func setPasswordProvider(_ p: @escaping @Sendable () async -> String?) { passwordProvider = p }
 
     var endpoints: Endpoints {
         if state.domainToUse?.lowercased() == "icloud.com.cn" {
@@ -145,7 +145,9 @@ public actor ICloudSession {
         }
         guard let h = resp as? HTTPURLResponse else { throw ICloudError.http(0, "No response") }
         absorb(h)
-        Log.debug("\(req.httpMethod ?? "GET") \(req.url?.host ?? "")\(req.url?.path ?? "") → \(h.statusCode)")
+        let line = "\(req.httpMethod ?? "GET") \(req.url?.host ?? "")\(req.url?.path ?? "") → \(h.statusCode)"
+        // Status lines only (no query, headers, cookies or bodies) so live problems can be diagnosed safely.
+        if (200..<300).contains(h.statusCode) { Log.debug(line) } else { Log.info("http " + line) }
         return Response(data: data, http: h)
     }
 
@@ -429,7 +431,7 @@ public actor ICloudSession {
             if self.state.sessionToken != nil {
                 do { try await self.accountLogin(); return } catch ICloudError.twoFactorRequired { throw ICloudError.needsSignIn } catch {}
             }
-            if let pw = self.passwordProvider?() {
+            if let pw = await self.passwordProvider?() {
                 let outcome = try await self.signIn(password: pw)
                 if case .needsCode = outcome { self.notify(.needsSignIn); throw ICloudError.needsSignIn }
                 return

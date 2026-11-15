@@ -456,6 +456,11 @@ final class PreferencesWindowController: NSWindowController {
             header("Safety"),
             readOnly,
             note("Deletions always go to the Trash or iCloud’s Recently Deleted, never straight to deletion. Read-only mode also blocks uploads, renames, moves and photo edits."),
+            { () -> NSButton in
+                let b = NSButton(checkboxWithTitle: "Require Touch ID or Mac password before using a saved Apple ID password", target: self, action: #selector(authToggled(_:)))
+                b.state = CredentialGate.requireAuth ? .on : .off
+                return b
+            }(),
             header("General"),
             box("Show hidden files", "showHidden"),
             box("Keep folders on top when sorting by name", "foldersOnTop"),
@@ -490,6 +495,8 @@ final class PreferencesWindowController: NSWindowController {
         if k == "showHidden" { Catalog.shared.memory.removeAll() }
         for wc in (NSApp.delegate as? AppDelegate)?.windows ?? [] { for p in wc.panes { p.reload() } }
     }
+    @objc func authToggled(_ b: NSButton) { UserDefaults.standard.set(b.state == .on, forKey: "requireAuthForSavedPassword") }
+
     @objc func readOnlyToggled(_ b: NSButton) {
         if b.state == .off {
             let a = NSAlert()

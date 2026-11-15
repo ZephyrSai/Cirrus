@@ -101,7 +101,9 @@ public final class AccountManager {
         if state.cookies.isEmpty { a.status = .needsSignIn }
         let id = appleID.lowercased()
         Task {
-            await session.setPasswordProvider { Keychain.get(service: Keychain.passwordService, account: id).flatMap { String(data: $0, encoding: .utf8) } }
+            await session.setPasswordProvider {
+                await CredentialGate.shared.password(for: id, reason: "sign back in to iCloud as \(id) with your saved password")
+            }
             await session.setEventHandler { [weak a] event in
                 DispatchQueue.main.async {
                     guard let a else { return }
@@ -144,6 +146,7 @@ public final class AccountManager {
         guard account.kind == .web, let id = account.appleID else { return }
         Keychain.delete(service: Keychain.sessionService, account: id)
         Keychain.delete(service: Keychain.passwordService, account: id)
+        Task { await CredentialGate.shared.forget(id) }
         var ids = UserDefaults.standard.stringArray(forKey: defaultsKey) ?? []
         ids.removeAll { $0 == id }
         UserDefaults.standard.set(ids, forKey: defaultsKey)

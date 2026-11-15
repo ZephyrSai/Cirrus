@@ -8,7 +8,7 @@ final class SignInController: NSWindowController, NSTextFieldDelegate {
     var onFinish: ((String?) -> Void)?
     let appleField = NSTextField()
     let passField = NSSecureTextField()
-    let remember = NSButton(checkboxWithTitle: "Remember password in Keychain (re-signs in quietly when the session expires)", target: nil, action: nil)
+    let remember = NSButton(checkboxWithTitle: "Remember password in Keychain (unlocked with Touch ID or your Mac password when the session expires)", target: nil, action: nil)
     let codeField = NSTextField()
     let phonePopup = NSPopUpButton()
     let smsButton = NSButton(title: "Text Me a Code Instead", target: nil, action: nil)
@@ -35,6 +35,25 @@ final class SignInController: NSWindowController, NSTextFieldDelegate {
         appleField.stringValue = appleID ?? ""
         if appleID != nil { w.initialFirstResponder = passField } else { w.initialFirstResponder = appleField }
         remember.state = .on
+        if let id = appleID, CredentialGate.hasSavedPassword(id) {
+            savedButton.isHidden = false
+            savedButton.title = "Sign In with Saved Password"
+            w.initialFirstResponder = savedButton
+        }
+    }
+
+    let savedButton = NSButton(title: "", target: nil, action: nil)
+
+    /// Re-sign-in using the password saved in Keychain, released by Touch ID / Mac password.
+    @objc func useSaved() {
+        let id = appleField.stringValue.lowercased()
+        Task {
+            guard let pw = await CredentialGate.shared.password(for: id, reason: "sign in to iCloud as \(id)") else {
+                status.textColor = .systemRed; status.stringValue = "Couldn’t unlock the saved password."; return
+            }
+            passField.stringValue = pw
+            startSignIn()
+        }
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -47,10 +66,13 @@ final class SignInController: NSWindowController, NSTextFieldDelegate {
         blurb.textColor = .secondaryLabelColor
         blurb.stringValue = AccountManager.macSignedInToICloud
             ? "This Mac is already signed in to iCloud, and Cirrus uses that automatically. Sign in here only to browse another Apple ID."
-            : "Cirrus signs in the way iCloud.com does. Your password is sent only to Apple, never stored on a server, and two-factor authentication still applies."
+            : "Cirrus signs in the way iCloud.com does. Your password goes only to Apple, and two-factor authentication still applies. Your saved password from the Passwords app can fill the fields."
         blurb.preferredMaxLayoutWidth = 400
         appleField.placeholderString = "Apple ID (email or phone)"
         passField.placeholderString = "Password"
+        // AutoFill from the Passwords app (key icon / Edit › AutoFill › Passwords…).
+        appleField.contentType = .username
+        passField.contentType = .password
         for f in [appleField, passField, codeField] { f.delegate = self; f.font = .systemFont(ofSize: 13); f.bezelStyle = .roundedBezel }
         remember.font = .systemFont(ofSize: 11)
         credsBox.orientation = .vertical
@@ -59,6 +81,7 @@ final class SignInController: NSWindowController, NSTextFieldDelegate {
         for v in [appleField, passField, remember] as [NSView] { credsBox.addArrangedSubview(v) }
         for f in [appleField, passField] { f.widthAnchor.constraint(equalToConstant: 400).isActive = true }
         codeField.placeholderString = "6-digit code"
+        codeField.contentType = .oneTimeCode   // codes texted to this Mac's Messages appear as an AutoFill suggestion
         codeField.font = .monospacedDigitSystemFont(ofSize: 22, weight: .medium)
         codeField.alignment = .center
         codeField.widthAnchor.constraint(equalToConstant: 200).isActive = true
@@ -84,7 +107,13 @@ final class SignInController: NSWindowController, NSTextFieldDelegate {
         cancel.bezelStyle = .push
         cancel.target = self
         cancel.action = #selector(cancelAction)
-        let buttons = NSStackView(views: [spinner, NSView(), cancel, primary])
+        savedButton.bezelStyle = .push
+        savedButton.target = self
+        savedButton.action = #selector(useSaved)
+        savedButton.image = NSImage(systemSymbolName: "touchid", accessibilityDescription: nil)
+        savedButton.imagePosition = .imageLeading
+        savedButton.isHidden = true
+        let buttons = NSStackView(views: [spinner, savedButton, NSView(), cancel, primary])
         buttons.widthAnchor.constraint(equalToConstant: 400).isActive = true
         let head = NSStackView(views: [icon, headline])
         head.spacing = 10
