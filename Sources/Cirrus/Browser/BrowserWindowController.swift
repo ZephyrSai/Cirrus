@@ -102,6 +102,9 @@ final class BrowserWindowController: NSWindowController, NSToolbarDelegate, NSWi
         split.addSplitViewItem(previewItem)
         split.splitView.autosaveName = "CirrusSidebar"
         w.contentViewController = split
+        // The split view's autosave would otherwise decide whether the preview is open.
+        previewItem.isCollapsed = !Prefs.showPreviewPane
+        DispatchQueue.main.async { [weak self] in self?.previewItem.isCollapsed = !Prefs.showPreviewPane }
         w.setContentSize(NSSize(width: 1180, height: 740))
         w.setFrameAutosaveName("CirrusBrowser")
         if !w.setFrameUsingName("CirrusBrowser") { w.center() }

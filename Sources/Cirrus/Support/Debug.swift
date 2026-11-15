@@ -85,7 +85,8 @@ enum Debug {
             if let l = location(arg) { pane?.navigate(to: l); await waitLoaded(pane); log("open \(arg): \(String(format: "%.1f", Date().timeIntervalSince(t0) - 0.7))s") } else { log("unknown location \(arg)") }
         case "view": pane?.setViewMode(arg == "list" ? .list : (arg == "columns" ? .columns : .icons))
         // Finder features
-        case "preview": b?.togglePreviewPane(nil)
+        case "preview":   // preview, preview:on, preview:off
+            if arg.isEmpty || (arg == "on") != Prefs.showPreviewPane { b?.togglePreviewPane(nil) }
         case "sizes": b?.toggleCalculateSizes(nil)
         case "newfile": pane?.newFile(nil); try? await Task.sleep(nanoseconds: 1_200_000_000); if let p = pane, let f = p.renameField { p.endRename(commit: false); _ = f }
         case "alias": pane?.makeAlias(nil)

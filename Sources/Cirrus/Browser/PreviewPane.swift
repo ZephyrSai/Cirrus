@@ -180,7 +180,12 @@ final class PreviewPaneController: NSViewController {
     }
 
     func setInfo(_ rows: [(String, String)]) {
-        while infoGrid.numberOfRows > 0 { infoGrid.removeRow(at: 0) }
+        // removeRow leaves the row's views behind, so take them out too (they'd draw over the new rows).
+        while infoGrid.numberOfRows > 0 {
+            let r = infoGrid.row(at: 0)
+            for c in 0..<r.numberOfCells { r.cell(at: c).contentView?.removeFromSuperview() }
+            infoGrid.removeRow(at: 0)
+        }
         for (k, v) in rows {
             let key = NSTextField(labelWithString: k)
             key.font = .systemFont(ofSize: 11); key.textColor = .secondaryLabelColor; key.alignment = .left

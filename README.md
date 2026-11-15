@@ -11,7 +11,7 @@ A native app for browsing, moving, syncing and backing up iCloud Drive and iClou
 
 ## What it does
 
-- **Finder-style browsing.** Icon and list views, tabs, two panes side by side, Quick Look, Get Info, a path bar, sorting and type-to-select.
+- **Finder-style browsing.** Icon, list and column views, a preview pane, tabs, two panes side by side, Quick Look and Get Info. Also Finder tags, search through subfolders, batch rename, folder sizes, New File, Make Alias, Open in Terminal, and folders that spring open while you drag.
 - **Drag anything anywhere.** Move files between iCloud Drive, iCloud Photos, your disks, connected cameras and phones, and Finder.
 - **Photos, properly.** The library is grouped by month, with albums, Live Photos, favorites and Recently Deleted. Export originals with their capture dates.
 - **Managed transfers.** A real queue with speed and time left, size checks before anything starts, automatic retries, and no idle sleep while files move.
