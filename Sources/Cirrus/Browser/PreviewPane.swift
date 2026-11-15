@@ -16,11 +16,19 @@ final class PreviewPaneController: NSViewController {
     var token = 0
     var previewHeight: NSLayoutConstraint?
     var location: Location?
+    /// The column view sizes its preview by frame (inside a scroll view) and needs a real starting height.
+    /// Everywhere else (the docked pane, Gallery) Auto Layout sizes it: a fixed frame there would pin the
+    /// whole window's size.
+    let inColumn: Bool
+
+    init(inColumn: Bool = false) { self.inColumn = inColumn; super.init(nibName: nil, bundle: nil) }
+    required init?(coder: NSCoder) { fatalError() }
 
     override func loadView() {
-        // The column view keeps the preview's own height (it sits in a scroll view), so start with a real one.
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
-        root.autoresizingMask = [.width]
+        // Never a fixed size: in the docked pane it fills whatever space it's given (a fixed frame here pinned the
+        // whole window's size); in the column view it keeps its own height without forcing the column to it.
+        root.autoresizingMask = inColumn ? [.width, .minYMargin, .maxYMargin] : [.width, .height]
         ql.shouldCloseWithWindow = false
         ql.autostarts = true
         imageView.imageScaling = .scaleProportionallyUpOrDown
@@ -67,12 +75,13 @@ final class PreviewPaneController: NSViewController {
             titleLabel.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28),
             sep.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28),
         ])
+        // A preference only: it must rank below window resizing (500), or the 380-pt cap below would also cap
+        // the window's width (this is what stopped the window growing and going full screen).
         let h = box.heightAnchor.constraint(equalTo: box.widthAnchor, multiplier: 0.8)
-        h.priority = .defaultHigh
+        h.priority = .defaultLow
         h.isActive = true
         box.heightAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
         box.heightAnchor.constraint(lessThanOrEqualToConstant: 380).isActive = true
-        root.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
         view = root
         clear()
     }

@@ -3,13 +3,37 @@ import CirrusCore
 
 /// One entry in the column view; containers load their children on demand.
 @MainActor
-final class ColumnNode: NSObject {
+final class ColumnNode: NSObject, NSCopying {
+    /// Cells copy their value; a node is a reference to shared data, so a "copy" is the same node.
+    nonisolated func copy(with zone: NSZone? = nil) -> Any { self }
     let item: Item?
     let location: Location          // for containers: the folder it opens; otherwise the folder it's in
     var children: [ColumnNode]?
     var loading = false
     init(item: Item?, location: Location) { self.item = item; self.location = location }
     var isFolder: Bool { item == nil || (item?.isContainer == true && item?.target != nil) }
+}
+
+/// A column row that draws the item's icon (or thumbnail) and name itself.
+final class IconBrowserCell: NSBrowserCell {
+    var node: ColumnNode? { objectValue as? ColumnNode }
+    override var stringValue: String {
+        get { MainActor.assumeIsolated { node?.item?.name } ?? super.stringValue }
+        set { super.stringValue = newValue }
+    }
+    override func drawInterior(withFrame frame: NSRect, in controlView: NSView) {
+        guard let item = MainActor.assumeIsolated({ node?.item }) else { return super.drawInterior(withFrame: frame, in: controlView) }
+        let emphasized = backgroundStyle == .emphasized
+        let icon = MainActor.assumeIsolated { Thumbnails.shared.image(for: item, px: 32) }
+        icon.draw(in: NSRect(x: frame.minX + 5, y: frame.midY - 8, width: 16, height: 16), from: .zero, operation: .sourceOver, fraction: 1,
+                  respectFlipped: true, hints: nil)
+        let arrowW: CGFloat = isLeaf ? 0 : 16   // the browser draws the folder arrow itself
+        let para = NSMutableParagraphStyle(); para.lineBreakMode = .byTruncatingMiddle
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: emphasized ? NSColor.alternateSelectedControlTextColor : NSColor.labelColor, .paragraphStyle: para]
+        let name = NSAttributedString(string: item.name, attributes: attrs)
+        let h = name.size().height
+        name.draw(in: NSRect(x: frame.minX + 27, y: frame.midY - h / 2, width: frame.width - 27 - arrowW - 4, height: h))
+    }
 }
 
 final class CirrusBrowser: NSBrowser {
@@ -36,13 +60,14 @@ final class ColumnController: NSObject, NSBrowserDelegate {
     let browser = CirrusBrowser()
     private(set) var root: ColumnNode
     var nodes = [Location: ColumnNode]()
-    let preview = PreviewPaneController()
+    let preview = PreviewPaneController(inColumn: true)
 
     init(pane: PaneController, location: Location) {
         self.pane = pane
         root = ColumnNode(item: nil, location: location)
         super.init()
         browser.host = self
+        browser.setCellClass(IconBrowserCell.self)
         browser.delegate = self
         browser.target = self
         browser.action = #selector(clicked)
@@ -94,11 +119,14 @@ final class ColumnController: NSObject, NSBrowserDelegate {
     }
 
     func browser(_ browser: NSBrowser, isLeafItem item: Any?) -> Bool { !((item as? ColumnNode)?.isFolder ?? true) }
-    func browser(_ browser: NSBrowser, objectValueForItem item: Any?) -> Any? { (item as? ColumnNode)?.item?.name ?? "" }
+    func browser(_ browser: NSBrowser, objectValueForItem item: Any?) -> Any? { item as? ColumnNode }
     func browser(_ browser: NSBrowser, shouldEditItem item: Any?) -> Bool { false }
 
     func browser(_ sender: NSBrowser, willDisplayCell cell: Any, atRow row: Int, column: Int) {
-        guard let cell = cell as? NSBrowserCell, let n = sender.item(atRow: row, inColumn: column) as? ColumnNode, let it = n.item else { return }
+        // Look the row up in our own nodes: the browser's item(atRow:) can still be nil while a column loads.
+        let parent = (sender.parentForItems(inColumn: column) as? ColumnNode) ?? (column == 0 ? root : nil)
+        guard let cell = cell as? NSBrowserCell, let kids = parent?.children, row < kids.count, let it = kids[row].item else { return }
+        let n = kids[row]
         let src = Thumbnails.shared.image(for: it, px: 32)
         let img = NSImage(size: NSSize(width: 16, height: 16), flipped: false) { r in src.draw(in: r); return true }
         cell.image = img

@@ -88,6 +88,47 @@ enum Debug {
             if let p = pane, let i = Int(arg) { p.select(keys: [p.shown[i].key]); p.itemViewSlowClick(i); try? await Task.sleep(nanoseconds: UInt64((NSEvent.doubleClickInterval + 0.3) * 1e9)); log("slowclick: renaming=\(p.renameField != nil || p.renamingItem != nil)"); p.endRename(commit: false) }
         case "pinch": if let p = pane { let before = p.sizeSlider.doubleValue; p.itemViewMagnify(CGFloat(Double(arg) ?? 0.3)); log("pinch: \(Int(before)) → \(Int(p.sizeSlider.doubleValue))") }
         case "bars": b?.togglePathBar(nil); b?.toggleStatusBar(nil)
+        case "slider":   // slider:<value> — what dragging the size slider does
+            if let p = pane, let v = Double(arg) {
+                let before = p.grid.visibleItems().first?.view.frame.size ?? .zero
+                p.sizeSlider.doubleValue = v; p.sizeChanged()
+                p.view.layoutSubtreeIfNeeded(); p.grid.layoutSubtreeIfNeeded()
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                let after = p.grid.visibleItems().first?.view.frame.size ?? .zero
+                log("slider \(v): hidden=\(p.sizeSlider.isHidden) cell \(Int(before.width))x\(Int(before.height)) → \(Int(after.width))x\(Int(after.height))")
+            }
+        case "colicons":   // do column rows get icons?
+            if let c = pane?.columns {
+                let col = max(0, c.browser.lastColumn)
+                let m = c.browser.loadedCell(atRow: 0, column: col) as? NSBrowserCell
+                log("column \(col) row 0 icon: \(m?.image != nil)")
+            }
+        case "widthrules":   // the layout rules that limit how wide the window can get
+            if let w = b?.window, let cv = w.contentView {
+                for c in cv.constraintsAffectingLayout(for: .horizontal) {
+                    let d = c.description
+                    if d.contains("<=") || d.contains(">=") || c.firstAttribute == .width || c.secondAttribute == .width {
+                        log("rule: " + String(d.prefix(170)))
+                    }
+                }
+                func walk(_ v: NSView, _ depth: Int) {
+                    if depth < 9 { for s in v.subviews { walk(s, depth + 1) } }
+                    for c in v.constraints where (c.firstAttribute == .width && c.relation != .greaterThanOrEqual && c.secondItem == nil) {
+                        log("fixed/max width \(String(describing: type(of: v))) \(c.relation == .equal ? "=" : "<=") \(Int(c.constant)) prio \(Int(c.priority.rawValue)) on \(String(describing: type(of: c.firstItem!)))")
+                    }
+                }
+                walk(cv, 0)
+                log("split items: " + ((w.contentViewController as? NSSplitViewController)?.splitViewItems.map { "\(Int($0.minimumThickness))-\($0.maximumThickness > 10000 ? "∞" : String(Int($0.maximumThickness))) collapsed=\($0.isCollapsed)" }.joined(separator: ", ") ?? ""))
+            }
+        case "resizetest":   // can the window grow and shrink, and go full screen?
+            if let w = b?.window {
+                let a = w.frame.size
+                w.setContentSize(NSSize(width: 1700, height: 1050)); w.layoutIfNeeded()
+                let big = w.frame.size
+                w.setContentSize(NSSize(width: 820, height: 560)); w.layoutIfNeeded()
+                let small = w.frame.size
+                log("resize: \(Int(a.width))x\(Int(a.height)) → big \(Int(big.width))x\(Int(big.height)) → small \(Int(small.width))x\(Int(small.height)); resizable=\(w.styleMask.contains(.resizable)) fullScreen=\(w.collectionBehavior.contains(.fullScreenPrimary) || !w.collectionBehavior.contains(.fullScreenNone)) min=\(Int(w.minSize.width))x\(Int(w.minSize.height)) maxLimited=\(w.maxSize.width < 100_000)")
+            }
         // Finder features
         case "preview":   // preview, preview:on, preview:off
             if arg.isEmpty || (arg == "on") != Prefs.showPreviewPane { b?.togglePreviewPane(nil) }

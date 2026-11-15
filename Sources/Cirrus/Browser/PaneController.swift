@@ -340,6 +340,9 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         tableScroll.isHidden = viewMode != .list
         columns.browser.isHidden = viewMode != .columns
         galleryBox.isHidden = viewMode != .gallery
+        // The size slider only means something in icon view (like Finder's).
+        sizeSlider.isHidden = viewMode != .icons
+        sizeSlider.toolTip = location.isPhotoGrid ? "Photo size (or pinch)" : "Icon size (or pinch, ⌘+ / ⌘−)"
         if viewMode == .columns { columns.setRoot(location) }
         if viewMode == .gallery { updateGallery() }
         browser?.syncToolbar()
