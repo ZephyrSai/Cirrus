@@ -377,18 +377,21 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         loadTask?.cancel()
         lastError = nil
         let loc = location
-        if let cached = Catalog.shared.memory[loc] { applyItems(cached, preserve: !scrollTop) } else if scrollTop { applyItems([], preserve: false) }
+        if let cached = Catalog.shared.memory[loc] { if cached != allItems || shown.isEmpty { applyItems(cached, preserve: !scrollTop) } }
+        else if scrollTop { applyItems([], preserve: false) }
         isLoading = true
         updateEmptyState()
         loadTask = Task { [weak self] in
             do {
                 let items = try await Catalog.shared.list(loc) { partial in
                     guard let self, gen == self.loadGeneration else { return }
-                    self.applyItems(partial, preserve: true)
+                    if partial != self.allItems || self.shown.isEmpty { self.applyItems(partial, preserve: true) }
                 }
                 guard let self, gen == self.loadGeneration else { return }
                 self.isLoading = false
-                self.applyItems(items, preserve: true)
+                // Same as what's on screen (the usual case when reopening): keep it, no redraw or thumbnail flash.
+                if items != self.allItems || self.shown.isEmpty || self.searchResults != nil { self.applyItems(items, preserve: true) }
+                else { self.updateEmptyState(); self.updateStatus() }
                 if self.searchResults != nil { self.rerunSearch() }
                 self.rebuildPathBar()
                 self.browser?.paneDidNavigate(self)
@@ -491,6 +494,8 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     func reloadViews() {
         updateLayout()
         grid.reloadData()
+        // Lay out now: otherwise items added at the end (a new upload) may not appear until you scroll.
+        if viewMode == .icons { grid.collectionViewLayout?.invalidateLayout(); grid.layoutSubtreeIfNeeded() }
         table.reloadData()
         if let d = table.sortDescriptors.first, d.key != sortKey.rawValue || d.ascending != ascending {
             table.sortDescriptors = [NSSortDescriptor(key: sortKey.rawValue, ascending: ascending)]
@@ -712,6 +717,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         let ip = ipPtr.pointee as IndexPath
         var target = location
         springHover(opPtr.pointee == .on ? flat(ip) : nil)
+        TabDrag.showBar(in: view.window, ownDrag: false)
         if opPtr.pointee == .on, let i = flat(ip), shown[i].isContainer {
             target = dropTarget(forFlat: i)
             let op = DragDrop.operation(info, to: target)
@@ -783,6 +789,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
 
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation op: NSTableView.DropOperation) -> NSDragOperation {
         springHover(op == .on && row >= 0 ? row : nil)
+        TabDrag.showBar(in: view.window, ownDrag: false)
         if op == .on, row < shown.count, shown[row].isContainer {
             let o = DragDrop.operation(info, to: dropTarget(forFlat: row))
             if !o.isEmpty { return o }
@@ -845,6 +852,10 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
 
     @objc func openSelection(_ sender: Any?) { activate(selectedItems) }
     @objc func openInNewTab(_ sender: Any?) { for i in selectedItems where i.isContainer { if let t = i.target { browser?.openInNewTab(t) } } }
+    @objc func openInNewWindow(_ sender: Any?) {
+        let folders = selectedItems.compactMap { $0.isContainer ? $0.target : nil }
+        for t in folders.isEmpty ? [location] : folders { (NSApp.delegate as? AppDelegate)?.openWindow(t) }
+    }
     @objc func openInOtherPane(_ sender: Any?) { if let t = selectedItems.first(where: \.isContainer)?.target { browser?.openInOtherPane(t, from: self) } }
     @objc func goBackAction(_ sender: Any?) { goBack() }
     @objc func goForwardAction(_ sender: Any?) { goForward() }

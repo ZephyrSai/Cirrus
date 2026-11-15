@@ -230,10 +230,14 @@ final class Ops {
                         t.report(0, plan.bytes)
                         let (rep, _) = try await runner.run(plan, a: sa, b: sb) { p in t.report(p.bytesDone, p.bytesTotal); t.setDetail("\(p.filesDone) of \(p.filesTotal) items") }
                         if !rep.failed.isEmpty { throw ICloudError.server("\(rep.failed.count) items failed: \(rep.failed.first ?? "")") }
+                        var shown = folder
                         if let retire {
                             try await drive.trash([retire])
-                            _ = try await drive.rename(folder, to: finalName)
+                            shown = try await drive.rename(folder, to: finalName)
+                            await MainActor.run { Catalog.shared.forgetUploads([retire.id]) }
                         }
+                        let made = shown
+                        await MainActor.run { Catalog.shared.noteUploaded(made, account: acct.id, folder: folderID) }
                         if move {
                             let left = SyncPlanner.notCopied(plan, a: sa, b: sb)
                             if left.isEmpty { try? LocalFiles.safeTrash(f, root: nil) }
@@ -247,9 +251,9 @@ final class Ops {
                         try await LocalFiles.ensureDownloaded(f)
                         let mtime = try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
                         // Upload first; only then retire the old copy (safeReplace).
-                        _ = try await drive.safeReplace(f, name: finalName, in: folderID, existing: replace ? old : nil, modified: mtime) { d, tot in t.report(d, tot) }
+                        let node = try await drive.safeReplace(f, name: finalName, in: folderID, existing: replace ? old : nil, modified: mtime) { d, tot in t.report(d, tot) }
                         if move { try? LocalFiles.safeTrash(f, root: nil) }
-                        await MainActor.run { Ops.shared.refresh(dest) }
+                        await MainActor.run { Catalog.shared.noteUploaded(node, account: acct.id, folder: folderID); Ops.shared.refresh(dest) }
                     }
                 }
             }
@@ -302,6 +306,7 @@ final class Ops {
                 if !nodes.isEmpty {
                     TransferManager.shared.enqueue(nodes.count == 1 ? nodes[0].name : "\(nodes.count) items", detail: "Moving to \(dest.title)", direction: .other) { _ in
                         try await drive.move(nodes, to: folderID)
+                        await MainActor.run { Catalog.shared.forgetUploads(nodes.map(\.id)) }
                         await MainActor.run {
                             Ops.shared.refresh(dest)
                             for p in Set(nodes.compactMap(\.parentID)) { Ops.shared.refresh(.drive(acct.id, p)) }
@@ -702,7 +707,7 @@ final class Ops {
         }
         let nodes = items.compactMap(\.driveNode)
         if !nodes.isEmpty, let drive = loc.account?.drive {
-            do { try await drive.trash(nodes); refresh(loc); refresh(.driveTrash(loc.accountID ?? "")) }
+            do { try await drive.trash(nodes); Catalog.shared.forgetUploads(nodes.map(\.id)); refresh(loc); refresh(.driveTrash(loc.accountID ?? "")) }
             catch { displayError(error, title: "Couldn’t move to Recently Deleted", window: window) }
         }
         let assets = items.compactMap(\.photo)

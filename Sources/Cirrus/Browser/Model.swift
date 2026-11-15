@@ -344,7 +344,7 @@ final class Catalog {
             if memory[loc] == nil, let d = try? Data(contentsOf: file), let c = try? JSONDecoder().decode(DriveCache.self, from: d) {
                 partial(c.nodes.map { driveItem($0, account: a) })
             }
-            let nodes = try await drive.list(id)
+            let nodes = withRecentUploads(try await drive.list(id), at: loc)
             if acct.kind == .web, let d = try? JSONEncoder().encode(DriveCache(nodes: nodes, savedAt: Date())) { try? d.write(to: file, options: .atomic) }
             for n in nodes where n.isFolder { driveNames[a + "|" + n.id] = (n.name, id) }
             items = nodes.map { driveItem($0, account: a) }
@@ -604,6 +604,33 @@ final class Catalog {
     }
 
     /// Our own change (or ⌘R): the next listing goes to the server, skipping caches.
+    /// Files Cirrus just uploaded. iCloud's folder listing can lag a few seconds behind an upload, so for two
+    /// minutes a listing that's missing one still shows it (and never brings back ones we moved or deleted).
+    var recentUploads = [Location: [(node: DriveNode, at: Date)]]()
+
+    func noteUploaded(_ n: DriveNode, account: String, folder: String) {
+        let loc = Location.drive(account, folder)
+        var list = (recentUploads[loc] ?? []).filter { $0.node.id != n.id && $0.node.name.caseInsensitiveCompare(n.name) != .orderedSame }
+        list.append((n, Date()))
+        recentUploads[loc] = list
+        if n.isFolder { driveNames[account + "|" + n.id] = (n.name, folder) }
+    }
+
+    func forgetUploads(_ ids: [String]) {
+        let gone = Set(ids)
+        for (k, v) in recentUploads { recentUploads[k] = v.filter { !gone.contains($0.node.id) } }
+    }
+
+    func withRecentUploads(_ nodes: [DriveNode], at loc: Location) -> [DriveNode] {
+        let recent = (recentUploads[loc] ?? []).filter { Date().timeIntervalSince($0.at) < 120 }
+        recentUploads[loc] = recent.isEmpty ? nil : recent
+        var out = nodes
+        for r in recent where !nodes.contains(where: { $0.id == r.node.id || $0.name.caseInsensitiveCompare(r.node.name) == .orderedSame }) {
+            out.append(r.node)
+        }
+        return out
+    }
+
     func invalidate(_ loc: Location) {
         memory[loc] = nil
         memoryAt[loc] = nil

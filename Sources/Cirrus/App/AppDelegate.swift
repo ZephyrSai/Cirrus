@@ -84,9 +84,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: Menu actions
 
+    /// File › New Window (⌘N), Dock › New Window, Open in New Window: always a separate window (even when
+    /// System Settings prefers tabs), offset from the current one so it's visible — all in this one Cirrus.
     @objc func newWindow(_ sender: Any?) {
-        let loc = activeBrowser?.activePane?.location ?? .home()
-        makeWindow(loc).showWindow(nil)
+        openWindow(activeBrowser?.activePane?.location ?? .home())
+    }
+
+    @discardableResult
+    func openWindow(_ loc: Location) -> BrowserWindowController {
+        let from = activeBrowser?.window
+        let wc = makeWindow(loc)
+        guard let w = wc.window else { return wc }
+        w.tabbingMode = .disallowed
+        if let f = from?.frame { w.setFrame(NSRect(x: f.minX + 28, y: f.minY - 28, width: f.width, height: f.height), display: false) }
+        wc.showWindow(nil)
+        w.makeKeyAndOrderFront(nil)
+        DispatchQueue.main.async { w.tabbingMode = .automatic }   // can still take tabs later (⌘T)
+        return wc
+    }
+
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let m = NSMenu()
+        m.addItem(withTitle: "New Window", action: #selector(newWindow(_:)), keyEquivalent: "").target = self
+        m.addItem(withTitle: "Back Up iCloud…", action: #selector(showBackup(_:)), keyEquivalent: "").target = self
+        return m
     }
 
     @objc func focusSearch(_ sender: Any?) {

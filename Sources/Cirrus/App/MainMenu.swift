@@ -34,7 +34,8 @@ enum MainMenu {
             item("New Folder", #selector(PaneController.newFolder(_:)), "n", [.command, .shift]),
             item("New File", #selector(PaneController.newFile(_:)), "n", [.command, .option]), sep(),
             item("Open", #selector(PaneController.openSelection(_:)), "o"),
-            item("Open in New Tab", #selector(PaneController.openInNewTab(_:))),
+            item("Open in New Tab", #selector(PaneController.openInNewTab(_:)), "o", [.command, .control]),
+            item("Open in New Window", #selector(PaneController.openInNewWindow(_:)), "o", [.command, .option]),
             item("Close Window", #selector(NSWindow.performClose(_:)), "w"), sep(),
             item("Get Info", #selector(PaneController.getInfo(_:)), "i"),
             item("Rename", #selector(PaneController.renameSelection(_:))),
@@ -112,6 +113,10 @@ enum MainMenu {
             item("Info", #selector(PaneController.getInfo(_:)), "i", [.command, .option]), sep(),
             item("Show Previous Tab", #selector(NSWindow.selectPreviousTab(_:)), "\t", [.control, .shift]),
             item("Show Next Tab", #selector(NSWindow.selectNextTab(_:)), "\t", [.control]),
+            hidden(item("Previous Tab", #selector(NSWindow.selectPreviousTab(_:)), "[", [.command, .shift])),
+            hidden(item("Next Tab", #selector(NSWindow.selectNextTab(_:)), "]", [.command, .shift])),
+            item("Move Tab to New Window", #selector(NSWindow.moveTabToNewWindow(_:))),
+            item("Merge All Windows", #selector(NSWindow.mergeAllWindows(_:))), sep(),
             item("Bring All to Front", #selector(NSApplication.arrangeInFront(_:))),
         ])
         NSApp.windowsMenu = window
@@ -120,6 +125,9 @@ enum MainMenu {
         return main
     }
 }
+
+/// A second shortcut for the same command (e.g. ⇧⌘] as well as ⌃Tab): kept out of sight in the menu.
+@MainActor func hidden(_ i: NSMenuItem) -> NSMenuItem { i.isHidden = true; i.allowsKeyEquivalentWhenHidden = true; return i }
 
 extension NSMenuItem {
     func tagged(_ t: Int) -> NSMenuItem { tag = t; return self }

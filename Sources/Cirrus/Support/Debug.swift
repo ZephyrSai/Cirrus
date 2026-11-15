@@ -115,6 +115,24 @@ enum Debug {
                 try? await Task.sleep(nanoseconds: 800_000_000)
                 log("batchrename: " + p.shown.map(\.name).sorted().joined(separator: ", "))
             }
+        case "tabbar":   // show the "Drop on a tab" bar as a drag would
+            TabDrag.showBar(in: b?.window, ownDrag: true)
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        case "tabbarhide": TabDrag.hideBar()
+        case "newwindow":
+            let before = app.windows.count
+            app.newWindow(nil)
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            let w = app.windows.last?.window
+            log("newwindow: windows \(before) → \(app.windows.count), new one tabbed with others: \((w?.tabGroup?.windows.count ?? 1) > 1)")
+        case "tabdump":   // class names in the window frame that mention tabs (no content)
+            if let w = b?.window, let fv = w.contentView?.superview {
+                var names = [String]()
+                func walk(_ v: NSView, _ d: Int) { let n = String(describing: type(of: v)); if n.lowercased().contains("tab") || n.contains("Titlebar") { let r = w.convertToScreen(v.convert(v.bounds, to: nil)); names.append("\(d):\(n) \(Int(r.minX)),\(Int(r.minY)) \(Int(r.width))x\(Int(r.height)) hidden=\(v.isHiddenOrHasHiddenAncestor)") }; for s in v.subviews { walk(s, d + 1) } }
+                walk(fv, 0)
+                log("frame: \(Int(w.frame.minX)),\(Int(w.frame.minY)) \(Int(w.frame.width))x\(Int(w.frame.height)) content top=\(Int(w.contentLayoutRect.maxY))")
+                for n in names.prefix(40) { log("view " + n) }
+            }
         case "tabrects":   // how the tab bar is seen (counts and geometry only)
             if let w = b?.window {
                 let t = TabDrag.tabs(of: w)

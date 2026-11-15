@@ -64,7 +64,8 @@ enum ContextMenu {
         }
         add(item("Open", #selector(PaneController.openSelection(_:)), symbol: nil, key: "o"))
         if !containers.isEmpty && containers.allSatisfy({ $0.target != nil }) {
-            add(item("Open in New Tab", #selector(PaneController.openInNewTab(_:)), symbol: "plus.rectangle.on.rectangle"))
+            add(item("Open in New Tab", #selector(PaneController.openInNewTab(_:)), symbol: "plus.rectangle.on.rectangle", key: "o", mods: [.command, .control]))
+            add(item("Open in New Window", #selector(PaneController.openInNewWindow(_:)), symbol: "macwindow.badge.plus", key: "o", mods: [.command, .option]))
             if pane.browser?.isDualPane == true { add(item("Open in Other Pane", #selector(PaneController.openInOtherPane(_:)), symbol: "rectangle.split.2x1")) }
         }
         if let u = files.first?.localURL, files.count == 1 { menu.addItem(openWith(u)) }
