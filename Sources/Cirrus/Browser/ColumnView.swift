@@ -219,16 +219,41 @@ final class ColumnController: NSObject, NSBrowserDelegate {
         return pasteboard.writeObjects(items.map { pane.writer($0) })
     }
 
-    func target(row: Int, column: Int, on: Bool) -> Location {
-        if on, row >= 0, let n = browser.item(atRow: row, inColumn: column) as? ColumnNode, n.isFolder, n.item != nil { return n.location }
+    /// The node at `row` in `column`, from our own data (never asks the browser for a row it may not have).
+    private func node(row: Int, column: Int) -> ColumnNode? {
+        guard column >= 0, column <= browser.lastColumn, row >= 0,
+              let parent = (browser.parentForItems(inColumn: column) as? ColumnNode) ?? (column == 0 ? root : nil),
+              let kids = parent.children, row < kids.count else { return nil }
+        return kids[row]
+    }
+
+    /// The folder a column shows.
+    private func folder(ofColumn column: Int) -> Location {
+        guard column >= 0, column <= browser.lastColumn else { return root.location }
         return (browser.parentForItems(inColumn: column) as? ColumnNode)?.location ?? root.location
+    }
+
+    /// Where a drop lands: on a folder row, that folder; anywhere else in a column, the column's folder.
+    func target(row: Int, column: Int, on: Bool) -> Location {
+        if on, let n = node(row: row, column: column), n.isFolder, n.item != nil { return n.location }
+        return folder(ofColumn: column)
     }
 
     func browser(_ browser: NSBrowser, validateDrop info: NSDraggingInfo, proposedRow row: UnsafeMutablePointer<Int>,
                  column: UnsafeMutablePointer<Int>, dropOperation: UnsafeMutablePointer<NSBrowser.DropOperation>) -> NSDragOperation {
-        let op = DragDrop.operation(info, to: target(row: row.pointee, column: column.pointee, on: dropOperation.pointee == .on))
-        if op.isEmpty, dropOperation.pointee == .on { dropOperation.pointee = .above; row.pointee = -1 }
-        return op.isEmpty ? DragDrop.operation(info, to: target(row: -1, column: column.pointee, on: false)) : op
+        TabDrag.showBar(in: browser.window, ownDrag: false)
+        let col = min(max(column.pointee, 0), max(browser.lastColumn, 0))
+        column.pointee = col
+        // A folder row under the pointer takes the drop…
+        if dropOperation.pointee == .on, let n = node(row: row.pointee, column: col), n.isFolder, n.item != nil {
+            let op = DragDrop.operation(info, to: n.location)
+            if !op.isEmpty { return op }
+        }
+        // …otherwise the whole column, which AppKit spells row -1 + "on" (row -1 + "above" throws inside AppKit and
+        // leaves the browser stuck, so no later drag works). Never "between rows": the order is the sort order.
+        row.pointee = -1
+        dropOperation.pointee = .on
+        return DragDrop.operation(info, to: folder(ofColumn: col))
     }
 
     func browser(_ browser: NSBrowser, acceptDrop info: NSDraggingInfo, atRow row: Int, column: Int, dropOperation: NSBrowser.DropOperation) -> Bool {

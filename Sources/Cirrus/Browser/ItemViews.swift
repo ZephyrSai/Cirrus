@@ -208,6 +208,11 @@ protocol ItemViewHost: AnyObject {
 /// Finder's trackpad gestures, shared by the icon and list views.
 @MainActor
 enum Gestures {
+    /// After a view's own mouse tracking returns: true if the press ended as a drag rather than a click.
+    static func clickBecameDrag() -> Bool {
+        NSApp.currentEvent?.type == .leftMouseDragged
+    }
+
     /// Two-finger horizontal swipe = Back / Forward (when that's turned on in System Settings).
     static func trackSwipe(_ event: NSEvent, host: ItemViewHost?) -> Bool {
         guard NSEvent.isSwipeTrackingFromScrollEventsEnabled, event.phase == .began,
@@ -238,10 +243,12 @@ final class GridCollectionView: NSCollectionView {
         super.mouseDown(with: event)
         if event.clickCount == 2 {
             if let ip, let i = flatIndex?(ip) { host?.itemView(doubleClicked: i) }
-        } else if wasOnlySelection, onName, let ip, let i = flatIndex?(ip) {
+        } else if wasOnlySelection, onName, !Gestures.clickBecameDrag(), let ip, let i = flatIndex?(ip) {
             host?.itemViewSlowClick(i)
         }
     }
+    /// A press that turns into a drag is never a slow click (the rename must not open under the drag).
+    override func mouseDragged(with event: NSEvent) { host?.itemViewCancelSlowRename(); super.mouseDragged(with: event) }
 
     override func magnify(with event: NSEvent) { host?.itemViewMagnify(event.magnification) }
     override func swipe(with event: NSEvent) { if event.deltaX != 0 { host?.itemViewSwipe(back: event.deltaX > 0) } }
@@ -294,7 +301,7 @@ final class ListTableView: NSTableView {
             return cell.name.frame.insetBy(dx: -2, dy: -2).contains(cell.convert(event.locationInWindow, from: nil))
         }()
         super.mouseDown(with: event)
-        if wasOnlySelection && onName { host?.itemViewSlowClick(r) }
+        if wasOnlySelection && onName && !Gestures.clickBecameDrag() { host?.itemViewSlowClick(r) }
     }
 
     override func magnify(with event: NSEvent) { host?.itemViewMagnify(event.magnification) }

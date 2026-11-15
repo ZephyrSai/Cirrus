@@ -395,6 +395,38 @@ enum Debug {
             let wh = arg.split(separator: "x").compactMap { Double($0) }
             if wh.count == 2, let w = lastWindow ?? b?.window { w.setContentSize(NSSize(width: wh[0], height: wh[1])); offscreen(w) }
             try? await Task.sleep(nanoseconds: 300_000_000)
+        #if DEBUG
+        case "coldrop":   // drive the column view's real drag-destination code with a stand-in drag of a local file
+            if let c = pane?.columns, let w = c.browser.window {
+                let pb = NSPasteboard(name: .init("cirrus-coldrop-\(UUID().uuidString)"))
+                pb.clearContents()
+                pb.writeObjects([URL(fileURLWithPath: arg.isEmpty ? NSTemporaryDirectory() : arg) as NSURL])
+                let b = c.browser
+                let last = b.lastColumn
+                var spots = [(String, NSPoint)]()
+                func mid(_ r: NSRect) -> NSPoint { NSPoint(x: r.midX, y: r.midY) }
+                for col in 0...max(last, 0) {
+                    let n = b.parentForItems(inColumn: col) as? ColumnNode
+                    let kids = n?.children ?? []
+                    if let fi = kids.firstIndex(where: { $0.isFolder }) { spots.append(("col\(col) folder \(kids[fi].item?.name ?? "")", mid(b.frame(ofRow: fi, inColumn: col)))) }
+                    if let li = kids.firstIndex(where: { !$0.isFolder }) { spots.append(("col\(col) file \(kids[li].item?.name ?? "")", mid(b.frame(ofRow: li, inColumn: col)))) }
+                    if kids.count > 1 { let r = b.frame(ofRow: 1, inColumn: col); spots.append(("col\(col) between rows 0/1", NSPoint(x: r.midX, y: b.isFlipped ? r.minY : r.maxY))) }
+                }
+                let lr = b.frame(ofColumn: max(last, 0))
+                spots.append(("empty space right of the last column", NSPoint(x: min(b.bounds.maxX - 5, lr.maxX + 40), y: lr.midY)))
+                var entered = false
+                for (name, p) in spots {
+                    let info = FakeDragInfo(pasteboard: pb, location: b.convert(p, to: nil), window: w)
+                    let op = entered ? b.draggingUpdated(info) : b.draggingEntered(info)
+                    entered = true
+                    w.displayIfNeeded(); b.display()
+                    log("coldrop \(name): op=\(op.rawValue)")
+                }
+                b.draggingExited(nil)
+                b.display()
+                log("coldrop: done without an exception")
+            }
+        #endif
         case "quit": NSApp.terminate(nil)
         default: if !(await MigrationDebug.step(cmd, arg, app)) { log("unknown step \(cmd)") }
         }
@@ -440,3 +472,28 @@ enum Debug {
         if let png = rep.representation(using: .png, properties: [:]) { try? png.write(to: dir.appendingPathComponent(name + ".png")) }
     }
 }
+
+#if DEBUG
+/// A stand-in drag for tests: enough of NSDraggingInfo for a destination to validate and draw a drop.
+final class FakeDragInfo: NSObject, NSDraggingInfo {
+    let pb: NSPasteboard, location: NSPoint, window: NSWindow
+    init(pasteboard: NSPasteboard, location: NSPoint, window: NSWindow) { pb = pasteboard; self.location = location; self.window = window }
+    var draggingDestinationWindow: NSWindow? { window }
+    var draggingSourceOperationMask: NSDragOperation { [.copy, .generic] }
+    var draggingLocation: NSPoint { location }
+    var draggedImageLocation: NSPoint { location }
+    var draggedImage: NSImage? { nil }
+    var draggingPasteboard: NSPasteboard { pb }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 4242 }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+    var draggingFormation: NSDraggingFormation = .default
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions = [], for view: NSView?, classes classArray: [AnyClass],
+                                searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:], using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func resetSpringLoading() {}
+}
+#endif
