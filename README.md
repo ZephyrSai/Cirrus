@@ -56,6 +56,8 @@ Cirrus is free software, licensed under the [GNU General Public License v3.0 or 
 
 ## Credits
 
+Thanks to [prkusr](https://github.com/prkusr) for the idea behind Cirrus: an easier way to manage iCloud.
+
 Cirrus learned how iCloud's web services work from [rclone](https://rclone.org/iclouddrive/)'s iCloud Drive backend and [icloudpd](https://github.com/icloud-photos-downloader/icloud_photos_downloader). Thank you to both projects.
 
 Cirrus is an independent project and is not affiliated with, or endorsed by, Apple Inc. iCloud, Mac, macOS and Finder are trademarks of Apple Inc., registered in the U.S. and other countries.
