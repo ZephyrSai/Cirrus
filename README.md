@@ -47,6 +47,10 @@ scripts/build-windows.sh   # Windows x64 + Arm64 zips (needs the .NET SDK)
 
 [BUILDING.md](BUILDING.md) covers signing, notarization, tester builds and the Windows toolchain.
 
+## License
+
+Cirrus is free software, licensed under the [GNU General Public License v3.0 or later](LICENSE). You can use, study, share and change it; copies and modified versions you distribute must stay under the same license, with their source available.
+
 ## Credits
 
 Cirrus learned how iCloud's web services work from [rclone](https://rclone.org/iclouddrive/)'s iCloud Drive backend and [icloudpd](https://github.com/icloud-photos-downloader/icloud_photos_downloader). Thank you to both projects.
