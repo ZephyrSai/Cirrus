@@ -96,31 +96,40 @@ final class TabChip: NSView {
     private let label = NSTextField(labelWithString: "")
     private let icon = NSImageView()
     private var spring: Timer?
-    private var lit = false { didSet { layer?.backgroundColor = (lit ? NSColor.controlAccentColor.withAlphaComponent(0.35) : NSColor.quaternaryLabelColor.withAlphaComponent(0.5)).cgColor } }
+    private var lit = false { didSet { paint() } }
+    private func paint() {
+        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(lit ? 1 : 0.88).cgColor
+        layer?.borderWidth = lit ? 2 : 0
+    }
 
     init(target: NSWindow) {
         self.target = target
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.cornerRadius = 8
-        lit = false
+        layer?.cornerRadius = 9
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.9).cgColor
+        shadow = { let sh = NSShadow(); sh.shadowBlurRadius = 8; sh.shadowOffset = NSSize(width: 0, height: -2); sh.shadowColor = .black.withAlphaComponent(0.3); return sh }()
+        paint()   // (property observers don't run during init)
         let loc = MainActor.assumeIsolated { (target.windowController as? BrowserWindowController)?.activePane?.location }
-        label.stringValue = target.title.isEmpty ? "Tab" : target.title
-        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.stringValue = target.title.isEmpty ? "This tab" : target.title
+        label.font = .systemFont(ofSize: 12, weight: .semibold)
+        label.textColor = .white
         label.lineBreakMode = .byTruncatingMiddle
-        let symbol = MainActor.assumeIsolated { loc.map { Catalog.shared.symbolName($0) } } ?? "folder"
+        _ = loc
+        let symbol = "tray.and.arrow.down.fill"
         icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        icon.symbolConfiguration = .init(pointSize: 12, weight: .regular)
+        icon.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
+        icon.contentTintColor = .white
         let s = NSStackView(views: [icon, label])
         s.spacing = 5
-        s.edgeInsets = NSEdgeInsets(top: 4, left: 9, bottom: 4, right: 10)
+        s.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
         s.translatesAutoresizingMaskIntoConstraints = false
         addSubview(s)
         NSLayoutConstraint.activate([s.topAnchor.constraint(equalTo: topAnchor), s.bottomAnchor.constraint(equalTo: bottomAnchor),
                                      s.leadingAnchor.constraint(equalTo: leadingAnchor), s.trailingAnchor.constraint(equalTo: trailingAnchor),
-                                     widthAnchor.constraint(lessThanOrEqualToConstant: 220)])
+                                     widthAnchor.constraint(lessThanOrEqualToConstant: 240)])
         registerForDraggedTypes(DragDrop.acceptedTypes)
-        toolTip = "Drop here to put the items in “\(label.stringValue)”, or hover to switch to that tab"
+        toolTip = "Drop here to put the items in that tab’s folder, or hover to switch to it"
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -159,44 +168,67 @@ final class TabChip: NSView {
     override func concludeDragOperation(_ info: NSDraggingInfo?) { lit = false; MainActor.assumeIsolated { TabDrag.hideBar() } }
 }
 
+/// The little pointer from a drop zone up to its tab.
+final class CalloutArrow: NSView {
+    var color: NSColor = .controlAccentColor { didSet { needsDisplay = true } }
+    override func draw(_ dirtyRect: NSRect) {
+        let p = NSBezierPath()
+        p.move(to: NSPoint(x: bounds.minX, y: bounds.minY)); p.line(to: NSPoint(x: bounds.midX, y: bounds.maxY)); p.line(to: NSPoint(x: bounds.maxX, y: bounds.minY)); p.close()
+        color.setFill(); p.fill()
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 extension TabDrag {
-    private static var bar: NSView?
+    private static var barViews = [NSView]()
+    private static weak var barWindow: NSWindow?
     private static var barHide: Timer?
     private static var internalDrag = false
     static var ownDragInProgress: Bool { internalDrag }
 
-    /// Show the bar in `window` (if it has other tabs). Internal drags keep it until they end; drags from
-    /// other apps keep it alive while they're over the window.
+    /// Where each tab sits, in `host` coordinates: tabs share the strip above the browser content (the sidebar
+    /// and the “+” button aren't part of it) in equal widths.
+    static func tabCenters(in window: NSWindow, host: NSView) -> [CGFloat] {
+        guard let group = window.tabGroup else { return [] }
+        let n = group.windows.count
+        var strip = host.bounds
+        if let wc = window.windowController as? BrowserWindowController {
+            let v = wc.paneSplit.view
+            strip = v.convert(v.bounds, to: host)
+        }
+        let w = max(60, (strip.width - 28) / CGFloat(n))
+        return (0..<n).map { strip.minX + (CGFloat($0) + 0.5) * w }
+    }
+
+    /// A drop zone under each other tab while something is dragged in a window with several tabs. Hovering one
+    /// switches to that tab; releasing on it delivers there. Own drags keep them until the drag ends; drags from
+    /// other apps keep them while they're over the window.
     static func showBar(in window: NSWindow?, ownDrag: Bool) {
         if ownDrag { internalDrag = true }
         guard let window, let group = window.tabGroup, group.windows.count > 1, let host = window.contentView else { return }
-        if let b = bar, b.window === window { keepBarAlive(); return }
-        bar?.removeFromSuperview()
-        let others = group.windows.filter { $0 !== window }
-        let title = NSTextField(labelWithString: "Drop on a tab:")
-        title.font = .systemFont(ofSize: 12)
-        title.textColor = .secondaryLabelColor
-        let stack = NSStackView(views: [title] + others.prefix(8).map { TabChip(target: $0) })
-        stack.spacing = 6
-        stack.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
-        let fx = NSVisualEffectView()
-        fx.material = .popover; fx.blendingMode = .withinWindow; fx.state = .active
-        fx.wantsLayer = true; fx.layer?.cornerRadius = 12
-        fx.shadow = { let s = NSShadow(); s.shadowBlurRadius = 10; s.shadowColor = .black.withAlphaComponent(0.2); return s }()
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        fx.addSubview(stack)
-        fx.translatesAutoresizingMaskIntoConstraints = false
-        host.addSubview(fx, positioned: .above, relativeTo: nil)
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: fx.topAnchor), stack.bottomAnchor.constraint(equalTo: fx.bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: fx.leadingAnchor), stack.trailingAnchor.constraint(equalTo: fx.trailingAnchor),
-            fx.topAnchor.constraint(equalTo: host.safeAreaLayoutGuide.topAnchor, constant: 8),
-            fx.centerXAnchor.constraint(equalTo: host.centerXAnchor),
-            fx.widthAnchor.constraint(lessThanOrEqualTo: host.widthAnchor, constant: -40),
-        ])
-        bar = fx
+        if barWindow === window, !barViews.isEmpty { keepBarAlive(); return }
+        removeBarViews()
+        let centers = tabCenters(in: window, host: host)
+        let n = group.windows.count
+        let zoneWidth = min(230, max(110, (centers.count > 1 ? centers[1] - centers[0] : 200) - 18))
+        for (i, tab) in group.windows.enumerated() where tab !== window && i < centers.count {
+            let chip = TabChip(target: tab)
+            let arrow = CalloutArrow()
+            arrow.color = NSColor.controlAccentColor.withAlphaComponent(0.85)
+            for v in [arrow, chip] as [NSView] { v.translatesAutoresizingMaskIntoConstraints = false; host.addSubview(v, positioned: .above, relativeTo: nil) }
+            NSLayoutConstraint.activate([
+                arrow.topAnchor.constraint(equalTo: host.safeAreaLayoutGuide.topAnchor, constant: 2),
+                arrow.centerXAnchor.constraint(equalTo: host.leadingAnchor, constant: centers[i]),
+                arrow.widthAnchor.constraint(equalToConstant: 16), arrow.heightAnchor.constraint(equalToConstant: 8),
+                chip.topAnchor.constraint(equalTo: arrow.bottomAnchor),
+                chip.centerXAnchor.constraint(equalTo: arrow.centerXAnchor),
+                chip.widthAnchor.constraint(equalToConstant: zoneWidth),
+            ])
+            barViews += [arrow, chip]
+        }
+        barWindow = window
         #if DEBUG
-        Debug.log("tab bar shown with \(others.count) tab(s)")
+        Debug.log("tab drop zones shown under \(n - 1) tab(s)")
         #endif
         keepBarAlive()
     }
@@ -209,10 +241,12 @@ extension TabDrag {
         barHide = t
     }
 
+    private static func removeBarViews() { for v in barViews { v.removeFromSuperview() }; barViews = [] }
+
     static func hideBar() {
         internalDrag = false
         barHide?.invalidate()
-        bar?.removeFromSuperview()
-        bar = nil
+        removeBarViews()
+        barWindow = nil
     }
 }

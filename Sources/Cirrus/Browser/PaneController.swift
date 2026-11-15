@@ -3,7 +3,7 @@ import CirrusCore
 import Quartz
 import UniformTypeIdentifiers
 
-enum ViewMode: Int { case icons, list, columns }
+enum ViewMode: Int { case icons, list, columns, gallery }
 enum SortKey: String { case name, date, size, kind }
 
 final class NoGapFlowLayout: NSCollectionViewFlowLayout {
@@ -39,6 +39,10 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     var springKey: String?
     /// Search and tag results show as a list; the column view comes back when the search ends.
     var modeBeforeSearch: ViewMode?
+    var slowRename: DispatchWorkItem?
+    var pathBarHeight: NSLayoutConstraint!
+    var statusBarHeight: NSLayoutConstraint!
+    var barParts = [NSView]()
     var loadGeneration = 0
     var loadTask: Task<Void, Never>?
     var isLoading = false
@@ -67,6 +71,12 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     let spinner = NSProgressIndicator()
     let contentBox = NSView()
     var columns: ColumnController!
+    // Gallery view: big preview above a film strip
+    let galleryStrip = GridCollectionView()
+    let galleryScroll = NSScrollView()
+    let galleryLayout = NSCollectionViewFlowLayout()
+    let galleryPreview = PreviewPaneController()
+    let galleryBox = NSView()
 
     init(location: Location) {
         self.location = location
@@ -182,7 +192,40 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         let divider2 = NSBox(); divider2.boxType = .separator
         for v in [banner, contentBox, divider1, pathBar, divider2, statusBar] as [NSView] { v.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(v) }
         columns = ColumnController(pane: self, location: location)
-        for v in [gridScroll, tableScroll, columns.browser, emptyLabel, spinner] as [NSView] { v.translatesAutoresizingMaskIntoConstraints = false; contentBox.addSubview(v) }
+        galleryLayout.scrollDirection = .horizontal
+        galleryLayout.itemSize = NSSize(width: 84, height: 84)
+        galleryLayout.minimumInteritemSpacing = 6
+        galleryLayout.minimumLineSpacing = 6
+        galleryLayout.sectionInset = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+        galleryStrip.collectionViewLayout = galleryLayout
+        galleryStrip.isSelectable = true
+        galleryStrip.allowsMultipleSelection = true
+        galleryStrip.dataSource = self
+        galleryStrip.delegate = self
+        galleryStrip.host = self
+        galleryStrip.flatIndex = { $0.item }
+        galleryStrip.backgroundColors = [.clear]
+        galleryStrip.register(IconCell.self, forItemWithIdentifier: IconCell.id)
+        galleryStrip.registerForDraggedTypes(DragDrop.acceptedTypes)
+        galleryStrip.setDraggingSourceOperationMask([.copy, .move, .link, .generic], forLocal: true)
+        galleryStrip.setDraggingSourceOperationMask([.copy, .generic], forLocal: false)
+        galleryScroll.documentView = galleryStrip
+        galleryScroll.hasHorizontalScroller = true
+        galleryScroll.drawsBackground = false
+        galleryScroll.automaticallyAdjustsContentInsets = false
+        let gDivider = NSBox(); gDivider.boxType = .separator
+        for v in [galleryPreview.view, gDivider, galleryScroll] { v.translatesAutoresizingMaskIntoConstraints = false; galleryBox.addSubview(v) }
+        NSLayoutConstraint.activate([
+            galleryPreview.view.topAnchor.constraint(equalTo: galleryBox.topAnchor),
+            galleryPreview.view.leadingAnchor.constraint(equalTo: galleryBox.leadingAnchor, constant: 20),
+            galleryPreview.view.trailingAnchor.constraint(equalTo: galleryBox.trailingAnchor, constant: -20),
+            galleryPreview.view.bottomAnchor.constraint(equalTo: gDivider.topAnchor),
+            gDivider.leadingAnchor.constraint(equalTo: galleryBox.leadingAnchor), gDivider.trailingAnchor.constraint(equalTo: galleryBox.trailingAnchor),
+            gDivider.bottomAnchor.constraint(equalTo: galleryScroll.topAnchor),
+            galleryScroll.leadingAnchor.constraint(equalTo: galleryBox.leadingAnchor), galleryScroll.trailingAnchor.constraint(equalTo: galleryBox.trailingAnchor),
+            galleryScroll.bottomAnchor.constraint(equalTo: galleryBox.bottomAnchor), galleryScroll.heightAnchor.constraint(equalToConstant: 108),
+        ])
+        for v in [gridScroll, tableScroll, columns.browser, galleryBox, emptyLabel, spinner] as [NSView] { v.translatesAutoresizingMaskIntoConstraints = false; contentBox.addSubview(v) }
         NSLayoutConstraint.activate([
             banner.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
             banner.leadingAnchor.constraint(equalTo: root.leadingAnchor), banner.trailingAnchor.constraint(equalTo: root.trailingAnchor),
@@ -190,15 +233,15 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
             contentBox.leadingAnchor.constraint(equalTo: root.leadingAnchor), contentBox.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             divider1.topAnchor.constraint(equalTo: contentBox.bottomAnchor),
             divider1.leadingAnchor.constraint(equalTo: root.leadingAnchor), divider1.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            pathBar.topAnchor.constraint(equalTo: divider1.bottomAnchor), pathBar.heightAnchor.constraint(equalToConstant: 24),
+            pathBar.topAnchor.constraint(equalTo: divider1.bottomAnchor), { pathBarHeight = pathBar.heightAnchor.constraint(equalToConstant: 24); return pathBarHeight }(),
             pathBar.leadingAnchor.constraint(equalTo: root.leadingAnchor), pathBar.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor),
             divider2.topAnchor.constraint(equalTo: pathBar.bottomAnchor),
             divider2.leadingAnchor.constraint(equalTo: root.leadingAnchor), divider2.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            statusBar.topAnchor.constraint(equalTo: divider2.bottomAnchor), statusBar.heightAnchor.constraint(equalToConstant: 24),
+            statusBar.topAnchor.constraint(equalTo: divider2.bottomAnchor), { statusBarHeight = statusBar.heightAnchor.constraint(equalToConstant: 24); return statusBarHeight }(),
             statusBar.leadingAnchor.constraint(equalTo: root.leadingAnchor), statusBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             statusBar.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
-        for s in [gridScroll, tableScroll, columns.browser] as [NSView] {
+        for s in [gridScroll, tableScroll, columns.browser, galleryBox] as [NSView] {
             NSLayoutConstraint.activate([s.topAnchor.constraint(equalTo: contentBox.topAnchor), s.bottomAnchor.constraint(equalTo: contentBox.bottomAnchor),
                                          s.leadingAnchor.constraint(equalTo: contentBox.leadingAnchor), s.trailingAnchor.constraint(equalTo: contentBox.trailingAnchor)])
         }
@@ -207,6 +250,8 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
             spinner.centerXAnchor.constraint(equalTo: contentBox.centerXAnchor), spinner.topAnchor.constraint(equalTo: emptyLabel.bottomAnchor, constant: 8),
         ])
         view = root
+        barParts = [divider1, pathBar, divider2, statusBar]
+        applyBars()
         let click = NSClickGestureRecognizer(target: self, action: #selector(paneClicked))
         click.delaysPrimaryMouseButtonEvents = false
         root.addGestureRecognizer(click)
@@ -294,7 +339,9 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         gridScroll.isHidden = viewMode != .icons
         tableScroll.isHidden = viewMode != .list
         columns.browser.isHidden = viewMode != .columns
+        galleryBox.isHidden = viewMode != .gallery
         if viewMode == .columns { columns.setRoot(location) }
+        if viewMode == .gallery { updateGallery() }
         browser?.syncToolbar()
     }
 
@@ -318,7 +365,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         showMode()
         reloadViews()
         if m != .columns { select(keys: keys) }
-        view.window?.makeFirstResponder(m == .icons ? grid : (m == .list ? table : columns.browser))
+        view.window?.makeFirstResponder(m == .icons ? grid : (m == .list ? table : (m == .gallery ? galleryStrip : columns.browser)))
     }
 
     func goBack() { guard let l = backStack.popLast() else { return }; forwardStack.append(location); navigate(to: l, record: false) }
@@ -426,6 +473,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         buildSections()
         reloadViews()
         if !keys.isEmpty && viewMode != .columns { select(keys: keys) }
+        updateGallery()
         updateEmptyState()
         updateStatus()
         updateBanner()
@@ -494,6 +542,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     func reloadViews() {
         updateLayout()
         grid.reloadData()
+        galleryStrip.reloadData()
         // Lay out now: otherwise items added at the end (a new upload) may not appear until you scroll.
         if viewMode == .icons { grid.collectionViewLayout?.invalidateLayout(); grid.layoutSubtreeIfNeeded() }
         table.reloadData()
@@ -631,7 +680,8 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     // MARK: Selection
 
     var selectedIndexes: IndexSet {
-        viewMode == .icons ? IndexSet(grid.selectionIndexPaths.compactMap { flat($0) }) : table.selectedRowIndexes
+        viewMode == .icons ? IndexSet(grid.selectionIndexPaths.compactMap { flat($0) })
+            : viewMode == .gallery ? IndexSet(galleryStrip.selectionIndexPaths.map(\.item).filter { $0 < shown.count }) : table.selectedRowIndexes
     }
     var selectedItems: [Item] { viewMode == .columns ? columns.selectedItems : selectedIndexes.compactMap { $0 < shown.count ? shown[$0] : nil } }
     var selectedKeys: Set<String> { Set(selectedItems.map(\.key)) }
@@ -640,7 +690,9 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         if viewMode == .columns { columns.select(keys: keys); return }
         let idx = IndexSet(shown.indices.filter { keys.contains(shown[$0].key) })
         grid.selectionIndexPaths = Set(idx.compactMap { indexPath(forFlat: $0) })
+        galleryStrip.selectionIndexPaths = Set(idx.map { IndexPath(item: $0, section: 0) })
         table.selectRowIndexes(idx, byExtendingSelection: false)
+        if viewMode == .gallery { if let f = idx.first { galleryStrip.scrollToItems(at: [IndexPath(item: f, section: 0)], scrollPosition: .nearestVerticalEdge) }; galleryPreview.show(selectedItems, location: location) }
         if let first = idx.first {
             if viewMode == .icons, let ip = indexPath(forFlat: first) { grid.scrollToItems(at: [ip], scrollPosition: .nearestHorizontalEdge) }
             else { table.scrollRowToVisible(first) }
@@ -658,11 +710,29 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
 
     // MARK: Collection view
 
-    func numberOfSections(in collectionView: NSCollectionView) -> Int { max(1, sections.count) }
-    func collectionView(_ cv: NSCollectionView, numberOfItemsInSection section: Int) -> Int { section < sections.count ? sections[section].range.count : 0 }
+    func numberOfSections(in collectionView: NSCollectionView) -> Int { collectionView === galleryStrip ? 1 : max(1, sections.count) }
+    func collectionView(_ cv: NSCollectionView, numberOfItemsInSection section: Int) -> Int {
+        if cv === galleryStrip { return section == 0 ? shown.count : 0 }
+        return section < sections.count ? sections[section].range.count : 0
+    }
+
+    /// Flat index for an index path in either collection view (the gallery strip has a single section).
+    func index(_ cv: NSCollectionView, _ ip: IndexPath) -> Int? {
+        if cv === galleryStrip { return ip.item < shown.count ? ip.item : nil }
+        return flat(ip)
+    }
+
+    func updateGallery() {
+        guard viewMode == .gallery else { return }
+        if galleryStrip.selectionIndexPaths.isEmpty, !shown.isEmpty {
+            galleryStrip.selectionIndexPaths = [IndexPath(item: 0, section: 0)]
+        }
+        galleryPreview.show(selectedItems, location: location)
+    }
 
     func collectionView(_ cv: NSCollectionView, itemForRepresentedObjectAt ip: IndexPath) -> NSCollectionViewItem {
         let cell = cv.makeItem(withIdentifier: IconCell.id, for: ip) as! IconCell
+        if cv === galleryStrip { if let i = index(cv, ip) { cell.configure(shown[i], photoMode: true, px: 176) }; return cell }
         if let i = flat(ip) { cell.configure(shown[i], photoMode: location.isPhotoGrid, px: iconPx) }
         return cell
     }
@@ -675,22 +745,30 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     }
 
     func collectionView(_ cv: NSCollectionView, layout: NSCollectionViewLayout, referenceSizeForHeaderInSection section: Int) -> NSSize {
-        location.isPhotoGrid && sections.count > 0 && !(sections.first?.title.isEmpty ?? true) ? NSSize(width: cv.bounds.width, height: 40) : .zero
+        cv !== galleryStrip && location.isPhotoGrid && sections.count > 0 && !(sections.first?.title.isEmpty ?? true) ? NSSize(width: cv.bounds.width, height: 40) : .zero
     }
 
-    func collectionView(_ cv: NSCollectionView, didSelectItemsAt ips: Set<IndexPath>) { browser?.setActivePane(self); itemViewSelectionChanged() }
-    func collectionView(_ cv: NSCollectionView, didDeselectItemsAt ips: Set<IndexPath>) { itemViewSelectionChanged() }
+    func collectionView(_ cv: NSCollectionView, didSelectItemsAt ips: Set<IndexPath>) {
+        browser?.setActivePane(self); itemViewSelectionChanged()
+        if cv === galleryStrip { galleryPreview.show(selectedItems, location: location) }
+    }
+    func collectionView(_ cv: NSCollectionView, didDeselectItemsAt ips: Set<IndexPath>) {
+        itemViewSelectionChanged()
+        if cv === galleryStrip { galleryPreview.show(selectedItems, location: location) }
+    }
 
     func collectionView(_ cv: NSCollectionView, canDragItemsAt ips: Set<IndexPath>, with event: NSEvent) -> Bool { renameField == nil }
 
     // Window tabs as drop targets (hover to switch, release on a tab to deliver there).
     func collectionView(_ cv: NSCollectionView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forItemsAt indexPaths: Set<IndexPath>) {
+        itemViewCancelSlowRename()
         TabDrag.began(in: view.window)
     }
     func collectionView(_ cv: NSCollectionView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, dragOperation operation: NSDragOperation) {
         TabDrag.ended(session, at: screenPoint, operation: operation)
     }
     func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forRowIndexes rowIndexes: IndexSet) {
+        itemViewCancelSlowRename()
         TabDrag.began(in: view.window)
     }
     func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
@@ -698,7 +776,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     }
 
     func collectionView(_ cv: NSCollectionView, pasteboardWriterForItemAt ip: IndexPath) -> NSPasteboardWriting? {
-        guard let i = flat(ip) else { return nil }
+        guard let i = index(cv, ip) else { return nil }
         return writer(shown[i])
     }
 
@@ -716,9 +794,9 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
                         dropOperation opPtr: UnsafeMutablePointer<NSCollectionView.DropOperation>) -> NSDragOperation {
         let ip = ipPtr.pointee as IndexPath
         var target = location
-        springHover(opPtr.pointee == .on ? flat(ip) : nil)
+        springHover(opPtr.pointee == .on ? index(cv, ip) : nil)
         TabDrag.showBar(in: view.window, ownDrag: false)
-        if opPtr.pointee == .on, let i = flat(ip), shown[i].isContainer {
+        if opPtr.pointee == .on, let i = index(cv, ip), shown[i].isContainer {
             target = dropTarget(forFlat: i)
             let op = DragDrop.operation(info, to: target)
             if !op.isEmpty { return op }
@@ -729,7 +807,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     }
 
     func collectionView(_ cv: NSCollectionView, acceptDrop info: NSDraggingInfo, indexPath: IndexPath, dropOperation: NSCollectionView.DropOperation) -> Bool {
-        let target = dropOperation == .on ? dropTarget(forFlat: flat(indexPath)) : location
+        let target = dropOperation == .on ? dropTarget(forFlat: index(cv, indexPath)) : location
         return DragDrop.perform(info, to: target, window: view.window)
     }
 
@@ -823,7 +901,52 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         for c in items where c.isContainer { if let t = c.target { browser?.openInNewTab(t) } }
     }
 
+    /// View › Show/Hide Path Bar (⌥⌘P) and Status Bar (⌘/).
+    func applyBars() {
+        guard barParts.count == 4 else { return }
+        pathBarHeight.constant = Prefs.showPathBar ? 24 : 0
+        barParts[0].isHidden = !Prefs.showPathBar; barParts[1].isHidden = !Prefs.showPathBar
+        statusBarHeight.constant = Prefs.showStatusBar ? 24 : 0
+        barParts[2].isHidden = !Prefs.showStatusBar; barParts[3].isHidden = !Prefs.showStatusBar
+    }
+
+    @objc func biggerIcons(_ sender: Any?) { sizeSlider.doubleValue = min(sizeSlider.maxValue, sizeSlider.doubleValue * 1.2); sizeChanged() }
+    @objc func smallerIcons(_ sender: Any?) { sizeSlider.doubleValue = max(sizeSlider.minValue, sizeSlider.doubleValue / 1.2); sizeChanged() }
+
+    // MARK: Finder gestures
+
+    func itemViewSlowClick(_ index: Int) {
+        guard index < shown.count else { return }
+        let item = shown[index]
+        slowRename?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.renameField == nil, self.selectedItems.count == 1, self.selectedItems.first?.key == item.key, self.canRename(item) else { return }
+            self.beginRename(item)
+        }
+        slowRename = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + NSEvent.doubleClickInterval + 0.05, execute: work)
+    }
+
+    func itemViewCancelSlowRename() { slowRename?.cancel(); slowRename = nil }
+
+    /// Pinch to make icons (or photos) bigger or smaller, like Finder.
+    func itemViewMagnify(_ amount: CGFloat) {
+        guard viewMode == .icons || viewMode == .gallery else { return }
+        sizeSlider.doubleValue = min(sizeSlider.maxValue, max(sizeSlider.minValue, sizeSlider.doubleValue * (1 + Double(amount))))
+        sizeChanged()
+    }
+
+    func itemViewSwipe(back: Bool) { if back { goBack() } else { goForward() } }
+
+    /// Force click on an item: Quick Look, as in Finder.
+    func itemViewForceClick(_ index: Int?) {
+        guard let index, index < shown.count else { return }
+        if !selectedKeys.contains(shown[index].key) { select(keys: [shown[index].key]); itemViewSelectionChanged() }
+        prepareQuickLook(show: true)
+    }
+
     func itemViewKey(_ event: NSEvent) -> Bool {
+        itemViewCancelSlowRename()
         let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
         switch event.keyCode {
         case 36 where mods.isEmpty, 76 where mods.isEmpty: renameSelection(nil); return true
@@ -1090,6 +1213,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     @objc func setIconView(_ sender: Any?) { setViewMode(.icons) }
     @objc func setListView(_ sender: Any?) { setViewMode(.list) }
     @objc func setColumnView(_ sender: Any?) { setViewMode(.columns) }
+    @objc func setGalleryView(_ sender: Any?) { setViewMode(.gallery) }
     @objc func sortBy(_ sender: NSMenuItem) {
         guard let k = SortKey(rawValue: sender.identifier?.rawValue ?? "") else { return }
         setSort(k, ascending: k == sortKey ? !ascending : k != .date)
@@ -1102,6 +1226,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
             itemViewSelectionChanged(); return
         }
         grid.selectionIndexPaths = Set(shown.indices.compactMap { indexPath(forFlat: $0) })
+        galleryStrip.selectionIndexPaths = Set(shown.indices.map { IndexPath(item: $0, section: 0) })
         table.selectAll(nil)
         itemViewSelectionChanged()
     }
@@ -1135,6 +1260,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         case #selector(setIconView(_:)): item.state = viewMode == .icons ? .on : .off; return true
         case #selector(setListView(_:)): item.state = viewMode == .list ? .on : .off; return true
         case #selector(setColumnView(_:)): item.state = viewMode == .columns ? .on : .off; return !location.isPhotoGrid
+        case #selector(setGalleryView(_:)): item.state = viewMode == .gallery ? .on : .off; return true
         case #selector(selectAll(_:)): return !shown.isEmpty
         case #selector(showInFinder(_:)), #selector(copyPath(_:)): return location.localURL != nil || sel.contains { $0.localURL != nil }
         default: return true
@@ -1145,7 +1271,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
 
     func beginRename(_ item: Item) {
         endRename(commit: false)
-        if viewMode == .columns { renameWithAlert(item); return }
+        if viewMode == .columns || viewMode == .gallery { renameWithAlert(item); return }
         guard let i = shown.firstIndex(of: item) else { return }
         var frame: NSRect
         var host: NSView
@@ -1226,7 +1352,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
     func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! { qlURLs[index] as NSURL }
     func previewPanel(_ panel: QLPreviewPanel!, handle event: NSEvent!) -> Bool {
         if event.type == .keyDown, [123, 124, 125, 126].contains(event.keyCode) {
-            (viewMode == .icons ? grid as NSView : (viewMode == .list ? table : columns.browser)).keyDown(with: event)
+            (viewMode == .icons ? grid as NSView : (viewMode == .list ? table : (viewMode == .gallery ? galleryStrip : columns.browser))).keyDown(with: event)
             return true
         }
         return false

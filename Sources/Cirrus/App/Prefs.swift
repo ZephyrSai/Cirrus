@@ -25,6 +25,8 @@ enum Prefs {
     }
     static var searchSubfolders: Bool { get { d.bool(forKey: "searchSubfolders") } set { d.set(newValue, forKey: "searchSubfolders") } }
     static var calculateSizes: Bool { get { d.bool(forKey: "calculateSizes") } set { d.set(newValue, forKey: "calculateSizes") } }
+    static var showPathBar: Bool { get { d.bool(forKey: "showPathBar") } set { d.set(newValue, forKey: "showPathBar") } }
+    static var showStatusBar: Bool { get { d.bool(forKey: "showStatusBar") } set { d.set(newValue, forKey: "showStatusBar") } }
     static var showPreviewPane: Bool { get { d.bool(forKey: "showPreviewPane") } set { d.set(newValue, forKey: "showPreviewPane") } }
     static var menuBarIcon: Bool { get { d.bool(forKey: "menuBarIcon") } set { d.set(newValue, forKey: "menuBarIcon") } }
     static var favorites: [String] {

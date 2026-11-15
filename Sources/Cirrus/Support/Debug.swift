@@ -83,7 +83,11 @@ enum Debug {
         case "open":
             let t0 = Date()
             if let l = location(arg) { pane?.navigate(to: l); await waitLoaded(pane); log("open \(arg): \(String(format: "%.1f", Date().timeIntervalSince(t0) - 0.7))s") } else { log("unknown location \(arg)") }
-        case "view": pane?.setViewMode(arg == "list" ? .list : (arg == "columns" ? .columns : .icons))
+        case "view": pane?.setViewMode(arg == "list" ? .list : (arg == "columns" ? .columns : (arg == "gallery" ? .gallery : .icons)))
+        case "slowclick":   // slowclick:<index> — the second, slow click on an already-selected name
+            if let p = pane, let i = Int(arg) { p.select(keys: [p.shown[i].key]); p.itemViewSlowClick(i); try? await Task.sleep(nanoseconds: UInt64((NSEvent.doubleClickInterval + 0.3) * 1e9)); log("slowclick: renaming=\(p.renameField != nil || p.renamingItem != nil)"); p.endRename(commit: false) }
+        case "pinch": if let p = pane { let before = p.sizeSlider.doubleValue; p.itemViewMagnify(CGFloat(Double(arg) ?? 0.3)); log("pinch: \(Int(before)) → \(Int(p.sizeSlider.doubleValue))") }
+        case "bars": b?.togglePathBar(nil); b?.toggleStatusBar(nil)
         // Finder features
         case "preview":   // preview, preview:on, preview:off
             if arg.isEmpty || (arg == "on") != Prefs.showPreviewPane { b?.togglePreviewPane(nil) }

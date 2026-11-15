@@ -38,7 +38,7 @@ enum ContextMenu {
             let view = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
             let sub = NSMenu()
             for (t, s, mode) in [("as Icons", #selector(PaneController.setIconView(_:)), ViewMode.icons), ("as List", #selector(PaneController.setListView(_:)), .list),
-                                 ("as Columns", #selector(PaneController.setColumnView(_:)), .columns)] {
+                                 ("as Columns", #selector(PaneController.setColumnView(_:)), .columns), ("as Gallery", #selector(PaneController.setGalleryView(_:)), .gallery)] {
                 let m = NSMenuItem(title: t, action: s, keyEquivalent: ""); m.target = pane; m.state = pane.viewMode == mode ? .on : .off; sub.addItem(m)
             }
             sub.addItem(.separator())

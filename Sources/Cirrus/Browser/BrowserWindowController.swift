@@ -52,7 +52,8 @@ final class BrowserWindowController: NSWindowController, NSToolbarDelegate, NSWi
                                         trackingMode: .momentary, target: nil, action: nil)
     let viewControl = NSSegmentedControl(images: [NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: "Icons")!,
                                                   NSImage(systemSymbolName: "list.bullet", accessibilityDescription: "List")!,
-                                                  NSImage(systemSymbolName: "rectangle.split.3x1", accessibilityDescription: "Columns")!],
+                                                  NSImage(systemSymbolName: "rectangle.split.3x1", accessibilityDescription: "Columns")!,
+                                                  NSImage(systemSymbolName: "rectangle.on.rectangle", accessibilityDescription: "Gallery")!],
                                          trackingMode: .selectOne, target: nil, action: nil)
     let preview = PreviewPaneController()
     lazy var previewItem: NSSplitViewItem = {
@@ -321,6 +322,9 @@ final class BrowserWindowController: NSWindowController, NSToolbarDelegate, NSWi
         for p in panes { p.reload() }
     }
 
+    @objc func togglePathBar(_ sender: Any?) { Prefs.showPathBar.toggle(); for p in panes { p.applyBars() } }
+    @objc func toggleStatusBar(_ sender: Any?) { Prefs.showStatusBar.toggle(); for p in panes { p.applyBars() } }
+
     @objc func togglePreviewPane(_ sender: Any?) {
         Prefs.showPreviewPane.toggle()
         previewItem.animator().isCollapsed = !Prefs.showPreviewPane
@@ -438,6 +442,8 @@ extension BrowserWindowController: NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
         case #selector(togglePreviewPane(_:)): item.title = previewItem.isCollapsed ? "Show Preview" : "Hide Preview"
+        case #selector(togglePathBar(_:)): item.title = Prefs.showPathBar ? "Hide Path Bar" : "Show Path Bar"
+        case #selector(toggleStatusBar(_:)): item.title = Prefs.showStatusBar ? "Hide Status Bar" : "Show Status Bar"
         case #selector(toggleCalculateSizes(_:)): item.state = Prefs.calculateSizes ? .on : .off
         case #selector(toggleSearchSubfolders(_:)): item.state = Prefs.searchSubfolders ? .on : .off
         case #selector(toggleHiddenFiles(_:)): item.state = Prefs.showHidden ? .on : .off

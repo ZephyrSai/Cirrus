@@ -197,6 +197,28 @@ protocol ItemViewHost: AnyObject {
     func itemViewMenu(for indexes: IndexSet) -> NSMenu?
     func itemViewKey(_ event: NSEvent) -> Bool
     func itemViewSelectionChanged()
+    /// A single click on the name of the item that was already the only selection (Finder's slow double-click).
+    func itemViewSlowClick(_ index: Int)
+    func itemViewCancelSlowRename()
+    func itemViewMagnify(_ amount: CGFloat)
+    func itemViewSwipe(back: Bool)
+    func itemViewForceClick(_ index: Int?)
+}
+
+/// Finder's trackpad gestures, shared by the icon and list views.
+@MainActor
+enum Gestures {
+    /// Two-finger horizontal swipe = Back / Forward (when that's turned on in System Settings).
+    static func trackSwipe(_ event: NSEvent, host: ItemViewHost?) -> Bool {
+        guard NSEvent.isSwipeTrackingFromScrollEventsEnabled, event.phase == .began,
+              abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) * 1.5, abs(event.scrollingDeltaX) > 1 else { return false }
+        var done = false
+        event.trackSwipeEvent(options: [.lockDirection, .clampGestureAmount], dampenAmountThresholdMin: -1, max: 1) { amount, phase, complete, _ in
+            if complete && !done && abs(amount) >= 0.5 { done = true; MainActor.assumeIsolated { host?.itemViewSwipe(back: amount > 0) } }
+            _ = phase
+        }
+        return true
+    }
 }
 
 final class GridCollectionView: NSCollectionView {
@@ -204,11 +226,33 @@ final class GridCollectionView: NSCollectionView {
     var flatIndex: ((IndexPath) -> Int?)?
 
     override func mouseDown(with event: NSEvent) {
+        host?.itemViewCancelSlowRename()
+        let p = convert(event.locationInWindow, from: nil)
+        let ip = indexPathForItem(at: p)
+        let plain = event.modifierFlags.intersection([.command, .shift, .option, .control]).isEmpty
+        let wasOnlySelection = ip != nil && selectionIndexPaths == [ip!] && event.clickCount == 1 && plain
+        let onName: Bool = {
+            guard let ip, let cell = item(at: ip) as? IconCell, !cell.label.isHidden else { return false }
+            return cell.label.frame.insetBy(dx: -4, dy: -3).contains(cell.view.convert(event.locationInWindow, from: nil))
+        }()
         super.mouseDown(with: event)
         if event.clickCount == 2 {
-            let p = convert(event.locationInWindow, from: nil)
-            if let ip = indexPathForItem(at: p), let i = flatIndex?(ip) { host?.itemView(doubleClicked: i) }
+            if let ip, let i = flatIndex?(ip) { host?.itemView(doubleClicked: i) }
+        } else if wasOnlySelection, onName, let ip, let i = flatIndex?(ip) {
+            host?.itemViewSlowClick(i)
         }
+    }
+
+    override func magnify(with event: NSEvent) { host?.itemViewMagnify(event.magnification) }
+    override func swipe(with event: NSEvent) { if event.deltaX != 0 { host?.itemViewSwipe(back: event.deltaX > 0) } }
+    override func scrollWheel(with event: NSEvent) { if !Gestures.trackSwipe(event, host: host) { super.scrollWheel(with: event) } }
+    private var forceStage = 0
+    override func pressureChange(with event: NSEvent) {
+        if event.stage == 2 && forceStage < 2 {
+            let ip = indexPathForItem(at: convert(event.locationInWindow, from: nil))
+            host?.itemViewForceClick(ip.flatMap { flatIndex?($0) })
+        }
+        forceStage = event.stage
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -237,6 +281,33 @@ final class GridCollectionView: NSCollectionView {
 
 final class ListTableView: NSTableView {
     weak var host: ItemViewHost?
+
+    override func mouseDown(with event: NSEvent) {
+        host?.itemViewCancelSlowRename()
+        let p = convert(event.locationInWindow, from: nil)
+        let r = row(at: p), c = column(at: p)
+        let plain = event.modifierFlags.intersection([.command, .shift, .option, .control]).isEmpty
+        let wasOnlySelection = r >= 0 && selectedRowIndexes == [r] && event.clickCount == 1 && plain
+        let onName: Bool = {
+            guard r >= 0, c >= 0, tableColumns[c].identifier.rawValue == "name",
+                  let cell = view(atColumn: c, row: r, makeIfNecessary: false) as? NameCellView else { return false }
+            return cell.name.frame.insetBy(dx: -2, dy: -2).contains(cell.convert(event.locationInWindow, from: nil))
+        }()
+        super.mouseDown(with: event)
+        if wasOnlySelection && onName { host?.itemViewSlowClick(r) }
+    }
+
+    override func magnify(with event: NSEvent) { host?.itemViewMagnify(event.magnification) }
+    override func swipe(with event: NSEvent) { if event.deltaX != 0 { host?.itemViewSwipe(back: event.deltaX > 0) } }
+    override func scrollWheel(with event: NSEvent) { if !Gestures.trackSwipe(event, host: host) { super.scrollWheel(with: event) } }
+    private var forceStage = 0
+    override func pressureChange(with event: NSEvent) {
+        if event.stage == 2 && forceStage < 2 {
+            let r = row(at: convert(event.locationInWindow, from: nil))
+            host?.itemViewForceClick(r >= 0 ? r : nil)
+        }
+        forceStage = event.stage
+    }
     override func menu(for event: NSEvent) -> NSMenu? {
         let p = convert(event.locationInWindow, from: nil)
         let row = self.row(at: p)
