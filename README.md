@@ -17,6 +17,7 @@ A native app for browsing, moving, syncing and backing up iCloud Drive and iClou
 - **Managed transfers.** A real queue with speed and time left, size checks before anything starts, automatic retries, and no idle sleep while files move.
 - **Sync jobs.** Copy, mirror or two-way sync a folder with iCloud Drive: by hand, on a schedule, or when a drive is plugged in. You always see a preview first.
 - **Back Up iCloud.** Checks space, then downloads everything as ordinary files and folders on a drive you choose. Photos are sorted into `YYYY/MM` folders with their Live Photo videos, edits and RAW files. Later runs fetch only what's new.
+- **iCloud ⇄ Google.** Move iCloud Drive and Photos to Google Drive and Google Photos, or bring Google Drive and a Google Takeout export of your photos into iCloud. Albums and favorites come along. Runs are resumable and incremental, and nothing is ever deleted.
 - **Two ways in.** Uses the Mac's own iCloud when it's signed in. Otherwise, sign in to one or more Apple IDs the way iCloud.com does, including two-factor and Advanced Data Protection approval.
 
 ## Privacy and safety
@@ -34,7 +35,7 @@ A native app for browsing, moving, syncing and backing up iCloud Drive and iClou
 |---|---|
 | **macOS 14+** (Apple silicon and Intel) | Available: AppKit app |
 | **Windows 10/11** (x64 and Arm64) | Preview: WPF app with the same engine, ported to .NET |
-| **iCloud ⇄ Google Drive / Google Photos** | In development |
+| **iCloud ⇄ Google Drive / Google Photos** | Available in the Mac app (bring your own free Google Cloud OAuth client); coming to Windows |
 
 ## Building
 

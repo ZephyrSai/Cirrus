@@ -305,16 +305,35 @@ footer p { margin: 6px 0; max-width: 640px; }
   </div>
 </section>
 
+<section id="google" style="padding-top:0">
+  <div class="wrap">
+    <div class="split" style="align-items:center">
+      <div class="reveal">
+        <div class="eyebrow">iCloud ⇄ Google</div>
+        <h2>Leaving iCloud? Coming back?</h2>
+        <p class="lede">Move iCloud Drive and Photos to Google Drive and Google Photos, with albums, favorites and Live Photo videos. Or go the other way: bring Google Drive into iCloud Drive (Docs, Sheets and Slides become Word, Excel and PowerPoint files), and Google Photos from a Google Takeout export, with dates and albums intact.</p>
+        <ul style="color:var(--ink2);margin:18px 0 0;padding-left:20px;font-size:16px">
+          <li>Checks space on both sides before anything moves</li>
+          <li>Resumable and incremental: re-runs only send what's new</li>
+          <li>Never deletes your originals, and respects read-only mode</li>
+          <li>You connect with your own free Google Cloud client, so no third-party server ever sees your data</li>
+        </ul>
+      </div>
+      <div class="reveal shotcol"><div class="frame"><img data-shot="google" alt="Cirrus Move to Google window with a space check" width="1240" height="1616"></div></div>
+    </div>
+  </div>
+</section>
+
 <section id="download" style="padding-top:0">
   <div class="wrap">
     <div class="reveal">
       <div class="eyebrow">Get it</div>
-      <h2>Mac today. Windows and Google next.</h2>
+      <h2>Mac today. Windows in preview.</h2>
     </div>
     <div class="road">
       <div class="card reveal"><span class="tag now">Available</span><h3>Cirrus for Mac</h3><p>Universal app for Apple silicon and Intel, macOS 14 or later. Free and open source under GPL v3.</p><p><a href="https://github.com/ZephyrSai/Cirrus/releases/latest">Download the latest release →</a></p></div>
       <div class="card reveal"><span class="tag soon">Preview</span><h3>Cirrus for Windows</h3><p>A native Windows 10 and 11 app on .NET with the same engine: browse, transfer, back up — and it can use iCloud for Windows' folders when they're there.</p></div>
-      <div class="card reveal"><span class="tag soon">In development</span><h3>iCloud ⇄ Google</h3><p>Move iCloud Drive and Photos to Google Drive and Google Photos — or the other way round, including Google Takeout imports — resumable and incremental.</p></div>
+      <div class="card reveal"><span class="tag now">New</span><h3>iCloud ⇄ Google</h3><p>Built into Cirrus for Mac (Sync › Move to or from Google…), both directions. Coming to the Windows app next.</p></div>
     </div>
   </div>
 </section>
@@ -341,6 +360,7 @@ footer p { margin: 6px 0; max-width: 640px; }
       <details><summary>What about Advanced Data Protection?</summary><p>It works. Turn on “Access iCloud Data on the Web” on your iPhone and approve the prompt Cirrus triggers, exactly like iCloud.com.</p></details>
       <details><summary>Can it delete my stuff by accident?</summary><p>Deletions only ever move items to the Trash or to iCloud's Recently Deleted (recoverable for 30 days). Backups never write to iCloud, sync runs are previewed and stop if they'd remove an unusual share of files, replacing a file uploads the new one before retiring the old, and read-only mode blocks every change to iCloud.</p></details>
       <details><summary>Where is my data stored?</summary><p>Your files stay in iCloud and wherever you copy them. Cirrus keeps thumbnails and recently opened files in your user Library with owner-only permissions; temporary copies are removed after a day and everything for an account is wiped when you sign out.</p></details>
+      <details><summary>Why do I need my own Google Cloud client?</summary><p>So your Google data goes straight between Google and your Mac, with no Cirrus server in the middle. Creating the client is free and takes a few minutes; Cirrus shows each step. Your Google sign-in stays in this Mac's Keychain and unlocks with Touch ID.</p></details>
       <details><summary>Why does macOS warn me the first time I open it?</summary><p>Releases may not be notarized yet. Open it once with System Settings › Privacy &amp; Security › Open Anyway. You can also build it yourself — it's one script.</p></details>
       <details><summary>How big can files be?</summary><p>iCloud Drive stores files up to 50 GB. Uploads through iCloud's web services have been reported to stop around 10 GB, so Cirrus warns above that. FAT32 drives can't hold files over 4 GB, and Cirrus skips those with a clear message.</p></details>
     </div>
@@ -386,6 +406,7 @@ footer p { margin: 6px 0; max-width: 640px; }
     ['info', 'Get Info', 'Everything about a file or photo', 'Dimensions, capture and added dates, Live Photo and RAW details, iCloud status.', ['Large preview', 'Floats beside your window', 'Updates with your selection']],
     ['transfers', 'Transfers', 'A real transfer queue', 'Speed, time left, stop and retry. Your Mac won’t idle-sleep while files move.', ['Automatic retries', 'Show in Finder when done', 'Menu bar progress']],
     ['picker', 'Copy To…', 'Pick any iCloud destination', 'Browse iCloud Drive folders and albums, make a new one, or choose any folder on your Mac.', ['Folders load as you expand', 'New Folder / New Album', 'Hands off to the Mac chooser']],
+    ['google', 'Google', 'Move to or from Google', 'iCloud Drive and Photos to Google Drive and Google Photos — or Google Drive and a Takeout export back into iCloud.', ['Space checked on both sides first', 'Albums and favorites recreated', 'Resumes where it stopped; never deletes']],
     ['sync', 'Sync jobs', 'Copy, mirror or two-way', 'Run manually, on a schedule or when a drive connects — always with a preview of what changes.', ['Removed files go to the Trash', 'Conflicts keep both copies', 'Stops on unusually large deletions']],
     ['signin', 'Sign in', 'Sign in like iCloud.com', 'Fill from the Passwords app, two-factor codes from Messages, Touch ID for saved passwords.', ['Password goes only to Apple', 'Session stays in this Mac’s Keychain', 'Several Apple IDs at once']],
     ['prefs', 'Settings', 'Safety first', 'Read-only iCloud mode, Touch ID for saved passwords, cache controls.', ['Menu bar and login options', 'Simultaneous transfers', 'Clear caches any time']],
