@@ -57,7 +57,11 @@ public final class AccountManager {
     /// Is this Mac signed in to iCloud with iCloud Drive on?
     public static var nativeDriveRoot: URL? {
         if let o = ProcessInfo.processInfo.environment["CIRRUS_NATIVE_DRIVE"] { return URL(fileURLWithPath: o, isDirectory: true) }
+        #if os(macOS)
         let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
+        #else
+        let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
+        #endif
         var isDir: ObjCBool = false
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue ? url : nil
     }

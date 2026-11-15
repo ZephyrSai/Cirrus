@@ -35,9 +35,56 @@ public final class ContentDownloader: NSObject, URLSessionDownloadDelegate, @unc
         session = URLSession(configuration: c, delegate: self, delegateQueue: nil)
     }
 
+    #if os(iOS)
+    /// iOS: large downloads also go through a background URLSession, so they keep going while the app is in
+    /// the background. That session never carries iCloud cookies (the system follows redirects for it, so we
+    /// couldn't keep cookies away from other hosts); a 401/403 there falls back to the normal session.
+    private var background: URLSession?
+    private var backgroundMinimum: Int64 = .max
+    private var backgroundEventsDone: (() -> Void)?
+
+    /// Call once at launch (this also re-attaches to downloads the system finished while the app was suspended).
+    public func enableBackgroundDownloads(identifier: String, minimumSize: Int64 = 4 << 20) {
+        lock.withLock {
+            guard background == nil else { return }
+            let c = URLSessionConfiguration.background(withIdentifier: identifier)
+            c.sessionSendsLaunchEvents = true
+            c.isDiscretionary = false
+            c.httpCookieStorage = nil
+            c.httpShouldSetCookies = false
+            c.urlCache = nil
+            c.timeoutIntervalForRequest = 60
+            c.timeoutIntervalForResource = 60 * 60 * 24
+            c.httpMaximumConnectionsPerHost = 6
+            background = URLSession(configuration: c, delegate: self, delegateQueue: nil)
+            backgroundMinimum = minimumSize
+        }
+    }
+
+    /// Hand over the handler from `application(_:handleEventsForBackgroundURLSession:completionHandler:)`.
+    public func setBackgroundEventsCompletion(_ done: @escaping () -> Void) { lock.withLock { backgroundEventsDone = done } }
+
+    public func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        let done = lock.withLock { () -> (() -> Void)? in let d = backgroundEventsDone; backgroundEventsDone = nil; return d }
+        if let done { DispatchQueue.main.async { done() } }
+    }
+    #endif
+
     /// Downloads one URL (no redirect following) into a temp file and returns it with the response.
     func fetch(_ request: URLRequest, expected: Int64, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> (URL, HTTPURLResponse) {
-        let task = session.downloadTask(with: request)
+        #if os(iOS)
+        if let bg = lock.withLock({ expected >= backgroundMinimum ? background : nil }) {
+            var plain = request
+            plain.setValue(nil, forHTTPHeaderField: "Cookie")
+            let (file, h) = try await run(bg.downloadTask(with: plain), expected: expected, progress: progress)
+            guard h.statusCode == 401 || h.statusCode == 403, request.value(forHTTPHeaderField: "Cookie") != nil else { return (file, h) }
+            try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
+        }
+        #endif
+        return try await run(session.downloadTask(with: request), expected: expected, progress: progress)
+    }
+
+    private func run(_ task: URLSessionDownloadTask, expected: Int64, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> (URL, HTTPURLResponse) {
         let job = Job(progress: progress, expected: expected)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<(URL, HTTPURLResponse), Error>) in

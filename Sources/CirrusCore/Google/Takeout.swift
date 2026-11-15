@@ -310,6 +310,9 @@ enum Shell {
     struct Output { var status: Int32; var out: Data; var err: Data }
 
     static func run(_ exe: String, _ args: [String]) async throws -> Output {
+        #if !os(macOS)
+        throw ICloudError.server("Reading Google Takeout archives needs the Mac app.")
+        #else
         let p = Process()
         p.executableURL = URL(fileURLWithPath: exe)
         p.arguments = args
@@ -336,5 +339,6 @@ enum Shell {
         } onCancel: {
             if p.isRunning { p.terminate() }
         }
+        #endif
     }
 }

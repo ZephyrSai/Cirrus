@@ -1,6 +1,8 @@
+#if os(macOS)
 import AppKit
-import Foundation
 import ImageCaptureCore
+#endif
+import Foundation
 
 public struct VolumeInfo: Hashable, Sendable {
     public var url: URL
@@ -37,6 +39,7 @@ public struct VolumeInfo: Hashable, Sendable {
     }
 }
 
+#if os(macOS)
 public struct DeviceItem: Hashable, Sendable {
     public var deviceID: String
     public var itemID: String
@@ -214,3 +217,4 @@ public final class DeviceManager: NSObject, ICDeviceBrowserDelegate, ICCameraDev
 
     public func eject(camera id: String) { camera(id)?.requestEject() }
 }
+#endif

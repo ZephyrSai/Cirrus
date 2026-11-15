@@ -1,13 +1,13 @@
 # Building Cirrus
 
-Cirrus ships as two native apps that share one design:
+Cirrus ships as native apps that share one design:
 
-| | macOS | Windows |
-|---|---|---|
-| UI | Swift / AppKit (`Sources/Cirrus`) | C# / WPF (`windows/src/Cirrus.App`) |
-| Engine | `Sources/CirrusCore` (Swift) | `windows/src/Cirrus.Core` (C#, cross-platform port of CirrusCore) |
-| Tests | `Tests/CirrusCoreTests` (Swift Testing) | `windows/tests/Cirrus.Core.Tests` (xUnit; runs on macOS, Linux and Windows) |
-| Output | `build/Cirrus.app`, `build/dist/Cirrus-<version>[-tester]-mac.{dmg,zip}` | `build/dist/Cirrus-<version>[-tester]-win-{x64,arm64}.zip` |
+| | macOS | iPhone and iPad | Windows |
+|---|---|---|---|
+| UI | Swift / AppKit (`Sources/Cirrus`) | SwiftUI (`ios/Cirrus`) | C# / WPF (`windows/src/Cirrus.App`) |
+| Engine | `Sources/CirrusCore` (Swift) | the same `Sources/CirrusCore`, as a Swift package product | `windows/src/Cirrus.Core` (C#, cross-platform port of CirrusCore) |
+| Tests | `Tests/CirrusCoreTests` (Swift Testing) | the engine tests (run on the Mac) | `windows/tests/Cirrus.Core.Tests` (xUnit; runs on macOS, Linux and Windows) |
+| Output | `build/Cirrus.app`, `build/dist/Cirrus-<version>[-tester]-mac.{dmg,zip}` | `build/ios/Cirrus.app`, optionally `build/dist/Cirrus-<version>[-tester]-ios.ipa` | `build/dist/Cirrus-<version>[-tester]-win-{x64,arm64}.zip` |
 
 Both apps reach iCloud the same way: they sign in like iCloud.com (SRP-6a, two-factor, Advanced Data Protection consent) or use the computer's own iCloud (the Mac's iCloud Drive and Photos, or the iCloud for Windows folders).
 
@@ -53,6 +53,120 @@ Without notarization, other Macs need **System Settings › Privacy & Security �
 ```bash
 TESTER=1 SIGN_IDENTITY="Developer ID Application: …" NOTARY_PROFILE=cirrus scripts/package-mac.sh
 ```
+
+---
+
+## iPhone and iPad
+
+Cirrus for iOS isn't on the App Store. You build it yourself and install it on your own devices, or hand it to testers as an ad hoc build or through internal TestFlight.
+
+Requirements:
+- Xcode 26 or later, with the iOS 26 SDK. That SDK has `BGContinuedProcessingTask`; it was built and tested here with Xcode 27.2.
+- Devices: iOS or iPadOS 17 or later.
+
+The project is `ios/Cirrus.xcodeproj`, which is hand-maintained and committed:
+- The app target, `CirrusMobile`, uses a *synchronized folder*: every file under `ios/Cirrus/` is compiled, with no project edits needed.
+- It links the engine as the `CirrusCore` product of the local Swift package at the repository root, the same sources as the Mac app.
+- `Info.plist` is `ios/Support/Info.plist`.
+
+### Build and install from Xcode
+
+1. Open `ios/Cirrus.xcodeproj`, choose the **Cirrus** scheme and your iPhone or iPad.
+2. In **CirrusMobile › Signing & Capabilities**, choose a **Team**:
+   - **Free Apple ID.** Add it in Xcode › Settings › Accounts; it appears as "*Your Name* (Personal Team)".
+     - Change the **Bundle Identifier** to one nobody has used, e.g. `io.github.<you>.cirrus`.
+     - Apps signed this way expire after **7 days**. Run from Xcode again to re-sign; your data stays.
+     - At most 3 such apps per device. No ad hoc or TestFlight.
+   - **Paid Apple Developer Program** account. Builds last a year, and you get ad hoc and TestFlight distribution.
+3. On the device:
+   - Turn on **Settings › Privacy & Security › Developer Mode** and restart when asked.
+   - With a free account, also trust yourself once in **Settings › General › VPN & Device Management**.
+4. Press **Run**.
+
+### `scripts/build-ios.sh`
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TEAM_ID` | none: unsigned | Your team ID (Xcode › Settings › Accounts, or developer.apple.com › Membership). Without it, the device build is unsigned: a compile check that won't install. |
+| `SIGN_IDENTITY` | Xcode's choice | Signing identity (SHA-1 or name). |
+| `BUNDLE_ID` | `io.github.zephyrsai.cirrus.ios` | Bundle identifier. |
+| `CONFIG` | `Release` | `Debug` adds the Simulator screenshot hooks (see below). |
+| `TESTER` | `0` | `1` = tester build: starts in read-only iCloud mode. |
+| `VERSION` | `1.0.0` | `CFBundleShortVersionString`. The build number is the git commit count. |
+| `SIMULATOR` | `0` | `1` also builds `build/ios/Simulator/Cirrus.app`. |
+| `IPA` | none | Also archive and export `build/dist/Cirrus-<version>[-tester]-ios.ipa`. The value is the export method: `development`, `release-testing` (ad hoc) or `app-store-connect` (TestFlight). |
+| `INSTALL` | `0` | `1` installs on the connected iPhone or iPad with `xcrun devicectl`. |
+| `ALLOW_PROVISIONING` | `0` | `1` passes `-allowProvisioningUpdates`, so Xcode can create or refresh profiles using the account signed in to Xcode. |
+
+```bash
+scripts/build-ios.sh                                            # unsigned device build: does it compile?
+SIMULATOR=1 CONFIG=Debug scripts/build-ios.sh                   # plus a Simulator build
+TEAM_ID=ABCDE12345 ALLOW_PROVISIONING=1 INSTALL=1 scripts/build-ios.sh
+TESTER=1 TEAM_ID=ABCDE12345 IPA=release-testing ALLOW_PROVISIONING=1 scripts/build-ios.sh
+```
+
+Release builds are checked for the Debug-only hooks: the script fails if `CIRRUS_SCREEN` appears in the binary.
+
+### Giving it to others
+
+- **Ad hoc** (paid account, up to 100 devices of each kind a year):
+  1. Register each tester's device UDID under developer.apple.com › Certificates, IDs & Profiles › Devices.
+  2. Build with `IPA=release-testing`, which embeds a profile listing those devices.
+  3. Testers install the `.ipa` with Apple Configurator, Finder (drag it onto the device's window), or `xcrun devicectl device install app`.
+- **Internal TestFlight** (paid account, up to 100 testers on your App Store Connect team, no App Review):
+  1. Create the app record in App Store Connect; it's never published.
+  2. Build with `IPA=app-store-connect` and upload with Transporter.
+  3. Testers install from the TestFlight app. Builds expire after 90 days.
+- **Tester builds** (`TESTER=1`) start in read-only mode, so nothing in iCloud can change until a tester turns it off in Settings.
+
+### Simulator and demo mode
+
+The Simulator needs an iOS Simulator runtime (Xcode › Settings › Components). The demo account works without an Apple ID: turn on **Settings › Demo account** in the app, or set `CIRRUS_DEMO=1` in the scheme.
+
+Debug builds open a given screen at launch, so screenshots can be taken headlessly:
+
+```bash
+xcrun simctl boot "iPhone 17 Pro"
+xcrun simctl install booted build/ios/Simulator/Cirrus.app
+SIMCTL_CHILD_CIRRUS_DEMO=1 SIMCTL_CHILD_CIRRUS_SCREEN=photos xcrun simctl launch booted io.github.zephyrsai.cirrus.ios
+xcrun simctl io booted screenshot photos.png
+```
+
+Available screens:
+- Drive: `drive`, `drive-grid`, `drive-folder`, `quicklook`, `trash`
+- Photos: `photos`, `photo`, `albums`, `album`, `export`, `device-photos`
+- Everything else: `transfers`, `backup`, `accounts`, `settings`, `signin`, `code`
+
+`CIRRUS_READ_ONLY=0` or `1` sets read-only mode. All of these are compiled out of Release builds.
+
+### iOS-specific behaviour
+
+- **Accounts.**
+  - Sign in to any number of Apple IDs the way iCloud.com does, with two-factor codes (SMS codes AutoFill) and Advanced Data Protection approval.
+  - Passwords AutoFill from the Passwords app. A saved password stays in this device's keychain (`ThisDeviceOnly`, never synced) and is released only after Face ID, Touch ID or the passcode; this can be turned off in Settings.
+  - **This iPhone/iPad** shows the device's own Photos library through PhotoKit. iOS doesn't let apps read the device's iCloud Drive folder, so iCloud Drive always comes from an Apple ID signed in to Cirrus.
+- **Downloads keep going in the background.** Files of 4 MB or more download through a background `URLSession`. That session never carries iCloud cookies: the system follows redirects for it, so Cirrus couldn't keep cookies away from other hosts. When a download there is refused (401/403), it's retried in the normal session. Uploads ask for the usual background grace period.
+- **Long runs.**
+  - Back Up iCloud and Export use `BGContinuedProcessingTask` on iOS 26 and later (identifiers `<bundle id>.run.*`). The system shows their progress and lets you stop them; running again continues where it stopped.
+  - On iOS 17–25 they get the background grace period, and the screen stays awake while Cirrus is in front.
+- **Files and drives.**
+  - Downloads, exports and backups go to a folder you pick with the document picker: this device, a USB drive or SD card, or a file server. Cirrus remembers it as a bookmark.
+  - Nothing already there is overwritten: new files get " 2" names, and a re-run skips files that are already complete.
+  - Backups refuse folders in iCloud Drive. In read-only mode, exports refuse them too.
+  - A space check (free space minus queued transfers) and the FAT32 4 GB check run before anything starts.
+- **Packages** from iCloud Drive (Pages, Keynote, Numbers bundles) arrive as zips. On iOS they're expanded in-process by `ZipReader`, which refuses unsafe paths and checks every CRC. The Mac keeps using `ditto`.
+- **Caches** live in `Library/Caches/Cirrus` with the Mac's layout: listings, hashed thumbnails, and per-account Open and Preview copies.
+  - Quick Look editing is off, so preview copies never hold edits.
+  - Signing out wipes that account's caches. **Settings › Clear Caches** wipes them all.
+  - `Documents` (Files › On My iPhone › Cirrus) holds only what you save there.
+- **Not in this version** (possible later phases):
+  - scheduled or automatic syncs
+  - two-way folder sync
+  - importing from cameras and other devices
+  - a File Provider extension showing iCloud Drive inside the Files app
+  - folder uploads
+  - Live Photo pairs from the Photos picker (the still is uploaded)
+  - Moving to or from Google. Takeout reading uses `bsdtar`, and the OAuth flow would need an iOS client with `ASWebAuthenticationSession`.
 
 ---
 

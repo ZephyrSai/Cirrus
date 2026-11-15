@@ -348,11 +348,18 @@ public final class BackupEngine: @unchecked Sendable {
             let other = s.categories.filter { !["photos", "docs", "documents"].contains($0.key.lowercased()) }.reduce(0) { $0 + $1.bytes }
             if other > 0 { ev.warnings.append("\(other.byteString) of your iCloud storage (device backups, Mail, Messages and app data) can’t be downloaded through iCloud.com and isn’t included.") }
         }
+        #if os(macOS)
+        let encryptHint = "use an encrypted APFS drive (Disk Utility › Erase › APFS (Encrypted))"
+        let internalWarning = "The destination is this Mac’s startup disk. For a real backup, choose an external drive."
+        #else
+        let encryptHint = "use a drive formatted as APFS (Encrypted) on a Mac"
+        let internalWarning = "The destination is this device’s own storage. For a real backup, choose a USB drive or a folder on another device."
+        #endif
         if let v = ev.volume, !v.isRoot, (try? v.url.resourceValues(forKeys: [.volumeIsEncryptedKey]).volumeIsEncrypted) == false {
-            ev.warnings.append("“\(v.name)” isn’t encrypted, so anyone with the drive can read this backup. For private data, use an encrypted APFS drive (Disk Utility › Erase › APFS (Encrypted)).")
+            ev.warnings.append("“\(v.name)” isn’t encrypted, so anyone with the drive can read this backup. For private data, \(encryptHint).")
         }
         if ev.volume?.isRoot == true {
-            ev.warnings.append("The destination is this Mac’s startup disk. For a real backup, choose an external drive.")
+            ev.warnings.append(internalWarning)
         }
         return ev
     }
