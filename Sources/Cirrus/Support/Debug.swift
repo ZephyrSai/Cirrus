@@ -173,6 +173,11 @@ enum Debug {
             if let w = app.backupWindow, let i = w.accounts.firstIndex(where: { $0.id == arg }) { w.accountPopup.selectItem(at: i); w.optionsChanged() }
         case "backuprun":
             app.backupWindow?.runNow()
+        case "uploadbg":   // like upload, but returns at once (to see what the window shows meanwhile)
+            if let p = pane, let d = await Ops.shared.destination(for: p.location) {
+                let files = arg.split(separator: ",").map { URL(fileURLWithPath: String($0)) }
+                Task { await Ops.shared.deliver(files: files, to: d, move: false, window: p.view.window) }
+            }
         case "upload":
             if let p = pane, let d = await Ops.shared.destination(for: p.location) {
                 await Ops.shared.deliver(files: arg.split(separator: ",").map { URL(fileURLWithPath: String($0)) }, to: d, move: false, window: p.view.window)

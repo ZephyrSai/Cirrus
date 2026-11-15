@@ -146,8 +146,15 @@ final class Ops {
     // MARK: Transfers (the copy/move matrix)
 
     /// Local files (from Finder, another app, or this app's local panes) into a destination.
+    /// Transfers queued since `ids` was taken (to tell whether an action ended up doing anything).
+    static func queued(since ids: Set<UUID>) -> Bool { TransferManager.shared.transfers.contains { !ids.contains($0.id) } }
+    static var queueIDs: Set<UUID> { Set(TransferManager.shared.transfers.map(\.id)) }
+
     func deliver(files: [URL], to dest: Destination, move: Bool, window: NSWindow?, cleanupTemp: URL? = nil) async {
         guard !files.isEmpty else { return }
+        let before = Self.queueIDs
+        if cleanupTemp == nil { TransferNotice.shared.preparing(files.count, to: dest, move: move, window: window) }
+        defer { if cleanupTemp == nil { TransferNotice.shared.donePreparing(queuedAnything: Self.queued(since: before)) } }
         var files = files
         if cleanupTemp == nil {
             let verb: String
@@ -280,6 +287,9 @@ final class Ops {
 
     /// Items shown in Cirrus (any source) into a destination.
     func transfer(_ items: [Item], to dest: Destination, move: Bool, window: NSWindow?) async {
+        let before = Self.queueIDs
+        TransferNotice.shared.preparing(items.count, to: dest, move: move, window: window)
+        defer { TransferNotice.shared.donePreparing(queuedAnything: Self.queued(since: before)) }
         let local = items.compactMap(\.localURL)
         if !local.isEmpty { await deliver(files: local, to: dest, move: move, window: window) }
         let remote = items.filter { $0.localURL == nil }
@@ -363,6 +373,9 @@ final class Ops {
 
     /// Remote items (Drive, Photos, devices, albums) into a local folder, with conflict handling.
     func download(_ items: [Item], to dir: URL, window: NSWindow?, moveSource: Bool = false) async {
+        let before = Self.queueIDs
+        TransferNotice.shared.preparingDownload(items.count, to: dir, window: window)
+        defer { TransferNotice.shared.donePreparing(queuedAnything: Self.queued(since: before)) }
         let dest = Destination.local(dir)
         let pre = await Preflight.checkDownload(items, to: dir)
         guard await Preflight.confirm(pre, verb: "Download", destination: "“\(dest.title)”", window: window) else { return }

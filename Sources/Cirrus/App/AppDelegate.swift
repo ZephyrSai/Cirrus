@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let a = ProcessInfo.processInfo.environment["CIRRUS_APPEARANCE"] { NSApp.appearance = NSAppearance(named: a == "light" ? .aqua : .darkAqua) }
         #endif
         NSApp.mainMenu = MainMenu.build(self)
+        TransferNotice.start()
         Paths.cleanCaches()
         AccountManager.shared.load()
         SyncStore.shared.load()
