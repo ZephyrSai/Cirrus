@@ -3,3 +3,7 @@ build/
 .swiftpm/
 *.xcodeproj
 .DS_Store
+
+# The iOS app project is hand-written and committed; per-user Xcode state is not.
+!ios/Cirrus.xcodeproj/
+xcuserdata/

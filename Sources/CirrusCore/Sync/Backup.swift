@@ -41,6 +41,11 @@ public final class PhotoExporter: @unchecked Sendable {
         if let d = try? JSONEncoder().encode(m) { try? d.write(to: manifestURL, options: .atomic) }
     }
 
+    /// Paths read back from the manifest stay inside the export folder.
+    static func isSafeRelative(_ rel: String) -> Bool {
+        !rel.isEmpty && !rel.hasPrefix("/") && !rel.contains("\\") && !rel.split(separator: "/").contains { $0 == ".." || $0 == "." }
+    }
+
     static func folder(for date: Date?, layout: String) -> String {
         guard layout != "flat", !layout.isEmpty else { return "" }
         guard let date else { return "Unknown Date" }
@@ -74,30 +79,39 @@ public final class PhotoExporter: @unchecked Sendable {
         var files = [PlannedFile]()
         var pending = [PlannedFile]()
         let fm = FileManager.default
+        /// A planned path we may not use: another item owns it, or a file that isn't this item's is already there.
+        func clashes(_ p: PlannedFile, _ a: PhotoAsset) -> Bool {
+            if let owner = taken[p.rel.lowercased()], owner != a.id { return true }
+            guard let size = (try? fm.attributesOfItem(atPath: dest.appendingPathComponent(p.rel).path)[.size] as? Int64) else { return false }
+            // Something is there already. Only an identical-size copy of this very file counts as ours
+            // (an earlier export whose manifest was lost); anything else belongs to the user and is kept.
+            return !(p.size > 0 && size == p.size)
+        }
         for a in assets.sorted(by: { ($0.created ?? .distantPast) < ($1.created ?? .distantPast) }) {
             var planned = [PlannedFile]()
-            if let e = manifest.assets[a.id], let first = e.files.first {
-                // Reuse the paths chosen on earlier runs.
+            if let e = manifest.assets[a.id], let first = e.files.first, Self.isSafeRelative(first) {
+                // Reuse the paths chosen on earlier runs (unless another item now claims one of them).
                 let stem = ((first as NSString).lastPathComponent as NSString).deletingPathExtension
                 let dir = (first as NSString).deletingLastPathComponent
                 planned = plannedFiles(a, dir: dir, stem: stem)
-                for p in planned where taken[p.rel.lowercased()] == nil { taken[p.rel.lowercased()] = a.id }
-            } else {
+                if planned.contains(where: { p in taken[p.rel.lowercased()].map { $0 != a.id } ?? false }) { planned = [] }
+            }
+            if planned.isEmpty {
                 let dir = Self.folder(for: a.created, layout: options.photoLayout)
-                var stem = (a.filename as NSString).deletingPathExtension
-                let ext = (a.filename as NSString).pathExtension
-                func rel(_ s: String) -> String { let n = s + (ext.isEmpty ? "" : "." + ext); return dir.isEmpty ? n : dir + "/" + n }
-                if let owner = taken[rel(stem).lowercased()], owner != a.id {
-                    stem += "-" + String(a.id.filter { $0.isLetter || $0.isNumber }.suffix(6))
-                } else if taken[rel(stem).lowercased()] == nil, let size = (try? fm.attributesOfItem(atPath: dest.appendingPathComponent(rel(stem)).path)[.size] as? Int64),
-                          size != a.size, a.size > 0 {
-                    // Different file already sits at this path (not ours): keep it, suffix ours.
-                    stem += "-" + String(a.id.filter { $0.isLetter || $0.isNumber }.suffix(6))
+                let base = (a.filename as NSString).deletingPathExtension
+                let tag = String(a.id.filter { $0.isLetter || $0.isNumber }.suffix(6))
+                // Every file of the item (original, Live Photo video, edit, RAW) must have a free path; otherwise
+                // the item gets a suffixed name. Nothing that is already in the destination is ever replaced.
+                var stem = base
+                for attempt in 1...100 {
+                    planned = plannedFiles(a, dir: dir, stem: stem)
+                    if !planned.contains(where: { clashes($0, a) }) { break }
+                    stem = base + "-" + tag + (attempt > 1 ? "-\(attempt)" : "")
+                    if attempt == 100 { stem = base + "-" + UUID().uuidString.prefix(8); planned = plannedFiles(a, dir: dir, stem: stem) }
                 }
-                planned = plannedFiles(a, dir: dir, stem: stem)
-                for p in planned { taken[p.rel.lowercased()] = a.id }
                 manifest.assets[a.id] = Manifest.Entry(files: planned.map(\.rel), created: a.created, favorite: a.isFavorite, hidden: a.isHidden)
             }
+            for p in planned { taken[p.rel.lowercased()] = a.id }
             for p in planned {
                 files.append(p)
                 let size = (try? fm.attributesOfItem(atPath: dest.appendingPathComponent(p.rel).path)[.size] as? Int64) ?? -1
@@ -137,6 +151,8 @@ public final class PhotoExporter: @unchecked Sendable {
 
     public func run(_ eval: Evaluation, concurrency: Int = 4, progress: @escaping @Sendable (RunProgress) -> Void) async throws -> RunReport {
         let fm = FileManager.default
+        // An export folder inside iCloud Drive is an iCloud write: blocked in read-only mode.
+        try SafetyPolicy.checkLocalWrite(dest)
         try fm.createDirectory(at: dest, withIntermediateDirectories: true)
         let total = eval.pendingBytes
         let counter = Counter()
@@ -168,7 +184,9 @@ public final class PhotoExporter: @unchecked Sendable {
                                 attempt += 1
                                 continue
                             }
-                            try? fm.removeItem(at: target)
+                            // Only our own earlier copy can be here (evaluate never plans over other files), and it
+                            // is retired recoverably (Trash, or .cirrus/Removed on drives without one), never deleted.
+                            if fm.fileExists(atPath: target.path) { try LocalFiles.safeTrash(target, root: self.dest) }
                             try fm.moveItem(at: tmp, to: target)
                             if let d = p.asset.created { try? fm.setAttributes([.creationDate: d, .modificationDate: d], ofItemAtPath: target.path) }
                             report.mutate { $0.copied += 1; $0.bytes += got }
@@ -348,11 +366,18 @@ public final class BackupEngine: @unchecked Sendable {
             let other = s.categories.filter { !["photos", "docs", "documents"].contains($0.key.lowercased()) }.reduce(0) { $0 + $1.bytes }
             if other > 0 { ev.warnings.append("\(other.byteString) of your iCloud storage (device backups, Mail, Messages and app data) can’t be downloaded through iCloud.com and isn’t included.") }
         }
+        #if os(macOS)
+        let encryptHint = "use an encrypted APFS drive (Disk Utility › Erase › APFS (Encrypted))"
+        let internalWarning = "The destination is this Mac’s startup disk. For a real backup, choose an external drive."
+        #else
+        let encryptHint = "use a drive formatted as APFS (Encrypted) on a Mac"
+        let internalWarning = "The destination is this device’s own storage. For a real backup, choose a USB drive or a folder on another device."
+        #endif
         if let v = ev.volume, !v.isRoot, (try? v.url.resourceValues(forKeys: [.volumeIsEncryptedKey]).volumeIsEncrypted) == false {
-            ev.warnings.append("“\(v.name)” isn’t encrypted, so anyone with the drive can read this backup. For private data, use an encrypted APFS drive (Disk Utility › Erase › APFS (Encrypted)).")
+            ev.warnings.append("“\(v.name)” isn’t encrypted, so anyone with the drive can read this backup. For private data, \(encryptHint).")
         }
         if ev.volume?.isRoot == true {
-            ev.warnings.append("The destination is this Mac’s startup disk. For a real backup, choose an external drive.")
+            ev.warnings.append(internalWarning)
         }
         return ev
     }

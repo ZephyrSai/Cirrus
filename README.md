@@ -34,6 +34,7 @@ A native app for browsing, moving, syncing and backing up iCloud Drive and iClou
 | | Status |
 |---|---|
 | **macOS 14+** (Apple silicon and Intel) | Available: AppKit app |
+| **iPhone and iPad** (iOS 17+) | Build from source: SwiftUI app on the same Swift engine, with multiple Apple IDs, exports and backups to USB drives (`ios/`, `scripts/build-ios.sh`) |
 | **Windows 10/11** (x64 and Arm64) | Preview: WPF app with the same engine, ported to .NET |
 | **iCloud ⇄ Google Drive / Google Photos** | Available in the Mac app (bring your own free Google Cloud OAuth client); coming to Windows |
 

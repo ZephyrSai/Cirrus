@@ -92,6 +92,8 @@ public actor ICloudSession {
     var passwordProvider: (@Sendable () async -> String?)?
     var reauthTask: Task<Void, Error>?
     var pcsTasks: [String: Task<Void, Error>] = [:]
+    /// Set by `signOut()`: the session is finished and must never be stored again.
+    var signedOut = false
 
     public init(state: SessionState) {
         self.state = state
@@ -444,14 +446,22 @@ public actor ICloudSession {
         persist()
     }
 
+    /// Ends this session for good (the account was signed out): forgets cookies, tokens and the password
+    /// provider, and from now on never writes the session to the keychain, even if work that was still
+    /// running tries to sign in again. (`AccountManager.signOut` removes the stored copy.)
     public func signOut() {
+        signedOut = true
         state.cookies = []
         state.sessionToken = nil
+        state.trustToken = nil
         state.accountInfoData = nil
-        persist()
+        passwordProvider = nil
+        reauthTask?.cancel()
+        for t in pcsTasks.values { t.cancel() }
     }
 
     func persist() {
+        guard !signedOut else { return }
         if let data = try? JSONEncoder().encode(state) { Keychain.set(data, service: Keychain.sessionService, account: state.appleID) }
         notify(.stateChanged)
     }
@@ -459,6 +469,7 @@ public actor ICloudSession {
     /// Silent re-authentication: accountLogin with stored tokens, then SRP with the remembered
     /// password and trust token. Throws `.needsSignIn` when a human is required.
     func reauthenticate() async throws {
+        if signedOut { throw ICloudError.needsSignIn }
         if let t = reauthTask { return try await t.value }
         let task = Task<Void, Error> {
             if self.state.sessionToken != nil {

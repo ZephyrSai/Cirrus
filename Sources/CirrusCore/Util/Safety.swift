@@ -22,11 +22,24 @@ public enum SafetyPolicy {
     /// Throws when iCloud writes are blocked.
     public static func checkWrite() throws { if readOnlyICloud { throw ReadOnlyError() } }
 
+    /// The user's home folder (on iOS the device's mobile home, not the app container).
+    static var homeDirectory: URL {
+        #if os(macOS)
+        return FileManager.default.homeDirectoryForCurrentUser
+        #else
+        return URL(fileURLWithPath: "/private/var/mobile", isDirectory: true)
+        #endif
+    }
+
     /// The Mac's own iCloud Drive folders (~/Library/Mobile Documents) are iCloud too.
     public static func isICloudPath(_ url: URL) -> Bool {
-        let mobile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Mobile Documents").standardizedFileURL.path
+        let mobile = homeDirectory.appendingPathComponent("Library/Mobile Documents").standardizedFileURL.path
         let p = url.standardizedFileURL.path
         if p == mobile || p.hasPrefix(mobile + "/") { return true }
+        #if !os(macOS)
+        // Files-app folders in iCloud Drive (from the document picker) live under …/Library/Mobile Documents/.
+        if p.contains("/Library/Mobile Documents/") || p.hasSuffix("/Library/Mobile Documents") { return true }
+        #endif
         if let o = ProcessInfo.processInfo.environment["CIRRUS_NATIVE_DRIVE"] { return p.hasPrefix(URL(fileURLWithPath: o).standardizedFileURL.path) }
         return false
     }
@@ -36,7 +49,7 @@ public enum SafetyPolicy {
     public static func touchesICloud(_ url: URL) -> Bool {
         let paths = Set([url.standardizedFileURL.path, url.resolvingSymlinksInPath().path])
         for p in paths where isICloudPath(URL(fileURLWithPath: p)) { return true }
-        let mobile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Mobile Documents").standardizedFileURL.path
+        let mobile = homeDirectory.appendingPathComponent("Library/Mobile Documents").standardizedFileURL.path
         for p in paths where mobile.hasPrefix(p.hasSuffix("/") ? p : p + "/") { return true }
         var u = url.resolvingSymlinksInPath()
         while u.path != "/" && !u.path.isEmpty {
@@ -60,6 +73,13 @@ public extension DriveBackend {
         let temp = ".cirrus-upload-\(UUID().uuidString.prefix(8))-" + name
         let uploaded = try await upload(file, name: temp, into: folderID, modified: modified, progress: progress)
         try await trash([existing])
-        return try await rename(uploaded, to: name)
+        do {
+            return try await rename(uploaded, to: name)
+        } catch {
+            // Don't leave the only visible copy in Recently Deleted: put the old file back (best effort).
+            // The new upload stays under its temporary name next to it.
+            _ = try? await restore([existing])
+            throw error
+        }
     }
 }

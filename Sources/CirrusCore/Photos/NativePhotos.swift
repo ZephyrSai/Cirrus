@@ -1,4 +1,8 @@
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import Foundation
 import Photos
 
@@ -175,7 +179,11 @@ public final class NativePhotos: NSObject, PhotosBackend, PHPhotoLibraryChangeOb
                 if done { return }
                 if (info?[PHImageResultIsDegradedKey] as? Bool) == true { return }
                 done = true
+                #if os(macOS)
                 cont.resume(returning: img?.cgImage(forProposedRect: nil, context: nil, hints: nil))
+                #else
+                cont.resume(returning: img?.cgImage)
+                #endif
             }
         }
     }

@@ -57,7 +57,11 @@ public final class AccountManager {
     /// Is this Mac signed in to iCloud with iCloud Drive on?
     public static var nativeDriveRoot: URL? {
         if let o = ProcessInfo.processInfo.environment["CIRRUS_NATIVE_DRIVE"] { return URL(fileURLWithPath: o, isDirectory: true) }
+        #if os(macOS)
         let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
+        #else
+        let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
+        #endif
         var isDir: ObjCBool = false
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue ? url : nil
     }
@@ -146,6 +150,15 @@ public final class AccountManager {
 
     public func signOut(_ account: Account) {
         guard account.kind == .web, let id = account.appleID else { return }
+        // Stop the live session, so work still running can't sign in again and store it back. A
+        // re-authentication that finished just before may already have stored it: remove it again after.
+        if let s = account.session {
+            let accountID = account.id
+            Task { @MainActor in
+                await s.signOut()
+                if AccountManager.shared.account(id: accountID) == nil { Keychain.delete(service: Keychain.sessionService, account: id) }
+            }
+        }
         Keychain.delete(service: Keychain.sessionService, account: id)
         Keychain.delete(service: Keychain.passwordService, account: id)
         Task { await CredentialGate.shared.forget(id) }

@@ -1,18 +1,57 @@
-import AppKit
 import CoreGraphics
+import CoreText
 import Foundation
+import ImageIO
 
 // Demo iCloud (CIRRUS_DEMO=1): a disk-backed fake Drive + Photos library so the UI, drag and drop,
 // transfers, sync and backup can be exercised without an Apple ID. Never touches real accounts.
 
+/// Demo pictures and documents, drawn with CoreGraphics and CoreText only so they render the same on macOS and iOS.
 enum DemoArt {
+    static let space = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+
+    static func rgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, _ a: CGFloat = 1) -> CGColor {
+        CGColor(colorSpace: space, components: [r, g, b, a]) ?? CGColor(gray: 0.5, alpha: a)
+    }
+
+    static func white(_ w: CGFloat, _ a: CGFloat = 1) -> CGColor { rgb(w, w, w, a) }
+
+    /// HSB → sRGB (same model as NSColor(hue:saturation:brightness:)).
+    static func hsb(_ h: CGFloat, _ s: CGFloat, _ v: CGFloat, _ a: CGFloat = 1) -> CGColor {
+        let hh = (h - floor(h)) * 6, i = Int(hh) % 6, f = hh - floor(hh)
+        let p = v * (1 - s), q = v * (1 - s * f), t = v * (1 - s * (1 - f))
+        let (r, g, b): (CGFloat, CGFloat, CGFloat) = [(v, t, p), (q, v, p), (p, v, t), (p, q, v), (t, p, v), (v, p, q)][i]
+        return rgb(r, g, b, a)
+    }
+
+    static func font(_ size: CGFloat, bold: Bool) -> CTFont {
+        let base = CTFontCreateUIFontForLanguage(.system, size, nil) ?? CTFontCreateWithName("Helvetica" as CFString, size, nil)
+        guard bold else { return base }
+        return CTFontCreateCopyWithSymbolicTraits(base, size, nil, .traitBold, .traitBold) ?? base
+    }
+
+    static func line(_ text: String, size: CGFloat, bold: Bool, color: CGColor) -> CTLine {
+        let attrs: [NSAttributedString.Key: Any] = [NSAttributedString.Key(kCTFontAttributeName as String): font(size, bold: bold),
+                                                    NSAttributedString.Key(kCTForegroundColorAttributeName as String): color]
+        return CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attrs))
+    }
+
+    static func draw(_ l: CTLine, at p: CGPoint, in ctx: CGContext) {
+        ctx.textMatrix = .identity
+        ctx.textPosition = p
+        CTLineDraw(l, ctx)
+    }
+
+    static func bitmap(_ width: Int, _ height: Int) -> CGContext? {
+        CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: space,
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    }
+
     /// A small landscape: sky gradient, sun or moon, layered hills, optional water — varied by seed.
     static func scenic(width: Int, height: Int, seed: Int) -> Data? {
         var rng = UInt64(truncatingIfNeeded: seed &* 2654435761 &+ 1013904223)
         func rnd() -> CGFloat { rng = rng &* 6364136223846793005 &+ 1442695040888963407; return CGFloat((rng >> 33) % 10_000) / 10_000 }
-        let cs = CGColorSpaceCreateDeviceRGB()
-        guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: cs,
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        guard let ctx = bitmap(width, height) else { return nil }
         let W = CGFloat(width), H = CGFloat(height)
         let palettes: [[(CGFloat, CGFloat, CGFloat)]] = [
             [(0.99, 0.80, 0.55), (0.98, 0.52, 0.42), (0.55, 0.30, 0.55)],   // sunset
@@ -23,18 +62,18 @@ enum DemoArt {
             [(0.06, 0.10, 0.22), (0.12, 0.20, 0.40), (0.30, 0.42, 0.62)],   // night
         ]
         let pal = palettes[seed % palettes.count]
-        let sky = pal.map { NSColor(srgbRed: $0.0, green: $0.1, blue: $0.2, alpha: 1).cgColor }
-        if let g = CGGradient(colorsSpace: cs, colors: sky as CFArray, locations: [0, 0.6, 1]) {
+        let sky = pal.map { rgb($0.0, $0.1, $0.2) }
+        if let g = CGGradient(colorsSpace: space, colors: sky as CFArray, locations: [0, 0.6, 1]) {
             ctx.drawLinearGradient(g, start: CGPoint(x: 0, y: H), end: CGPoint(x: 0, y: H * 0.25), options: [.drawsAfterEndLocation])
         }
         let night = seed % palettes.count == 5 || seed % palettes.count == 2
         if night {
-            ctx.setFillColor(NSColor(white: 1, alpha: 0.85).cgColor)
+            ctx.setFillColor(white(1, 0.85))
             for _ in 0..<40 { let r = 1 + rnd() * 2; ctx.fillEllipse(in: CGRect(x: rnd() * W, y: H * 0.5 + rnd() * H * 0.5, width: r, height: r)) }
         }
         let sunR = min(W, H) * (0.07 + rnd() * 0.05)
         let sun = CGPoint(x: W * (0.2 + rnd() * 0.6), y: H * (0.55 + rnd() * 0.25))
-        ctx.setFillColor((night ? NSColor(srgbRed: 0.96, green: 0.95, blue: 0.85, alpha: 1) : NSColor(srgbRed: 1, green: 0.93, blue: 0.70, alpha: 0.95)).cgColor)
+        ctx.setFillColor(night ? rgb(0.96, 0.95, 0.85) : rgb(1, 0.93, 0.70, 0.95))
         ctx.fillEllipse(in: CGRect(x: sun.x - sunR, y: sun.y - sunR, width: sunR * 2, height: sunR * 2))
         let layers = 4
         for l in 0..<layers {
@@ -54,16 +93,16 @@ enum DemoArt {
             path.closeSubpath()
             let dark = 0.15 + t * 0.55
             let tint = pal[2]
-            ctx.setFillColor(NSColor(srgbRed: tint.0 * (1 - dark), green: tint.1 * (1 - dark) + 0.05, blue: tint.2 * (1 - dark) + 0.08, alpha: 1).cgColor)
+            ctx.setFillColor(rgb(tint.0 * (1 - dark), tint.1 * (1 - dark) + 0.05, tint.2 * (1 - dark) + 0.08))
             ctx.addPath(path)
             ctx.fillPath()
         }
         if seed % 3 == 0 {   // lake with a soft reflection
-            ctx.setFillColor(NSColor(srgbRed: sky[1].components?[0] ?? 0.5, green: sky[1].components?[1] ?? 0.6, blue: (sky[1].components?[2] ?? 0.8), alpha: 0.55).cgColor)
+            ctx.setFillColor(rgb(pal[1].0, pal[1].1, pal[1].2, 0.55))
             ctx.fill(CGRect(x: 0, y: 0, width: W, height: H * 0.12))
         }
         guard let img = ctx.makeImage() else { return nil }
-        return NSBitmapImageRep(cgImage: img).representation(using: .jpeg, properties: [.compressionFactor: 0.82])
+        return PhotoFormats.jpeg(img, quality: 0.82)
     }
 
     /// A one-page PDF with a title, a few lines and a colored banner (real documents for previews).
@@ -72,20 +111,15 @@ enum DemoArt {
         var box = CGRect(x: 0, y: 0, width: 612, height: 792)
         guard let consumer = CGDataConsumer(data: data as CFMutableData), let ctx = CGContext(consumer: consumer, mediaBox: &box, nil) else { return Data() }
         ctx.beginPDFPage(nil)
-        ctx.setFillColor(NSColor(hue: hue, saturation: 0.6, brightness: 0.85, alpha: 1).cgColor)
+        ctx.setFillColor(hsb(hue, 0.6, 0.85))
         ctx.fill(CGRect(x: 0, y: 652, width: 612, height: 140))
-        let ns = NSGraphicsContext(cgContext: ctx, flipped: false)
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = ns
-        NSAttributedString(string: title, attributes: [.font: NSFont.systemFont(ofSize: 34, weight: .bold), .foregroundColor: NSColor.white])
-            .draw(at: CGPoint(x: 48, y: 700))
+        draw(line(title, size: 34, bold: true, color: white(1)), at: CGPoint(x: 48, y: 700), in: ctx)
         var y: CGFloat = 600
         for l in lines {
-            NSAttributedString(string: l, attributes: [.font: NSFont.systemFont(ofSize: 15), .foregroundColor: NSColor(white: 0.2, alpha: 1)]).draw(at: CGPoint(x: 48, y: y))
+            draw(line(l, size: 15, bold: false, color: white(0.2)), at: CGPoint(x: 48, y: y), in: ctx)
             y -= 28
         }
-        NSGraphicsContext.restoreGraphicsState()
-        ctx.setFillColor(NSColor(white: 0.92, alpha: 1).cgColor)
+        ctx.setFillColor(white(0.92))
         for i in 0..<6 { ctx.fill(CGRect(x: 48, y: 260 + CGFloat(i) * 26, width: CGFloat(300 + (i * 37) % 200), height: 10)) }
         ctx.endPDFPage()
         ctx.closePDF()
@@ -93,33 +127,34 @@ enum DemoArt {
     }
 
     static func jpeg(width: Int, height: Int, hue: CGFloat, label: String) -> Data? {
-        let cs = CGColorSpaceCreateDeviceRGB()
-        guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: cs,
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        let c1 = NSColor(hue: hue, saturation: 0.55, brightness: 0.95, alpha: 1).cgColor
-        let c2 = NSColor(hue: (hue + 0.12).truncatingRemainder(dividingBy: 1), saturation: 0.75, brightness: 0.55, alpha: 1).cgColor
-        if let g = CGGradient(colorsSpace: cs, colors: [c1, c2] as CFArray, locations: [0, 1]) {
+        guard let ctx = bitmap(width, height) else { return nil }
+        let c1 = hsb(hue, 0.55, 0.95)
+        let c2 = hsb((hue + 0.12).truncatingRemainder(dividingBy: 1), 0.75, 0.55)
+        if let g = CGGradient(colorsSpace: space, colors: [c1, c2] as CFArray, locations: [0, 1]) {
             ctx.drawLinearGradient(g, start: .zero, end: CGPoint(x: width, y: height), options: [])
         }
-        ctx.setFillColor(NSColor(white: 1, alpha: 0.18).cgColor)
+        ctx.setFillColor(white(1, 0.18))
         for i in 0..<5 {
             let r = CGFloat(height) * (0.15 + 0.08 * CGFloat(i))
             ctx.fillEllipse(in: CGRect(x: CGFloat(width) * (0.15 * CGFloat(i)), y: CGFloat(height) * 0.2, width: r, height: r))
         }
-        let ns = NSGraphicsContext(cgContext: ctx, flipped: false)
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = ns
         // Centered so square thumbnails (center crop) never clip the caption.
-        let shadow = NSShadow(); shadow.shadowBlurRadius = CGFloat(height) / 60; shadow.shadowColor = NSColor.black.withAlphaComponent(0.35)
-        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: CGFloat(min(width, height)) / 10, weight: .bold),
-                                                    .foregroundColor: NSColor.white, .shadow: shadow]
-        let text = NSAttributedString(string: label, attributes: attrs)
-        let size = text.size()
-        text.draw(at: CGPoint(x: (CGFloat(width) - size.width) / 2, y: CGFloat(height) * 0.40 - size.height / 2))
-        NSGraphicsContext.restoreGraphicsState()
+        let text = line(label, size: CGFloat(min(width, height)) / 10, bold: true, color: white(1))
+        var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
+        let w = CGFloat(CTLineGetTypographicBounds(text, &ascent, &descent, &leading))
+        ctx.saveGState()
+        ctx.setShadow(offset: CGSize(width: 0, height: -CGFloat(height) / 240), blur: CGFloat(height) / 60, color: rgb(0, 0, 0, 0.35))
+        draw(text, at: CGPoint(x: (CGFloat(width) - w) / 2, y: CGFloat(height) * 0.40 - (ascent + descent) / 2 + descent), in: ctx)
+        ctx.restoreGState()
         guard let img = ctx.makeImage() else { return nil }
-        let rep = NSBitmapImageRep(cgImage: img)
-        return rep.representation(using: .jpeg, properties: [.compressionFactor: 0.7])
+        return PhotoFormats.jpeg(img, quality: 0.7)
+    }
+
+    /// Pixel size of an image file without decoding it.
+    static func pixelSize(_ url: URL) -> (width: Int, height: Int) {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let p = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] else { return (0, 0) }
+        return ((p[kCGImagePropertyPixelWidth] as? Int) ?? 0, (p[kCGImagePropertyPixelHeight] as? Int) ?? 0)
     }
 }
 
@@ -476,9 +511,9 @@ public final class DemoPhotos: PhotosBackend, @unchecked Sendable {
                 res.append(PhotoResource(kind: .liveVideo, filename: v.lastPathComponent, size: 0, key: "mov", recordName: id, url: nil, uti: nil))
             }
             let created = (try? g.primary.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
-            let img = NSImage(contentsOf: dst)
+            let px = DemoArt.pixelSize(dst)
             let a = PhotoAsset(id: id, masterID: id, changeTag: "1", library: "demo", filename: g.primary.lastPathComponent, size: size, created: created,
-                               added: Date(), width: Int(img?.size.width ?? 0), height: Int(img?.size.height ?? 0), duration: nil,
+                               added: Date(), width: px.width, height: px.height, duration: nil,
                                isVideo: PhotoFormats.videoUTIs.contains(UTTypeHelper.identifier(for: g.primary)), isLive: g.pairedVideo != nil,
                                isFavorite: false, isHidden: false, isDeleted: false, isEdited: false, uti: nil, resources: res)
             lock.withLock { store.assets.insert(a, at: 0) }

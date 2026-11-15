@@ -279,17 +279,23 @@ enum Unzip {
     static func expandPackage(zip: URL, to destination: URL) throws {
         let staging = Paths.tempFile(named: "pkg")
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        #if os(macOS)
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
         p.arguments = ["-x", "-k", zip.path, staging.path]
         try p.run()
         p.waitUntilExit()
+        let ok = p.terminationStatus == 0
+        #else
+        // No ditto on iOS: extract in-process (refuses unsafe paths, checks CRCs).
+        let ok = (try? ZipReader.extract(zip, into: staging)) != nil
+        #endif
         defer { try? FileManager.default.removeItem(at: zip) }
         let items = (try? FileManager.default.contentsOfDirectory(at: staging, includingPropertiesForKeys: nil)) ?? []
         try? FileManager.default.removeItem(at: destination)
-        if p.terminationStatus == 0, items.count == 1 {
+        if ok, items.count == 1 {
             try FileManager.default.moveItem(at: items[0], to: destination)
-        } else if p.terminationStatus == 0 {
+        } else if ok {
             try FileManager.default.moveItem(at: staging, to: destination)
         } else {
             try FileManager.default.moveItem(at: zip, to: destination.appendingPathExtension("zip"))
