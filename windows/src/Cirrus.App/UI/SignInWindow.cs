@@ -52,7 +52,7 @@ sealed class SignInWindow : Window
         var cancel = Ui.Button("Cancel", () => { DialogResult = false; }, isCancel: true);
 
         var head = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
-        var cloud = Ui.Glyph("", 34);
+        var cloud = Ui.Glyph("\uE753", 34);
         cloud.Foreground = SystemColors.HighlightBrush;
         cloud.Margin = new Thickness(0, 0, 14, 0);
         head.Children.Add(cloud);

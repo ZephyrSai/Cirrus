@@ -18,8 +18,8 @@ public sealed class JobEngine
         public bool GuardTripped { get; init; }
     }
 
-    /// <summary>Raised when a job finishes: (job id, success, message).</summary>
-    public event Action<Guid, bool, string>? Finished;
+    /// <summary>Raised when a job finishes: (job, success, message).</summary>
+    public event Action<SyncJob, bool, string>? Finished;
 
     static AccountManager Accounts => AccountManager.Shared;
 
@@ -155,7 +155,7 @@ public sealed class JobEngine
                 SyncStore.Shared.MarkStopped(job.Id);
                 TransferManager.Shared.JobFinished(job.Id);
                 SyncStore.Shared.Record(job.Id, success, message);
-                Finished?.Invoke(job.Id, success, message);
+                Finished?.Invoke(job, success, message);
             }
         }, "Starting…", job.Kind == JobKind.PhotosImport ? TransferDirection.Upload : TransferDirection.Download, group: "job:" + job.Id);
     }

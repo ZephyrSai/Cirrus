@@ -1,5 +1,6 @@
 import AppKit
 import CirrusCore
+import ImageIO
 
 /// Headless automation for QA (no Accessibility or Screen Recording needed):
 ///   CIRRUS_SCRIPT="open:demo-drive;wait:1;snap:drive;view:list;snap:drive-list;quit"
@@ -144,6 +145,55 @@ enum Debug {
                 log("albums: \(smart.joined(separator: ", ")); user albums/folders=\(user.count) items=\(user.compactMap(\.count).reduce(0, +))")
             } else { log("albums: none cached") }
             if let a = AccountManager.shared.webAccounts.first { log("libraries: \((Catalog.shared.libraryIndex[a.id] ?? []).map { $0.isShared ? "shared" : "personal" })") }
+        case "clearthumbs":
+            if let acct = pane?.location.account, let b = acct.photos { try? FileManager.default.removeItem(at: ThumbnailDiskCache.accountDir(b.cacheKey)); log("thumb cache cleared") }
+            Thumbnails.shared.cache.removeAllObjects()
+        case "thumbcheck":   // numbers only: thumbnail vs original shape + 16×16 fingerprint distance (no images leave the app)
+            guard let p = pane, let acct = p.location.account, let backend = acct.photos else { break }
+            let photosShown = p.shown.compactMap(\.photo)
+            for (i, a) in photosShown.enumerated() {
+                let t = a.resource(.thumbnail), m = a.resource(.medium), o = a.resource(.original)
+                log("res#\(i): asset=\(a.id.prefix(6))… master=\(a.masterID?.prefix(6) ?? "nil")… thumbOwner=\(t?.recordName.prefix(6) ?? "nil")… origOwner=\(o?.recordName.prefix(6) ?? "nil")… thumbURLsame=\(photosShown.filter { $0.id != a.id }.contains { $0.resource(.thumbnail)?.url == t?.url }) mediumSize=\(m?.size ?? -1) thumbSize=\(t?.size ?? -1)")
+            }
+            func gray16(_ cg: CGImage) -> [Double] {
+                let ctx = CGContext(data: nil, width: 16, height: 16, bitsPerComponent: 8, bytesPerRow: 16, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0)!
+                ctx.interpolationQuality = .medium
+                ctx.draw(cg, in: CGRect(x: 0, y: 0, width: 16, height: 16))
+                let buf = ctx.data!.bindMemory(to: UInt8.self, capacity: 256)
+                return (0..<256).map { Double(buf[$0]) }
+            }
+            for (n, item) in p.shown.prefix(20).enumerated() {
+                guard let a = item.photo else { continue }
+                let dir = URL(fileURLWithPath: arg).appendingPathComponent(UUID().uuidString)
+                defer { try? FileManager.default.removeItem(at: dir) }
+                let thumb = try? await backend.thumbnail(a, maxPixel: 256)
+                let med = try? await backend.thumbnail(a, maxPixel: 1024)
+                let orig = dir.appendingPathComponent("o")
+                do { try await backend.export(a, resource: .original, to: orig) { _, _ in } } catch { log("photo#\(n): export failed \(error)"); continue }
+                guard let src = CGImageSourceCreateWithURL(orig as CFURL, nil),
+                      let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] else { log("photo#\(n): original unreadable (uti=\(a.uti ?? "?"))"); continue }
+                let w = props[kCGImagePropertyPixelWidth] as? Int ?? 0, h = props[kCGImagePropertyPixelHeight] as? Int ?? 0
+                let o = props[kCGImagePropertyOrientation] as? Int ?? 1
+                let (ow, oh) = [5, 6, 7, 8].contains(o) ? (h, w) : (w, h)
+                let opts: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 256, kCGImageSourceCreateThumbnailWithTransform: true]
+                let origThumb = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary)
+                func ar(_ x: Int, _ y: Int) -> String { y > 0 ? String(format: "%.2f", Double(x) / Double(y)) : "?" }
+                var line = "photo#\(n): uti=\(a.uti ?? "?") record=\(a.width)x\(a.height) original=\(w)x\(h) orient=\(o) shown-as=\(ow)x\(oh) (ar \(ar(ow, oh)))"
+                if let t = thumb { line += " | thumb \(t.width)x\(t.height) (ar \(ar(t.width, t.height)))" } else { line += " | thumb NIL" }
+                if let m = med { line += " | medium \(m.width)x\(m.height) (ar \(ar(m.width, m.height)))" } else { line += " | medium NIL" }
+                if let t = thumb, let ot = origThumb {
+                    let a1 = gray16(t), b1 = gray16(ot)
+                    let diff = zip(a1, b1).map { abs($0 - $1) }.reduce(0, +) / 256
+                    line += String(format: " | fingerprint diff %.1f/255", diff)
+                }
+                for other in p.shown.prefix(20) where other.key != item.key {
+                    if let op = other.photo, let tt = thumb, let ot2 = try? await backend.thumbnail(op, maxPixel: 256) {
+                        let d = zip(gray16(tt), gray16(ot2)).map { abs($0 - $1) }.reduce(0, +) / 256
+                        line += String(format: " | vs other photo %.1f", d)
+                    }
+                }
+                log(line)
+            }
         case "fetchsmallest":   // fetchsmallest:<dir> — download the smallest non-empty file here, report time, delete it
             if let p = pane, let item = p.shown.filter({ !$0.isContainer && ($0.size ?? 0) > 0 }).min(by: { ($0.size ?? 0) < ($1.size ?? 0) }) {
                 let dir = URL(fileURLWithPath: arg).appendingPathComponent(UUID().uuidString)

@@ -98,7 +98,9 @@ sealed class SettingsWindow : Window
     {
         var s = Settings.Current;
         var v = text.Trim();
-        s.NativePhotosFolder = v.Length > 0 && Directory.Exists(v) ? v : null;
+        var chosen = v.Length > 0 && Directory.Exists(v) ? v : null;
+        if (chosen == s.NativePhotosFolder) return;
+        s.NativePhotosFolder = chosen;
         SafetyPolicy.ExtraNativeRoot = s.NativePhotosFolder;
         s.Save();
         AccountManager.Shared.Load();

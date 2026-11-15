@@ -32,7 +32,7 @@ static class Dialogs
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var glyph = new TextBlock
         {
-            Text = severity switch { PreflightSeverity.Critical => "", PreflightSeverity.Warning => "", _ => "" },
+            Text = severity switch { PreflightSeverity.Critical => "\uEA39", PreflightSeverity.Warning => "\uE7BA", _ => "\uE946" },
             FontFamily = (FontFamily)Application.Current.Resources["IconFont"], FontSize = 28, Margin = new Thickness(0, 2, 16, 0), VerticalAlignment = VerticalAlignment.Top,
             Foreground = severity switch { PreflightSeverity.Critical => Brushes.IndianRed, PreflightSeverity.Warning => Brushes.DarkOrange, _ => SystemColors.HighlightBrush },
         };
@@ -114,9 +114,8 @@ static class Notifier
     struct FLASHWINFO { public uint cbSize; public IntPtr hwnd; public uint dwFlags; public uint uCount; public uint dwTimeout; }
     [DllImport("user32.dll")] static extern bool FlashWindowEx(ref FLASHWINFO pwfi);
 
-    public static void JobFinished(Guid id, bool success, string message)
+    public static void JobFinished(string name, bool success, string message)
     {
-        var name = SyncStore.Shared.Job(id)?.Name ?? "Job";
         Show(success ? $"{name} finished — {message}" : $"{name} needs attention — {message}", !success);
     }
 

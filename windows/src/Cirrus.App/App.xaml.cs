@@ -27,7 +27,7 @@ public partial class App : Application
         SyncStore.Shared.Load();
         JobScheduler.Shared.Start();
         TransferManager.Shared.Changed += () => Dispatcher.InvokeAsync(() => KeepAwake.Set(TransferManager.Shared.IsBusy));
-        JobEngine.Shared.Finished += (id, ok, msg) => Dispatcher.InvokeAsync(() => Notifier.JobFinished(id, ok, msg));
+        JobEngine.Shared.Finished += (job, ok, msg) => Dispatcher.InvokeAsync(() => Notifier.JobFinished(job.Name, ok, msg));
 
         var main = new MainWindow();
         MainWindow = main;

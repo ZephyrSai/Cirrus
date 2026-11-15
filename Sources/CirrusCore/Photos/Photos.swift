@@ -132,6 +132,13 @@ public enum PhotoFormats {
                 "webp", "avif", "mov", "mp4", "m4v"].contains(ext)
     }
 
+    public static func jpeg(_ cg: CGImage, quality: Double = 0.85) -> Data? {
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, "public.jpeg" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dest, cg, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+        return CGImageDestinationFinalize(dest) ? out as Data : nil
+    }
+
     public static func cgImage(from data: Data, maxPixel: Int) -> CGImage? {
         guard let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         let opts: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: maxPixel,
@@ -144,8 +151,18 @@ public enum PhotoFormats {
 public enum ThumbnailDiskCache {
     static let queue = DispatchQueue(label: "cirrus.thumbcache", attributes: .concurrent)
     /// Hashed names (no Apple IDs or photo IDs on disk), one folder per account.
+    /// Bump to invalidate every cached thumbnail (v2: drop entries written by the downloader race).
+    static let version = "v2"
     public static func accountDir(_ backend: String) -> URL {
-        Paths.cacheDir("thumbs").appendingPathComponent(hash(backend), isDirectory: true)
+        Paths.cacheDir("thumbs").appendingPathComponent(hash(version + backend), isDirectory: true)
+    }
+    /// Removes thumbnail folders from older cache versions.
+    public static func pruneOldVersions(keeping backends: [String]) {
+        let keep = Set(backends.map { hash(version + $0) })
+        let root = Paths.cacheDir("thumbs")
+        for u in (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [] where !keep.contains(u.lastPathComponent) {
+            try? FileManager.default.removeItem(at: u)
+        }
     }
     public static func url(_ backend: String, _ id: String, _ px: Int) -> URL {
         let dir = accountDir(backend).appendingPathComponent(String(hash(id).prefix(2)), isDirectory: true)

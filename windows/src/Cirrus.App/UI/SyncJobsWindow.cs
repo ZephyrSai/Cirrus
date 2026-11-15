@@ -223,7 +223,7 @@ sealed class JobEditor : Window
             if (i >= 0 && i < accts.Count) { _source = SyncEndpoint.ForAccount(accts[i].Id); Refresh(); }
             return;
         }
-        var picker = new LocationPicker(source ? "Choose the source" : "Choose the destination", "Choose", null, foldersOnly: !needPhotos, includePhotos: needPhotos) { Owner = this };
+        var picker = new LocationPicker(source ? "Choose the source" : "Choose the destination", "Choose", null, foldersOnly: !needPhotos, includePhotos: needPhotos, anyLocation: source) { Owner = this };
         if (picker.ShowDialog() != true || picker.Chosen is not { } loc) return;
         SyncEndpoint e = loc.Kind switch
         {

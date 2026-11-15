@@ -105,9 +105,14 @@ public sealed class AccountManager
         var photosRoot = NativePhotosRoot;
         if (driveRoot is not null || photosRoot is not null)
             list.Add(new Account("native", AccountKind.Native, "iCloud for Windows") { DriveRoot = driveRoot, PhotosRoot = photosRoot });
-        foreach (var appleID in LoadIDs()) list.Add(MakeWebAccount(appleID, LoadState(appleID)));
+        List<Account> previous;
+        lock (_lock) previous = _accounts;
+        // Reuse live web accounts so a reload never drops a session that transfers are using.
+        foreach (var appleID in LoadIDs())
+            list.Add(previous.FirstOrDefault(p => p.Id == "web:" + appleID.ToLowerInvariant()) ?? MakeWebAccount(appleID, LoadState(appleID)));
         if (DemoMode)
-            list.Add(new Account("demo", AccountKind.Demo, "Demo iCloud") { AppleID = "demo@example.com", Drive = DemoDrive.Shared, Photos = DemoPhotos.Shared });
+            list.Add(previous.FirstOrDefault(p => p.Kind == AccountKind.Demo)
+                ?? new Account("demo", AccountKind.Demo, "Demo iCloud") { AppleID = "demo@example.com", Drive = DemoDrive.Shared, Photos = DemoPhotos.Shared });
         lock (_lock) _accounts = list;
         Changed?.Invoke();
     }

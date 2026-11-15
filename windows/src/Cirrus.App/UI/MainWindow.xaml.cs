@@ -67,7 +67,7 @@ public partial class MainWindow : Window
         var tab = new BrowserTab { Host = this };
         var title = new TextBlock { VerticalAlignment = VerticalAlignment.Center, MaxWidth = 180, TextTrimming = TextTrimming.CharacterEllipsis };
         var glyph = new TextBlock { Style = (Style)FindResource("IconText"), FontSize = 12, Margin = new Thickness(0, 0, 6, 0) };
-        var close = new Button { Content = new TextBlock { Text = "", Style = (Style)FindResource("IconText"), FontSize = 9 }, Padding = new Thickness(4), Margin = new Thickness(8, 0, 0, 0), Background = Brushes.Transparent, BorderThickness = new Thickness(0), ToolTip = "Close tab (Ctrl+W)" };
+        var close = new Button { Content = new TextBlock { Text = "\uE711", Style = (Style)FindResource("IconText"), FontSize = 9 }, Padding = new Thickness(4), Margin = new Thickness(8, 0, 0, 0), Background = Brushes.Transparent, BorderThickness = new Thickness(0), ToolTip = "Close tab (Ctrl+W)" };
         var header = new StackPanel { Orientation = Orientation.Horizontal };
         header.Children.Add(glyph); header.Children.Add(title); header.Children.Add(close);
         var item = new TabItem { Header = header, Content = tab };
@@ -75,6 +75,7 @@ public partial class MainWindow : Window
         header.MouseDown += (_, e) => { if (e.ChangedButton == MouseButton.Middle) CloseTab(item); };
         item.AllowDrop = true;
         item.DragOver += (_, e) => { Tabs.SelectedItem = item; e.Effects = BrowserTab.DropEffect(e, tab.Current); e.Handled = true; };
+        item.Drop += (_, e) => { e.Handled = true; _ = BrowserTab.HandleDrop(e.Data, tab.Current, e.KeyStates.HasFlag(DragDropKeyStates.ShiftKey), this); };
         tab.LocationChanged += () =>
         {
             title.Text = Catalog.Shared.Title(tab.Current);
@@ -91,6 +92,7 @@ public partial class MainWindow : Window
     void CloseTab(TabItem item)
     {
         if (Tabs.Items.Count <= 1) { (item.Content as BrowserTab)?.Navigate(Location.Home()); return; }
+        (item.Content as BrowserTab)?.Detach();
         Tabs.Items.Remove(item);
     }
 
@@ -131,7 +133,7 @@ public partial class MainWindow : Window
         foreach (var c in crumbs)
         {
             if (PathBar.Children.Count > 0)
-                PathBar.Children.Add(new TextBlock { Text = "", Style = (Style)FindResource("IconText"), FontSize = 9, Opacity = 0.6, Margin = new Thickness(2, 0, 2, 0) });
+                PathBar.Children.Add(new TextBlock { Text = "\uE76C", Style = (Style)FindResource("IconText"), FontSize = 9, Opacity = 0.6, Margin = new Thickness(2, 0, 2, 0) });
             var b = new Button { Content = Catalog.Shared.Title(c), Padding = new Thickness(6, 2, 6, 2), Background = Brushes.Transparent, BorderThickness = new Thickness(0), AllowDrop = true };
             var target = c;
             b.Click += (_, _) => ActiveTab?.Navigate(target);
@@ -187,15 +189,15 @@ public partial class MainWindow : Window
     void Menu_Click(object sender, RoutedEventArgs e)
     {
         var m = new ContextMenu { PlacementTarget = MenuButton, Placement = PlacementMode.Bottom };
-        m.Items.Add(MenuItem("New Tab", "", () => OpenTab(ActiveTab?.Current ?? Location.Home()), "Ctrl+T"));
-        m.Items.Add(MenuItem("New Window", "", () => { var w = new MainWindow(); w.Show(); }, "Ctrl+N"));
+        m.Items.Add(MenuItem("New Tab", "\uE710", () => OpenTab(ActiveTab?.Current ?? Location.Home()), "Ctrl+T"));
+        m.Items.Add(MenuItem("New Window", "\uE8A7", () => { var w = new MainWindow(); w.Show(); }, "Ctrl+N"));
         m.Items.Add(new Separator());
-        m.Items.Add(MenuItem("Back Up iCloud…", "", () => ShowBackup()));
-        m.Items.Add(MenuItem("Sync Jobs…", "", () => ShowSyncJobs()));
-        m.Items.Add(MenuItem("Transfers", "", () => SetTransfersVisible(true)));
+        m.Items.Add(MenuItem("Back Up iCloud…", "\uE8F7", () => ShowBackup()));
+        m.Items.Add(MenuItem("Sync Jobs…", "\uE895", () => ShowSyncJobs()));
+        m.Items.Add(MenuItem("Transfers", "\uE896", () => SetTransfersVisible(true)));
         m.Items.Add(new Separator());
-        m.Items.Add(MenuItem("Add Apple ID…", "", () => SignIn(null)));
-        m.Items.Add(MenuItem("Settings…", "", () => ShowSettings(), "Ctrl+,"));
+        m.Items.Add(MenuItem("Add Apple ID…", "\uE8FA", () => SignIn(null)));
+        m.Items.Add(MenuItem("Settings…", "\uE713", () => ShowSettings(), "Ctrl+,"));
         m.IsOpen = true;
     }
 
@@ -332,57 +334,57 @@ public partial class MainWindow : Window
         {
             if (one?.Target is { } t)
             {
-                m.Items.Add(MenuItem("Open", "", () => tab.Navigate(t)));
-                m.Items.Add(MenuItem("Open in New Tab", "", () => OpenTab(t)));
+                m.Items.Add(MenuItem("Open", "\uE8E5", () => tab.Navigate(t)));
+                m.Items.Add(MenuItem("Open in New Tab", "\uE8A7", () => OpenTab(t)));
             }
-            else if (!caps.IsTrash) m.Items.Add(MenuItem("Open", "", () => _ = Ops.Open(sel, this)));
+            else if (!caps.IsTrash) m.Items.Add(MenuItem("Open", "\uE8E5", () => _ = Ops.Open(sel, this)));
             if (sel.Any(i => i.LocalPath is null))
-                m.Items.Add(MenuItem("Download To…", "", () => _ = DownloadTo(sel)));
+                m.Items.Add(MenuItem("Download To…", "\uE896", () => _ = DownloadTo(sel)));
             if (!caps.IsTrash)
             {
-                m.Items.Add(MenuItem("Copy To…", "", () => _ = CopyMoveTo(tab, sel, false)));
-                if (caps.CanTrash) m.Items.Add(MenuItem("Move To…", "", () => _ = CopyMoveTo(tab, sel, true)));
-                m.Items.Add(MenuItem("Copy", "", () => CopyToClipboard(tab), "Ctrl+C"));
+                m.Items.Add(MenuItem("Copy To…", "\uE8C8", () => _ = CopyMoveTo(tab, sel, false)));
+                if (caps.CanTrash) m.Items.Add(MenuItem("Move To…", "\uE8DE", () => _ = CopyMoveTo(tab, sel, true)));
+                m.Items.Add(MenuItem("Copy", "\uE8C8", () => CopyToClipboard(tab), "Ctrl+C"));
             }
             if (one is not null && one.LocalPath is { } lp && one.Volume is null)
-                m.Items.Add(MenuItem("Show in Explorer", "", () => Ops.ShowInExplorer(lp)));
+                m.Items.Add(MenuItem("Show in Explorer", "\uEC50", () => Ops.ShowInExplorer(lp)));
             if (caps.IsICloud && loc.Kind == LocKind.Local && sel.All(i => i.LocalPath is not null))
             {
                 m.Items.Add(new Separator());
-                m.Items.Add(MenuItem("Always Keep on This Device", "", () => { Ops.KeepOnDevice(sel, this); tab.Reload(true); }));
-                m.Items.Add(MenuItem("Free Up Space", "", () => { Ops.FreeUpSpace(sel, this); tab.Reload(true); }));
+                m.Items.Add(MenuItem("Always Keep on This Device", "\uE896", () => { Ops.KeepOnDevice(sel, this); tab.Reload(true); }));
+                m.Items.Add(MenuItem("Free Up Space", "\uE753", () => { Ops.FreeUpSpace(sel, this); tab.Reload(true); }));
             }
             if (sel.Any(i => i.IsPhoto) && !caps.IsTrash)
             {
                 m.Items.Add(new Separator());
                 var fav = sel.All(i => i.IsFavorite);
-                m.Items.Add(MenuItem(fav ? "Remove from Favorites" : "Favorite", fav ? "" : "", () => _ = Ops.SetFavorite(sel, !fav, loc, this), enabled: !ro));
+                m.Items.Add(MenuItem(fav ? "Remove from Favorites" : "Favorite", fav ? "\uEB51" : "\uEB52", () => _ = Ops.SetFavorite(sel, !fav, loc, this), enabled: !ro));
                 var hidden = loc.Id == "smart:Hidden";
-                m.Items.Add(MenuItem(hidden ? "Unhide" : "Hide", "", () => _ = Ops.SetHidden(sel, !hidden, loc, this), enabled: !ro));
+                m.Items.Add(MenuItem(hidden ? "Unhide" : "Hide", "\uED1A", () => _ = Ops.SetHidden(sel, !hidden, loc, this), enabled: !ro));
             }
             m.Items.Add(new Separator());
             if (caps.CanRename && one is not null && one.Album is null)
-                m.Items.Add(MenuItem("Rename", "", () => _ = Ops.Rename(one, loc, this), "F2"));
+                m.Items.Add(MenuItem("Rename", "\uE8AC", () => _ = Ops.Rename(one, loc, this), "F2"));
             if (caps.IsTrash)
             {
-                m.Items.Add(MenuItem("Recover", "", () => _ = Ops.Restore(sel, loc, this), enabled: !ro));
+                m.Items.Add(MenuItem("Recover", "\uE777", () => _ = Ops.Restore(sel, loc, this), enabled: !ro));
                 if (loc.Kind == LocKind.DriveTrash)
-                    m.Items.Add(MenuItem("Delete Immediately…", "", () => _ = Ops.DeleteForever(sel, loc, this), "Del", enabled: !ro));
+                    m.Items.Add(MenuItem("Delete Immediately…", "\uE74D", () => _ = Ops.DeleteForever(sel, loc, this), "Del", enabled: !ro));
             }
             else if (caps.CanTrash && sel.All(i => i.Album is null && i.Volume is null))
             {
                 var label = loc.Kind == LocKind.Local ? "Move to Recycle Bin" : sel.Any(i => i.IsPhoto) ? "Delete (to Recently Deleted)" : "Move to Recently Deleted";
-                m.Items.Add(MenuItem(label, "", () => _ = Ops.Trash(sel, loc, this), "Del"));
+                m.Items.Add(MenuItem(label, "\uE74D", () => _ = Ops.Trash(sel, loc, this), "Del"));
             }
         }
         else
         {
-            if (caps.CanCreateFolder) m.Items.Add(MenuItem(caps.NewFolderTitle, "", () => _ = Ops.NewFolder(loc, this), "Ctrl+Shift+N"));
-            if (caps.AcceptsDrops) m.Items.Add(MenuItem("Paste", "", () => _ = Paste(tab), "Ctrl+V"));
-            m.Items.Add(MenuItem("Refresh", "", () => tab.Reload(true), "F5"));
-            if (loc.Kind == LocKind.Local) m.Items.Add(MenuItem("Open in Explorer", "", () => Ops.ShowInExplorer(loc.Path!)));
+            if (caps.CanCreateFolder) m.Items.Add(MenuItem(caps.NewFolderTitle, "\uE8F4", () => _ = Ops.NewFolder(loc, this), "Ctrl+Shift+N"));
+            if (caps.AcceptsDrops) m.Items.Add(MenuItem("Paste", "\uE77F", () => _ = Paste(tab), "Ctrl+V"));
+            m.Items.Add(MenuItem("Refresh", "\uE72C", () => tab.Reload(true), "F5"));
+            if (loc.Kind == LocKind.Local) m.Items.Add(MenuItem("Open in Explorer", "\uEC50", () => Ops.ShowInExplorer(loc.Path!)));
             if (loc.Kind == LocKind.Local && !Settings.Current.Favorites.Contains(loc.Path!, StringComparer.OrdinalIgnoreCase))
-                m.Items.Add(MenuItem("Add to Favorites", "", () => { Settings.Current.Favorites.Add(loc.Path!); Settings.Current.Save(); BuildSidebar(); }));
+                m.Items.Add(MenuItem("Add to Favorites", "\uE734", () => { Settings.Current.Favorites.Add(loc.Path!); Settings.Current.Save(); BuildSidebar(); }));
         }
         if (m.Items.Count > 0 && m.Items[^1] is Separator) m.Items.RemoveAt(m.Items.Count - 1);
         return m;
@@ -430,22 +432,22 @@ public partial class MainWindow : Window
             sp.Children.Add(g);
             sp.Children.Add(new TextBlock { Text = title, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis });
             var n = new TreeViewItem { Header = sp, Tag = tag, AllowDrop = tag is Location };
-            n.ContextMenuOpening += (_, e) => { n.ContextMenu = SidebarMenu(tag); if (n.ContextMenu is null) e.Handled = true; };
             n.ContextMenu = new ContextMenu();
+            n.ContextMenuOpening += (_, e) => { if (!BrowserTab.Fill(n.ContextMenu, SidebarMenu(tag))) e.Handled = true; };
             parent.Items.Add(n);
             return n;
         }
 
         var fav = Section("Favorites");
         foreach (var p in Settings.Current.Favorites.Where(Directory.Exists))
-            Node(fav, Catalog.Shared.Title(Location.Local(p)), "", Location.Local(p));
+            Node(fav, Catalog.Shared.Title(Location.Local(p)), "\uE8B7", Location.Local(p));
 
         var am = AccountManager.Shared;
         if (am.NativeAccount is { } native)
         {
             var s = Section("iCloud for Windows");
-            if (native.DriveRoot is { } dr) Node(s, "iCloud Drive", "", Location.Local(dr));
-            if (native.PhotosRoot is { } pr) Node(s, "iCloud Photos", "", Location.Local(pr));
+            if (native.DriveRoot is { } dr) Node(s, "iCloud Drive", "\uE753", Location.Local(dr));
+            if (native.PhotosRoot is { } pr) Node(s, "iCloud Photos", "\uEB9F", Location.Local(pr));
         }
         foreach (var a in am.Accounts.Where(a => a.Kind != AccountKind.Native))
         {
@@ -454,22 +456,22 @@ public partial class MainWindow : Window
             s.ContextMenu = SidebarMenu(a);
             if (a.Status == AccountStatus.NeedsSignIn)
             {
-                Node(s, "Sign In…", "", new SidebarAction(() => SignIn(a.AppleID)), Brushes.DarkOrange);
+                Node(s, "Sign In…", "\uE7BA", new SidebarAction(() => SignIn(a.AppleID)), Brushes.DarkOrange);
                 continue;
             }
             if (a.Status == AccountStatus.WaitingForApproval)
-                Node(s, "Approve on your Apple device…", "", new SidebarAction(() => Dialogs.Info(this, "Waiting for approval",
+                Node(s, "Approve on your Apple device…", "\uE8D7", new SidebarAction(() => Dialogs.Info(this, "Waiting for approval",
                     "Advanced Data Protection is on. Approve the request on your iPhone, iPad or Mac to let Cirrus read this iCloud data.")), Brushes.DarkOrange);
             if (a.Drive is { } d)
             {
-                Node(s, "iCloud Drive", "", Location.Drive(a.Id, d.RootID));
-                Node(s, "Recently Deleted", "", Location.DriveTrash(a.Id));
+                Node(s, "iCloud Drive", "\uE753", Location.Drive(a.Id, d.RootID));
+                Node(s, "Recently Deleted", "\uE74D", Location.DriveTrash(a.Id));
             }
             if (a.Photos is not null)
             {
                 var lib = a.PrimaryLibraryID;
-                Node(s, "Photos", "", Location.Album(a.Id, lib, "smart:All Photos"));
-                var albums = Node(s, "Albums", "", Location.Photos(a.Id, lib));
+                Node(s, "Photos", "\uEB9F", Location.Album(a.Id, lib, "smart:All Photos"));
+                var albums = Node(s, "Albums", "\uE8B9", Location.Photos(a.Id, lib));
                 albums.Items.Add(new TreeViewItem { Header = "Loading…", IsEnabled = false });
                 albums.Expanded += async (_, _) =>
                 {
@@ -479,30 +481,30 @@ public partial class MainWindow : Window
                         var list = await Catalog.Shared.Albums(a, lib);
                         albums.Items.Clear();
                         foreach (var al in list.Where(x => x.Kind is PhotoAlbumKind.Album or PhotoAlbumKind.Shared && x.ParentID is null).OrderBy(x => x.Name, NaturalComparer.Instance))
-                            Node(albums, al.Name, "", Location.Album(a.Id, lib, al.Id));
+                            Node(albums, al.Name, "\uE8B9", Location.Album(a.Id, lib, al.Id));
                         foreach (var f in list.Where(x => x.Kind == PhotoAlbumKind.Folder && x.ParentID is null))
-                            Node(albums, f.Name, "", Location.Photos(a.Id, lib, f.Id));
+                            Node(albums, f.Name, "\uE8B7", Location.Photos(a.Id, lib, f.Id));
                     }
                     catch (Exception e) { albums.Items.Clear(); albums.Items.Add(new TreeViewItem { Header = e.Message, IsEnabled = false }); }
                 };
-                Node(s, "Photos Recently Deleted", "", Location.Album(a.Id, lib, "smart:Recently Deleted"));
+                Node(s, "Photos Recently Deleted", "\uE74D", Location.Album(a.Id, lib, "smart:Recently Deleted"));
             }
-            Node(s, "Back Up…", "", new SidebarAction(() => ShowBackup(a.Id)));
+            Node(s, "Back Up…", "\uE8F7", new SidebarAction(() => ShowBackup(a.Id)));
         }
         if (!am.WebAccounts.Any())
-            Node(Section("iCloud"), "Sign In with Apple ID…", "", new SidebarAction(() => SignIn(null)));
+            Node(Section("iCloud"), "Sign In with Apple ID…", "\uE8FA", new SidebarAction(() => SignIn(null)));
 
         var pc = Section("This PC");
-        Node(pc, "This PC", "", Location.Computer);
+        Node(pc, "This PC", "\uE7F8", Location.Computer);
         foreach (var v in VolumeInfo.All())
-            Node(pc, v.DisplayName, v.IsRemovable ? "" : v.IsNetwork ? "" : "", Location.Local(v.Root));
+            Node(pc, v.DisplayName, v.IsRemovable ? "\uE88E" : v.IsNetwork ? "\uE8CE" : "\uEDA2", Location.Local(v.Root));
 
         var tools = Section("Cirrus");
-        Node(tools, "Back Up iCloud…", "", new SidebarAction(() => ShowBackup()));
+        Node(tools, "Back Up iCloud…", "\uE8F7", new SidebarAction(() => ShowBackup()));
         var running = SyncStore.Shared.Jobs.Count(j => SyncStore.Shared.IsRunning(j.Id));
-        Node(tools, running > 0 ? $"Sync Jobs ({running} running)" : "Sync Jobs…", "", new SidebarAction(() => ShowSyncJobs()));
-        Node(tools, "Transfers", "", new SidebarAction(() => SetTransfersVisible(true)));
-        Node(tools, "Settings…", "", new SidebarAction(() => ShowSettings()));
+        Node(tools, running > 0 ? $"Sync Jobs ({running} running)" : "Sync Jobs…", "\uE895", new SidebarAction(() => ShowSyncJobs()));
+        Node(tools, "Transfers", "\uE896", new SidebarAction(() => SetTransfersVisible(true)));
+        Node(tools, "Settings…", "\uE713", new SidebarAction(() => ShowSettings()));
         _syncingSidebar = false;
         if (ActiveTab is { } tab) SelectSidebar(tab.Current);
     }
@@ -513,14 +515,14 @@ public partial class MainWindow : Window
         switch (tag)
         {
             case Location loc:
-                m.Items.Add(MenuItem("Open in New Tab", "", () => OpenTab(loc)));
+                m.Items.Add(MenuItem("Open in New Tab", "\uE8A7", () => OpenTab(loc)));
                 if (loc.Kind == LocKind.Local && Settings.Current.Favorites.Contains(loc.Path!, StringComparer.OrdinalIgnoreCase))
-                    m.Items.Add(MenuItem("Remove from Favorites", "", () => { Settings.Current.Favorites.RemoveAll(f => string.Equals(f, loc.Path, StringComparison.OrdinalIgnoreCase)); Settings.Current.Save(); BuildSidebar(); }));
+                    m.Items.Add(MenuItem("Remove from Favorites", "\uE74D", () => { Settings.Current.Favorites.RemoveAll(f => string.Equals(f, loc.Path, StringComparison.OrdinalIgnoreCase)); Settings.Current.Save(); BuildSidebar(); }));
                 return m;
             case Account a when a.Kind == AccountKind.Web:
-                m.Items.Add(MenuItem("Back Up This Account…", "", () => ShowBackup(a.Id)));
-                m.Items.Add(MenuItem("Sign In Again…", "", () => SignIn(a.AppleID)));
-                m.Items.Add(MenuItem("Sign Out…", "", () =>
+                m.Items.Add(MenuItem("Back Up This Account…", "\uE8F7", () => ShowBackup(a.Id)));
+                m.Items.Add(MenuItem("Sign In Again…", "\uE8FA", () => SignIn(a.AppleID)));
+                m.Items.Add(MenuItem("Sign Out…", "\uF3B1", () =>
                 {
                     if (Dialogs.Confirm(this, $"Sign out of {a.AppleID}?", "Cirrus forgets this session and any saved password. Nothing in iCloud changes.", "Sign Out"))
                         AccountManager.Shared.SignOut(a);

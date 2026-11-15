@@ -72,7 +72,7 @@ sealed class TransfersPanel : DockPanel
         dock.Children.Add(action); dock.Children.Add(reveal);
         var glyph = new TextBlock
         {
-            Text = t.Direction switch { TransferDirection.Upload => "", TransferDirection.Download => "", TransferDirection.Copy => "", _ => "" },
+            Text = t.Direction switch { TransferDirection.Upload => "\uE898", TransferDirection.Download => "\uE896", TransferDirection.Copy => "\uE8C8", _ => "\uE895" },
             FontFamily = (FontFamily)Application.Current.Resources["IconFont"], FontSize = 18, Margin = new Thickness(0, 0, 12, 0), VerticalAlignment = VerticalAlignment.Center,
         };
         DockPanel.SetDock(glyph, Dock.Left);

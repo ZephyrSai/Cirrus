@@ -16,8 +16,14 @@ public final class ContentDownloader: NSObject, URLSessionDownloadDelegate, @unc
     }
 
     private let lock = NSLock()
-    private var jobs = [Int: Job]()
-    private lazy var session: URLSession = {
+    /// Keyed by the task object: two sessions (or a reused identifier) can never cross jobs.
+    private var jobs = [ObjectIdentifier: Job]()
+    /// Created once in init. (A lazy var raced on the first concurrent downloads, made two sessions with
+    /// overlapping task identifiers, and delivered one download's file to another's caller.)
+    private var session: URLSession!
+
+    override init() {
+        super.init()
         let c = URLSessionConfiguration.ephemeral
         c.httpCookieStorage = nil
         c.httpShouldSetCookies = false
@@ -26,8 +32,8 @@ public final class ContentDownloader: NSObject, URLSessionDownloadDelegate, @unc
         c.timeoutIntervalForResource = 60 * 60 * 24
         c.httpMaximumConnectionsPerHost = 12
         if let mocks = ICloudSession.testProtocolClasses { c.protocolClasses = mocks }
-        return URLSession(configuration: c, delegate: self, delegateQueue: nil)
-    }()
+        session = URLSession(configuration: c, delegate: self, delegateQueue: nil)
+    }
 
     /// Downloads one URL (no redirect following) into a temp file and returns it with the response.
     func fetch(_ request: URLRequest, expected: Int64, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> (URL, HTTPURLResponse) {
@@ -36,7 +42,7 @@ public final class ContentDownloader: NSObject, URLSessionDownloadDelegate, @unc
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<(URL, HTTPURLResponse), Error>) in
                 job.continuation = cont
-                lock.withLock { jobs[task.taskIdentifier] = job }
+                lock.withLock { jobs[ObjectIdentifier(task)] = job }
                 task.resume()
             }
         } onCancel: {
@@ -44,7 +50,7 @@ public final class ContentDownloader: NSObject, URLSessionDownloadDelegate, @unc
         }
     }
 
-    func job(_ task: URLSessionTask) -> Job? { lock.withLock { jobs[task.taskIdentifier] } }
+    func job(_ task: URLSessionTask) -> Job? { lock.withLock { jobs[ObjectIdentifier(task)] } }
 
     public func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
                            totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
@@ -60,7 +66,7 @@ public final class ContentDownloader: NSObject, URLSessionDownloadDelegate, @unc
     }
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let j = lock.withLock({ jobs.removeValue(forKey: task.taskIdentifier) }), let cont = j.continuation else { return }
+        guard let j = lock.withLock({ jobs.removeValue(forKey: ObjectIdentifier(task)) }), let cont = j.continuation else { return }
         if let error {
             if let f = j.file { try? FileManager.default.removeItem(at: f.deletingLastPathComponent()) }
             cont.resume(throwing: (error as? URLError)?.code == .cancelled ? ICloudError.cancelled : error)

@@ -58,7 +58,7 @@ public sealed class Item : INotifyPropertyChanged
     public int? Count { get; init; }
     public bool IsHiddenFile { get; init; }
     public LocalFiles.CloudState Cloud { get; init; }
-    public string Glyph { get; init; } = "";
+    public string Glyph { get; init; } = "\uE8A5";
 
     string? _kind;
     public string KindText

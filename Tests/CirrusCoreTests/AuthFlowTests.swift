@@ -16,6 +16,7 @@ final class MockApple: URLProtocol, @unchecked Sendable {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
+        if request.url?.host == "cvws.example.com" { serveContent(); return }
         let key = "\(request.httpMethod ?? "GET") \(request.url?.path ?? "")"
         let reply: Reply = MockApple.lock.withLock {
             MockApple.calls.append(key)
@@ -30,6 +31,18 @@ final class MockApple: URLProtocol, @unchecked Sendable {
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
+
+    /// Content host for downloader tests: the body is the first path component, after a random delay.
+    func serveContent() {
+        let name = request.url?.pathComponents.dropFirst().first ?? "?"
+        let url = request.url!
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(Int.random(in: 1...40))) {
+            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!
+            self.client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
+            self.client?.urlProtocol(self, didLoad: Data(name.utf8))
+            self.client?.urlProtocolDidFinishLoading(self)
+        }
+    }
 }
 
 @Suite(.serialized) struct AuthFlowTests {
@@ -104,5 +117,25 @@ final class MockApple: URLProtocol, @unchecked Sendable {
         r["POST /appleauth/auth/signin/complete"] = .init(status: 401, json: ["serviceErrors": [["code": "-20101", "message": "Your Apple ID or password was incorrect."]]])
         MockApple.reset(r)
         await #expect(throws: ICloudError.badCredentials) { _ = try await session().signIn(password: "nope") }
+    }
+}
+
+/// Regression: concurrent first downloads must each get their own bytes.
+@Suite(.serialized) struct DownloaderTests {
+    @Test func concurrentDownloadsNeverCross() async throws {
+        ICloudSession.testProtocolClasses = [MockApple.self]
+        let s = ICloudSession(state: SessionState(appleID: "x@example.com"))
+        try await withThrowingTaskGroup(of: Void.self) { g in
+            for i in 0..<24 {
+                g.addTask {
+                    let dest = FileManager.default.temporaryDirectory.appendingPathComponent("dl-\(UUID().uuidString)")
+                    try await s.download(from: "https://cvws.example.com/item\(i)/${f}?k=\(i)", to: dest, expectedSize: nil) { _, _ in }
+                    let body = try String(contentsOf: dest, encoding: .utf8)
+                    #expect(body == "item\(i)", "download \(i) got \(body)")
+                    try? FileManager.default.removeItem(at: dest)
+                }
+            }
+            try await g.waitForAll()
+        }
     }
 }

@@ -20,12 +20,12 @@ public sealed class Catalog
 
     public static string Glyph(Location loc) => loc.Kind switch
     {
-        LocKind.Computer => "",
-        LocKind.Local => "",
-        LocKind.Drive => "",
-        LocKind.DriveTrash => "",
-        LocKind.Photos => "",
-        _ => loc.Id == "smart:Recently Deleted" ? "" : loc.Id == "smart:Favorites" ? "" : "",
+        LocKind.Computer => "\uE7F8",
+        LocKind.Local => "\uE8B7",
+        LocKind.Drive => "\uE753",
+        LocKind.DriveTrash => "\uE74D",
+        LocKind.Photos => "\uEB9F",
+        _ => loc.Id == "smart:Recently Deleted" ? "\uE74D" : loc.Id == "smart:Favorites" ? "\uEB51" : "\uE8B9",
     };
 
     // MARK: Titles
@@ -201,7 +201,7 @@ public sealed class Catalog
                     {
                         Key = "album:" + acct.Id + "|" + a.Id, Name = a.Name, IsContainer = true, Album = a, Count = a.Count, AccountID = acct.Id,
                         Target = a.Kind == PhotoAlbumKind.Folder ? Location.Photos(acct.Id, loc.Library!, a.Id) : Location.Album(acct.Id, loc.Library!, a.Id),
-                        Glyph = a.Kind == PhotoAlbumKind.Folder ? "" : a.Id == "smart:Recently Deleted" ? "" : a.Id == "smart:Favorites" ? "" : "",
+                        Glyph = a.Kind == PhotoAlbumKind.Folder ? "\uE8B7" : a.Id == "smart:Recently Deleted" ? "\uE74D" : a.Id == "smart:Favorites" ? "\uEB51" : "\uE8B9",
                     }).ToList();
             }
             default:
@@ -221,11 +221,11 @@ public sealed class Catalog
         var items = new List<Item>();
         if (AccountManager.Shared.NativeAccount is { } n)
         {
-            if (n.DriveRoot is { } dr) items.Add(new Item { Key = "native-drive", Name = "iCloud Drive", IsContainer = true, LocalPath = dr, Target = Location.Local(dr), Glyph = "" });
-            if (n.PhotosRoot is { } pr) items.Add(new Item { Key = "native-photos", Name = "iCloud Photos", IsContainer = true, LocalPath = pr, Target = Location.Local(pr), Glyph = "" });
+            if (n.DriveRoot is { } dr) items.Add(new Item { Key = "native-drive", Name = "iCloud Drive", IsContainer = true, LocalPath = dr, Target = Location.Local(dr), Glyph = "\uE753" });
+            if (n.PhotosRoot is { } pr) items.Add(new Item { Key = "native-photos", Name = "iCloud Photos", IsContainer = true, LocalPath = pr, Target = Location.Local(pr), Glyph = "\uEB9F" });
         }
         foreach (var v in VolumeInfo.All())
-            items.Add(new Item { Key = "vol:" + v.Root, Name = v.DisplayName, IsContainer = true, Volume = v, LocalPath = v.Root, Target = Location.Local(v.Root), Glyph = v.IsRemovable ? "" : "" });
+            items.Add(new Item { Key = "vol:" + v.Root, Name = v.DisplayName, IsContainer = true, Volume = v, LocalPath = v.Root, Target = Location.Local(v.Root), Glyph = v.IsRemovable ? "\uE88E" : "\uEDA2" });
         return items;
     }
 
@@ -246,7 +246,7 @@ public sealed class Catalog
                 Key = "file:" + e.FullName.ToLowerInvariant(), Name = e.Name, IsContainer = isDir, Size = isDir ? null : ((FileInfo)e).Length,
                 Modified = new DateTimeOffset(e.LastWriteTimeUtc, TimeSpan.Zero), Created = new DateTimeOffset(e.CreationTimeUtc, TimeSpan.Zero),
                 LocalPath = e.FullName, Target = isDir ? Location.Local(e.FullName) : null, IsHiddenFile = hidden,
-                Cloud = icloud ? LocalFiles.GetCloudState(e.FullName) : LocalFiles.CloudState.NotCloud, Glyph = isDir ? "" : "",
+                Cloud = icloud ? LocalFiles.GetCloudState(e.FullName) : LocalFiles.CloudState.NotCloud, Glyph = isDir ? "\uE8B7" : "\uE8A5",
             });
         }
         return items;
@@ -259,13 +259,13 @@ public sealed class Catalog
         {
             Key = "drive:" + acct.Id + "|" + n.Id, Name = n.Name, IsContainer = n.IsFolder, Size = n.IsFolder ? null : n.Size, Modified = n.Modified, Created = n.Created,
             Node = n, AccountID = acct.Id, Count = n.ChildCount, Target = n.IsFolder && !inTrash ? Location.Drive(acct.Id, n.Id) : null,
-            Glyph = n.IsFolder ? "" : "",
+            Glyph = n.IsFolder ? "\uE8B7" : "\uE8A5",
         };
     }
 
     public static Item PhotoItem(Account acct, PhotoAsset a) => new()
     {
         Key = "photo:" + acct.Id + "|" + a.Id, Name = a.Filename, Size = a.Size, Modified = a.Created, Created = a.Added, Photo = a, AccountID = acct.Id,
-        Glyph = a.IsVideo ? "" : "",
+        Glyph = a.IsVideo ? "\uE714" : "\uEB9F",
     };
 }

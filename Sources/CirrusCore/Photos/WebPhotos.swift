@@ -312,11 +312,15 @@ public final class WebPhotos: PhotosBackend, @unchecked Sendable {
         let kind: PhotoResource.Kind = maxPixel > 400 ? .medium : .thumbnail
         let px = kind == .medium ? 1024 : 360
         if let d = ThumbnailDiskCache.read(cacheKey, asset.id, px) { return PhotoFormats.cgImage(from: d, maxPixel: maxPixel) }
-        guard let r = asset.resource(kind) ?? asset.resource(.thumbnail) else { return nil }
+        // No medium rendition (common for uploads): use the original for big previews when it's small enough.
+        var r = asset.resource(kind)
+        if r == nil, kind == .medium, let o = asset.resource(.original), o.size > 0, o.size <= 20_000_000, !asset.isVideo { r = o }
+        guard let r = r ?? asset.resource(.thumbnail) else { return nil }
         let tmp = Paths.tempFile(named: "t.jpg")
         defer { try? FileManager.default.removeItem(at: tmp.deletingLastPathComponent()) }
         try await fetch(r, library: asset.library, to: tmp) { _, _ in }
-        guard let data = try? Data(contentsOf: tmp) else { return nil }
+        guard var data = try? Data(contentsOf: tmp) else { return nil }
+        if r.kind == .original, let cg = PhotoFormats.cgImage(from: data, maxPixel: px), let jpeg = PhotoFormats.jpeg(cg) { data = jpeg }
         ThumbnailDiskCache.write(data, cacheKey, asset.id, px)
         return PhotoFormats.cgImage(from: data, maxPixel: maxPixel)
     }

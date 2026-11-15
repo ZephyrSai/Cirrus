@@ -63,8 +63,32 @@ public partial class BrowserTab : UserControl
         _relayout.Tick += (_, _) => { _relayout.Stop(); BuildRows(); };
         DragOver += OnDragOver;
         Drop += OnDrop;
-        Catalog.Shared.Invalidated += loc => Dispatcher.InvokeAsync(() => { if (loc == Current) Reload(keepSelection: true); });
+        Catalog.Shared.Invalidated += OnInvalidated;
         PreviewKeyDown += OnKey;
+        DetailsList.ContextMenu = new ContextMenu();
+        IconsList.ContextMenu = new ContextMenu();
+        DetailsList.PreviewMouseRightButtonDown += List_PreviewRightDown;
+        IconsList.PreviewMouseRightButtonDown += List_PreviewRightDown;
+        DetailsList.PreviewMouseLeftButtonUp += List_PreviewMouseUp;
+        IconsList.PreviewMouseLeftButtonUp += List_PreviewMouseUp;
+    }
+
+    void OnInvalidated(Location loc) => Dispatcher.InvokeAsync(() => { if (loc == Current) Reload(keepSelection: true); });
+
+    /// <summary>Called when the tab closes: stop listening and cancel any listing in flight.</summary>
+    public void Detach()
+    {
+        Catalog.Shared.Invalidated -= OnInvalidated;
+        _loadCts?.Cancel();
+    }
+
+    /// <summary>Copies a freshly built menu into an element's existing ContextMenu (WPF only opens menus that exist up front).</summary>
+    public static bool Fill(ContextMenu target, ContextMenu? built)
+    {
+        target.Items.Clear();
+        if (built is null) return false;
+        foreach (var item in built.Items.Cast<object>().ToList()) { built.Items.Remove(item); target.Items.Add(item); }
+        return target.Items.Count > 0;
     }
 
     public string Title => Catalog.Shared.Title(Current);
@@ -337,10 +361,39 @@ public partial class BrowserTab : UserControl
 
     void List_SelectionChanged(object sender, SelectionChangedEventArgs e) { SelectionChanged?.Invoke(); UpdateStatus(); }
 
+    ListBoxItem? _pendingSingle;
+
     void List_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
         _dragStart = e.GetPosition(this);
-        _dragArmed = e.OriginalSource is DependencyObject d && ItemsControl.ContainerFromElement((ItemsControl)sender, d) is ListBoxItem;
+        var container = e.OriginalSource is DependencyObject d ? ItemsControl.ContainerFromElement((ItemsControl)sender, d) as ListBoxItem : null;
+        _dragArmed = container is not null;
+        _pendingSingle = null;
+        // Like Explorer: pressing on an already-selected item keeps the multi-selection so it can be dragged;
+        // it collapses to that one item on release if no drag happened.
+        if (container is { IsSelected: true } && Keyboard.Modifiers == ModifierKeys.None && e.ClickCount == 1 && ((ListBox)sender).SelectedItems.Count > 1)
+        {
+            _pendingSingle = container;
+            container.Focus();
+            e.Handled = true;
+        }
+    }
+
+    void List_PreviewMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_pendingSingle is { } c && sender is ListBox lb)
+        {
+            lb.SelectedItems.Clear();
+            c.IsSelected = true;
+        }
+        _pendingSingle = null;
+    }
+
+    void List_PreviewRightDown(object sender, MouseButtonEventArgs e)
+    {
+        var container = e.OriginalSource is DependencyObject d ? ItemsControl.ContainerFromElement((ItemsControl)sender, d) as ListBoxItem : null;
+        if (container is null) ((ListBox)sender).SelectedItems.Clear();   // right-click on empty space: folder commands
+        else if (!container.IsSelected) { ((ListBox)sender).SelectedItems.Clear(); container.IsSelected = true; }
     }
 
     void List_PreviewMouseMove(object sender, MouseEventArgs e)
@@ -349,6 +402,7 @@ public partial class BrowserTab : UserControl
         var p = e.GetPosition(this);
         if (Math.Abs(p.X - _dragStart.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(p.Y - _dragStart.Y) < SystemParameters.MinimumVerticalDragDistance) return;
         _dragArmed = false;
+        _pendingSingle = null;
         var sel = Selected;
         if (sel.Count > 0) StartDrag(sel);
     }
@@ -356,7 +410,8 @@ public partial class BrowserTab : UserControl
     void List_ContextMenuOpening(object sender, ContextMenuEventArgs e)
     {
         var fe = (FrameworkElement)sender;
-        fe.ContextMenu = Host?.BuildContextMenu(this, Selected);
+        fe.ContextMenu ??= new ContextMenu();
+        if (!Fill(fe.ContextMenu, Host?.BuildContextMenu(this, Selected))) e.Handled = true;
     }
 
     void OnKey(object sender, KeyEventArgs e)

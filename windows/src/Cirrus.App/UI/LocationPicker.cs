@@ -19,7 +19,10 @@ sealed class LocationPicker : Window
     public Location? Chosen { get; private set; }
 
     /// <param name="foldersOnly">Only folders (sync job endpoints) — no Photos albums.</param>
-    public LocationPicker(string title, string okText, Location? start, bool foldersOnly = false, bool includePhotos = true)
+    readonly bool _anyLocation;
+
+    /// <param name="anyLocation">Choosing a source: the place doesn't need to accept new items.</param>
+    public LocationPicker(string title, string okText, Location? start, bool foldersOnly = false, bool includePhotos = true, bool anyLocation = false)
     {
         Title = title;
         Width = 520;
@@ -28,6 +31,7 @@ sealed class LocationPicker : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = false;
         _foldersOnly = foldersOnly;
+        _anyLocation = anyLocation;
         _ok = Ui.Button(okText, () => { DialogResult = true; }, accent: true, isDefault: true);
         _ok.IsEnabled = false;
         var newFolder = Ui.Button("New Folder…", async () => await MakeFolder());
@@ -44,7 +48,7 @@ sealed class LocationPicker : Window
         _tree.SelectedItemChanged += (_, e) =>
         {
             Chosen = (e.NewValue as TreeViewItem)?.Tag as Location;
-            var accepts = Chosen is not null && Catalog.Shared.Caps(Chosen).AcceptsDrops;
+            var accepts = Chosen is not null && (_anyLocation || Catalog.Shared.Caps(Chosen).AcceptsDrops);
             _ok.IsEnabled = accepts;
             _chosenText.Text = Chosen is null ? "" : accepts ? Catalog.Shared.LongTitle(Chosen) : $"“{Catalog.Shared.Title(Chosen)}” doesn’t accept new items" + (SafetyPolicy.ReadOnlyICloud && Catalog.Shared.Caps(Chosen).IsICloud ? " (read-only mode is on)." : ".");
         };
@@ -73,14 +77,14 @@ sealed class LocationPicker : Window
         return n;
     }
 
-    Task LocalChildren(TreeViewItem n, string dir) => Task.Run(() =>
+    async Task LocalChildren(TreeViewItem n, string dir)
+    {
+        var dirs = await Task.Run(() =>
             new DirectoryInfo(dir).EnumerateDirectories("*", new EnumerationOptions { IgnoreInaccessible = true })
                 .Where(d => (d.Attributes & (FileAttributes.Hidden | FileAttributes.System)) == 0 && !d.Name.StartsWith('.'))
-                .OrderBy(d => d.Name, NaturalComparer.Instance).Select(d => d.FullName).ToList())
-        .ContinueWith(t => Dispatcher.Invoke(() =>
-        {
-            foreach (var p in t.Result) Node(n, Path.GetFileName(p), "", Location.Local(p), c => LocalChildren(c, p));
-        }));
+                .OrderBy(d => d.Name, NaturalComparer.Instance).Select(d => d.FullName).ToList());
+        foreach (var p in dirs) Node(n, Path.GetFileName(p), "\uE8B7", Location.Local(p), c => LocalChildren(c, p));
+    }
 
     async Task DriveChildren(TreeViewItem n, Account a, string folderID)
     {
@@ -88,47 +92,47 @@ sealed class LocationPicker : Window
         foreach (var f in nodes.Where(x => x.IsFolder).OrderBy(x => x.Name, NaturalComparer.Instance))
         {
             Catalog.Shared.RememberDrive(a.Id, f);
-            Node(n, f.Name, "", Location.Drive(a.Id, f.Id), c => DriveChildren(c, a, f.Id));
+            Node(n, f.Name, "\uE8B7", Location.Drive(a.Id, f.Id), c => DriveChildren(c, a, f.Id));
         }
     }
 
     void Build(bool includePhotos)
     {
         var am = AccountManager.Shared;
-        var favs = Node(_tree, "Favorites", "", null);
+        var favs = Node(_tree, "Favorites", "\uE734", null);
         favs.IsExpanded = true;
         foreach (var p in Settings.Current.Favorites.Where(Directory.Exists))
-            Node(favs, Catalog.Shared.Title(Location.Local(p)), "", Location.Local(p), c => LocalChildren(c, p));
+            Node(favs, Catalog.Shared.Title(Location.Local(p)), "\uE8B7", Location.Local(p), c => LocalChildren(c, p));
         if (am.NativeAccount is { } native)
         {
-            var s = Node(_tree, "iCloud for Windows", "", null);
+            var s = Node(_tree, "iCloud for Windows", "\uE753", null);
             s.IsExpanded = true;
-            if (native.DriveRoot is { } dr) Node(s, "iCloud Drive", "", Location.Local(dr), c => LocalChildren(c, dr));
-            if (native.PhotosRoot is { } pr && !_foldersOnly) Node(s, "iCloud Photos", "", Location.Local(pr), c => LocalChildren(c, pr));
+            if (native.DriveRoot is { } dr) Node(s, "iCloud Drive", "\uE753", Location.Local(dr), c => LocalChildren(c, dr));
+            if (native.PhotosRoot is { } pr && !_foldersOnly) Node(s, "iCloud Photos", "\uEB9F", Location.Local(pr), c => LocalChildren(c, pr));
         }
         foreach (var a in am.Accounts.Where(a => a.Kind != AccountKind.Native && a.Status != AccountStatus.NeedsSignIn))
         {
-            var s = Node(_tree, a.Kind == AccountKind.Demo ? "Demo iCloud" : a.Title, "", null);
+            var s = Node(_tree, a.Kind == AccountKind.Demo ? "Demo iCloud" : a.Title, "\uE77B", null);
             s.IsExpanded = true;
             if (a.Drive is { } d)
             {
-                var root = Node(s, "iCloud Drive", "", Location.Drive(a.Id, d.RootID), c => DriveChildren(c, a, d.RootID));
+                var root = Node(s, "iCloud Drive", "\uE753", Location.Drive(a.Id, d.RootID), c => DriveChildren(c, a, d.RootID));
                 root.IsExpanded = false;
             }
             if (includePhotos && !_foldersOnly && a.Photos is not null)
             {
                 var lib = a.PrimaryLibraryID;
-                Node(s, "Photos", "", Location.Album(a.Id, lib, "smart:All Photos"), async c =>
+                Node(s, "Photos", "\uEB9F", Location.Album(a.Id, lib, "smart:All Photos"), async c =>
                 {
                     foreach (var al in (await Catalog.Shared.Albums(a, lib)).Where(x => x.Kind == PhotoAlbumKind.Album).OrderBy(x => x.Name, NaturalComparer.Instance))
-                        Node(c, al.Name, "", Location.Album(a.Id, lib, al.Id));
+                        Node(c, al.Name, "\uE8B9", Location.Album(a.Id, lib, al.Id));
                 });
             }
         }
-        var pc = Node(_tree, "This PC", "", null);
+        var pc = Node(_tree, "This PC", "\uE7F8", null);
         pc.IsExpanded = true;
         foreach (var v in VolumeInfo.All())
-            Node(pc, v.DisplayName, v.IsRemovable ? "" : "", Location.Local(v.Root), c => LocalChildren(c, v.Root));
+            Node(pc, v.DisplayName, v.IsRemovable ? "\uE88E" : "\uEDA2", Location.Local(v.Root), c => LocalChildren(c, v.Root));
     }
 
     async Task MakeFolder()

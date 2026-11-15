@@ -121,7 +121,7 @@
         <ListBox x:Name="PhotoGrid" BorderThickness="0" Background="Transparent" Visibility="Collapsed"
                  ItemTemplateSelector="{StaticResource RowSelector}" Focusable="True"
                  ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.CanContentScroll="True"
-                 VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" VirtualizingPanel.ScrollUnit="Pixel"
+                 VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Standard" VirtualizingPanel.ScrollUnit="Pixel"
                  SizeChanged="PhotoGrid_SizeChanged" KeyDown="PhotoGrid_KeyDown">
             <ListBox.ItemContainerStyle>
                 <Style TargetType="ListBoxItem">

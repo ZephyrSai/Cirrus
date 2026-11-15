@@ -81,6 +81,7 @@ public final class AccountManager {
             list.append(demo)
         }
         accounts = list
+        ThumbnailDiskCache.pruneOldVersions(keeping: list.compactMap { $0.photos?.cacheKey })
         NotificationCenter.default.post(name: Self.changed, object: self)
     }
 
@@ -97,7 +98,7 @@ public final class AccountManager {
         a.session = session
         a.drive = WebDrive(session: session)
         a.photos = WebPhotos(session: session, appleID: appleID)
-        if let name = state.accountInfo["dsInfo"]["fullName"].string, !name.isEmpty { a.title = name }
+        if let name = state.accountInfo["dsInfo"]["fullName"].string?.split(whereSeparator: \.isWhitespace).joined(separator: " "), !name.isEmpty { a.title = name }
         if state.cookies.isEmpty { a.status = .needsSignIn }
         let id = appleID.lowercased()
         Task {
