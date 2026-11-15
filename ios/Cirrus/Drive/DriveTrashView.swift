@@ -45,11 +45,13 @@ struct DriveTrashView: View {
         }
         .navigationTitle("Recently Deleted")
         .toolbar {
-            ToolbarItem(placement: .bottomBar) {
-                Button("Put Back \(selected.isEmpty ? "" : "\(selected.count) ")Selected") {
-                    Task { await restore(nodes.filter { selected.contains($0.id) }) }
+            if !nodes.isEmpty {
+                ToolbarItem(placement: .bottomBar) {
+                    Button("Put Back \(selected.isEmpty ? "" : "\(selected.count) ")Selected") {
+                        Task { await restore(nodes.filter { selected.contains($0.id) }) }
+                    }
+                    .disabled(selected.isEmpty || state.readOnly || working)
                 }
-                .disabled(selected.isEmpty || state.readOnly || working)
             }
         }
         .refreshable { await load() }

@@ -120,6 +120,9 @@ struct ExportView: View {
                 if let f = DebugScreens.autoFolder { folder = f; DebugScreens.autoFolder = nil }
                 #endif
                 if folder != nil { await evaluate() }
+                #if DEBUG
+                if DebugScreens.autoRun, let e = evaluation, canExport(e) { start(e); state.selection = .transfers }
+                #endif
             }
         }
     }

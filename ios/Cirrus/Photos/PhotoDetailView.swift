@@ -93,7 +93,10 @@ struct PhotoDetailView: View {
                 if a.isLive { Label("LIVE", systemImage: "livephoto").font(.caption2.bold()) }
                 if a.isEdited { Label("Edited", systemImage: "slider.horizontal.3").font(.caption2.bold()) }
             }
-            .foregroundStyle(.white).padding(10)
+            .foregroundStyle(.primary)
+            .padding(.horizontal, a.isLive || a.isEdited ? 8 : 0).padding(.vertical, a.isLive || a.isEdited ? 4 : 0)
+            .background { if a.isLive || a.isEdited { Capsule().fill(.ultraThinMaterial) } }
+            .padding(10)
         }
     }
 

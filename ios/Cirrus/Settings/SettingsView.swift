@@ -6,7 +6,7 @@ struct SettingsView: View {
     @Environment(AppState.self) private var state
     @State private var faceID = Prefs.requireFaceID
     @State private var previews = Prefs.drivePreviews
-    @State private var demo = Prefs.showDemoAccount
+    @State private var demo = AccountManager.shared.demoMode
     @State private var cacheSize: Int64?
     @State private var confirmWrite = false
 

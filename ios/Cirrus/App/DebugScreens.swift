@@ -2,6 +2,7 @@
 import CirrusCore
 import Foundation
 import SwiftUI
+import UIKit
 
 /// Debug builds only (compiled out of Release): opens a given screen at launch so screenshots of the demo
 /// account can be taken headlessly in the Simulator, e.g.
@@ -18,6 +19,24 @@ enum DebugScreens {
     static var openExport = false
     static var autoFolder: URL?
     static var signInStep: String?
+    /// CIRRUS_AUTO=1: confirm the staged upload, start the export or the backup after its check.
+    static var autoRun: Bool { env["CIRRUS_AUTO"] == "1" }
+    static var stageUpload = false
+
+    /// Two sample files for the upload screen: one new picture and one whose name already exists ("Recipe.txt").
+    static func sampleUploads() -> [Ops.UploadFile] {
+        let photo = Paths.tempFile(named: "Sunrise.jpg")
+        let img = UIGraphicsImageRenderer(size: CGSize(width: 1200, height: 800)).image { ctx in
+            let colors = [UIColor.systemOrange.cgColor, UIColor.systemPink.cgColor, UIColor.systemIndigo.cgColor] as CFArray
+            if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 0.5, 1]) {
+                ctx.cgContext.drawLinearGradient(g, start: .zero, end: CGPoint(x: 0, y: 800), options: [])
+            }
+        }
+        try? img.jpegData(compressionQuality: 0.8)?.write(to: photo)
+        let text = Paths.tempFile(named: "Recipe.txt")
+        try? Data("Pancakes, version 2: flour, milk, eggs, a pinch of salt.\n".utf8).write(to: text)
+        return Ops.inspect([photo, text], scoped: false, temporary: true)
+    }
 
     static func apply() {
         guard let screen else { return }
@@ -27,6 +46,7 @@ enum DebugScreens {
         let demo = "demo"
         switch screen {
         case "drive", "drive-grid": s.selection = .drive(demo)
+        case "upload": s.selection = .drive(demo); stageUpload = true
         case "drive-folder":
             s.selection = .drive(demo)
             initialPath.append(DriveFolderRef(accountID: demo, folderID: "FOLDER::demo::Pictures", title: "Pictures"))

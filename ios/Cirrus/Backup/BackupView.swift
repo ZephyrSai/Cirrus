@@ -93,7 +93,10 @@ struct BackupView: View {
         .navigationTitle("Back Up iCloud")
         .task {
             #if DEBUG
-            if let f = DebugScreens.autoFolder { DebugScreens.autoFolder = nil; folder = f; await evaluate() }
+            if let f = DebugScreens.autoFolder {
+                DebugScreens.autoFolder = nil; folder = f; await evaluate()
+                if DebugScreens.autoRun, let e = evaluation { start(e); state.selection = .transfers }
+            }
             #endif
         }
         .sheet(isPresented: $picking) {

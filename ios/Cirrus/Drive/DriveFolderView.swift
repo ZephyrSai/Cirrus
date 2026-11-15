@@ -45,6 +45,7 @@ struct DriveFolderView: View {
                 await model.load()
                 #if DEBUG
                 if let n = DebugScreens.quickLookName, let node = model.nodes.first(where: { $0.name == n }) { DebugScreens.quickLookName = nil; open(node) }
+                if DebugScreens.stageUpload { DebugScreens.stageUpload = false; startUpload(DebugScreens.sampleUploads()) }
                 #endif
             }
             .onReceive(NotificationCenter.default.publisher(for: .cirrusDriveChanged)) { n in
@@ -396,6 +397,9 @@ struct DriveFolderView: View {
                 discardStaged(files)
             } else {
                 uploadCheck = check
+                #if DEBUG
+                if DebugScreens.autoRun { finishUpload(check, replace: false) }
+                #endif
             }
         }
     }

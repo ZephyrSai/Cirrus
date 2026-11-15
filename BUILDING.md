@@ -133,11 +133,11 @@ xcrun simctl io booted screenshot photos.png
 ```
 
 Available screens:
-- Drive: `drive`, `drive-grid`, `drive-folder`, `quicklook`, `trash`
+- Drive: `drive`, `drive-grid`, `drive-folder`, `quicklook`, `trash`, `upload` (stages two sample files, one with a name that's already taken)
 - Photos: `photos`, `photo`, `albums`, `album`, `export`, `device-photos`
-- Everything else: `transfers`, `backup`, `accounts`, `settings`, `signin`, `code`
+- Everything else: `sidebar`, `transfers`, `backup`, `accounts`, `settings`, `signin`, `code`
 
-`CIRRUS_READ_ONLY=0` or `1` sets read-only mode. All of these are compiled out of Release builds.
+`CIRRUS_READ_ONLY=0` or `1` sets read-only mode. `CIRRUS_AUTO=1` confirms the staged upload (Keep Both) and starts the export or backup after its check, so the runs can be checked on disk with `xcrun simctl get_app_container booted io.github.zephyrsai.cirrus.ios data`; their output lands in `Documents/Exports` and `Documents/Backup Drive`. All of these are compiled out of Release builds.
 
 ### iOS-specific behaviour
 

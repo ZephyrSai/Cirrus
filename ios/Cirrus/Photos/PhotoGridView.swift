@@ -209,7 +209,7 @@ struct PhotoGridView: View {
             try await model.resolve(target, preferredLibrary: library ?? (preferredLibrary.isEmpty ? nil : preferredLibrary))
             await model.load(force: force)
             #if DEBUG
-            if DebugScreens.openFirstPhoto, let a = model.months.first?.assets.first(where: \.isLive) ?? model.months.first?.assets.first {
+            if DebugScreens.openFirstPhoto, let a = model.months.flatMap(\.assets).first(where: \.isLive) ?? model.months.first?.assets.first {
                 DebugScreens.openFirstPhoto = false; detail = PhotoDetailRef(id: a.id)
             }
             if DebugScreens.openExport, let al = model.album, let lib = model.library {
