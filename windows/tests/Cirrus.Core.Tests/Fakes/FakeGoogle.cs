@@ -6,7 +6,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Text.RegularExpressions;
 using Cirrus.Core;
 
 namespace Cirrus.Fakes;
@@ -16,9 +15,11 @@ namespace Cirrus.Fakes;
 /// HttpMessageHandler (port of FakeGoogleServer.swift). Unit tests use it as the mock Google server; Debug builds of the
 /// app in demo mode use it so both directions of the move run without a Google account. It follows the documented wire
 /// protocol strictly (PKCE, per-token scopes, 256 KiB chunks, 50-item batches, app-created-only visibility for drive.file)
-/// so it catches client mistakes. Never part of a Release build.
+/// so it catches client mistakes. With the full <c>drive</c> scope it is also Google Drive as a browsable cloud (every file
+/// visible and changeable, trash, shortcuts, thumbnails): <see cref="DriveDemo"/> is demo mode's "Google Drive" account,
+/// served through <see cref="FakeCloudRouter"/>. Never part of a Release build.
 /// </summary>
-public sealed class FakeGoogle : HttpMessageHandler
+public sealed class FakeGoogle : HttpMessageHandler, IFakeCloud
 {
     public sealed class FileRec
     {
@@ -35,18 +36,26 @@ public sealed class FakeGoogle : HttpMessageHandler
         public bool ByApp { get; set; }
         public bool CanDownload { get; set; } = true;
         public bool ExportTooLarge { get; set; }
+        public string? CreatedTime { get; set; }
+        /// <summary>Shortcuts (mimeType application/vnd.google-apps.shortcut): the file or folder they point to.</summary>
+        public string? ShortcutTarget { get; set; }
         public bool IsNative => MimeType.StartsWith("application/vnd.google-apps.", StringComparison.Ordinal) && MimeType != GoogleDrive.FolderMime;
+        /// <summary>Google makes thumbnails for pictures, videos, PDFs and Docs editors files.</summary>
+        public bool HasThumbnail => MimeType.StartsWith("image/", StringComparison.Ordinal) || MimeType.StartsWith("video/", StringComparison.Ordinal)
+            || MimeType == "application/pdf" || MimeType is "application/vnd.google-apps.document" or "application/vnd.google-apps.spreadsheet"
+                or "application/vnd.google-apps.presentation" or "application/vnd.google-apps.drawing";
     }
     public sealed class MediaItem { public string Id { get; set; } = ""; public string FileName { get; set; } = ""; public string? Description { get; set; } public long Size { get; set; } public string Md5 { get; set; } = ""; }
     public sealed class AlbumRec { public string Id { get; set; } = ""; public string Title { get; set; } = ""; public List<string> Items { get; set; } = []; }
     public sealed record PickerPhoto(string Id, string FileName, string Mime, byte[] Data, DateTimeOffset Created, bool IsVideo);
     public sealed record Blob(string Md5, long Size);
     internal sealed record Code(string Challenge, string Redirect, List<string> Scopes);
-    internal sealed class DriveSession { public JsonObject Meta = new(); public long Total; public MemoryStream Data = new(); public string? FileID; }
+    internal sealed class DriveSession { public JsonObject Meta = new(); public long Total; public MemoryStream Data = new(); public string? FileID; public bool KeepData; }
     internal sealed class PhotoSession { public long Total; public MemoryStream Data = new(); public string? Token; }
     internal sealed class PickerSession { public List<string> Items = []; public bool Set; }
 
     public const string RootID = "0AFakeMyDriveRoot";
+    const string ShortcutMime = "application/vnd.google-apps.shortcut";
 
     /// <summary>Everything the server knows. Tests read and tweak it between steps (through <see cref="Update"/>).</summary>
     public sealed class State
@@ -54,7 +63,7 @@ public sealed class FakeGoogle : HttpMessageHandler
         public string ClientID = "demo-client.apps.googleusercontent.com";
         public string? ClientSecret = "demo-secret";
         /// <summary>What the user ticks on the consent page (each sign-in gets the requested ones among these).</summary>
-        public List<string> GrantedScopes = [.. GoogleScopes.Import];
+        public List<string> GrantedScopes = [.. GoogleScopes.Import, GoogleScopes.Drive];
         public string UserID = "demo-google-user";
         public string Email = "demo.person@gmail.example";
         public string Name = "Demo Person";
@@ -78,6 +87,8 @@ public sealed class FakeGoogle : HttpMessageHandler
         public List<string> Calls = [];
         public int PermanentDeletes, DriveSessionsStarted, PhotoSessionsStarted, StatusQueries, Refreshes, ChunkPuts, RangedGets, ExportLinkUses, PickerSessionsDeleted;
         public List<int> BatchCreateSizes = [], AlbumAddSizes = [];
+        /// <summary>Pixel sizes asked of the Drive thumbnail endpoint (<c>…=s&lt;px&gt;</c>).</summary>
+        public List<int> ThumbnailSizes = [];
         /// <summary>Authorization headers that reached a host other than Google's (must stay empty).</summary>
         public List<string> TokensSentElsewhere = [];
         // Fault injection
@@ -95,6 +106,8 @@ public sealed class FakeGoogle : HttpMessageHandler
         public int? PhotosRequestsLeft;
         /// <summary>batchCreate rejects items with these file names.</summary>
         public HashSet<string> RejectFileNames = [];
+        /// <summary>Each refresh hands out a new refresh token and retires the old one (Google may rotate them).</summary>
+        public bool RotateRefreshTokens;
         public double Latency;
 
         public IEnumerable<FileRec> VisibleFiles => Files.Values.Where(f => f.ByApp);
@@ -137,6 +150,42 @@ public sealed class FakeGoogle : HttpMessageHandler
             Files[id].Size = data.Length;
             Files[id].Md5 = Md5(data);
             Files[id].ModifiedTime = Iso(DateTimeOffset.UtcNow);
+        }
+        /// <summary>A Drive shortcut to another file or folder.</summary>
+        public string AddUserShortcut(string name, string target, string parent = RootID, DateTimeOffset? modified = null)
+        {
+            var id = NewID("s");
+            Files[id] = new FileRec
+            {
+                Id = id, Name = name, MimeType = ShortcutMime, Parents = [parent], ShortcutTarget = target,
+                ModifiedTime = Iso(modified ?? DateTimeOffset.FromUnixTimeSeconds(1_700_000_000)),
+            };
+            return id;
+        }
+        /// <summary>In the trash itself, or inside a folder that is (as Google reports <c>trashed</c>).</summary>
+        public bool IsTrashed(string id)
+        {
+            var seen = new HashSet<string>();
+            var cur = Files.GetValueOrDefault(id);
+            while (cur is not null)
+            {
+                if (cur.Trashed) return true;
+                if (cur.Parents.Count == 0 || !seen.Add(cur.Parents[0])) return false;
+                cur = Files.GetValueOrDefault(cur.Parents[0]);
+            }
+            return false;
+        }
+        /// <summary>Whether <paramref name="id"/> is <paramref name="ancestor"/> or somewhere inside it.</summary>
+        public bool IsInside(string id, string ancestor)
+        {
+            var seen = new HashSet<string>();
+            string? cur = id;
+            while (cur is not null && seen.Add(cur))
+            {
+                if (cur == ancestor) return true;
+                cur = Files.GetValueOrDefault(cur)?.Parents.FirstOrDefault();
+            }
+            return false;
         }
     }
 
@@ -183,6 +232,124 @@ public sealed class FakeGoogle : HttpMessageHandler
                     s.PickerLibrary.Add(new PickerPhoto($"pk{i}", $"PXL_2025080{i}_120000.png", "image/png", DemoArt.Png(900, 600, i / 4.0 + 0.05, $"Picked {i + 1}"),
                         DateTimeOffset.FromUnixTimeSeconds(1_754_000_000 + i * 86_400L), false));
             _state = s;
+        }
+    }
+
+    // MARK: Google Drive demo account (IFakeCloud)
+
+    /// <summary>The demo Google Drive account's id in demo mode.</summary>
+    public const string DriveDemoAccountID = "cloud:googleDrive:demo";
+    /// <summary>The demo account's long-lived sign-in (the fake knows it; no browser round trip).</summary>
+    public const string DriveDemoRefreshToken = "1//fake-drive-demo-refresh";
+    bool _driveDemo;
+
+    /// <summary>
+    /// A fake Google account seeded as demo mode's Google Drive (Alex Morgan, alex@example.com): folders, a Doc, a Sheet,
+    /// pictures, a PDF, shortcuts, a Form and something in the trash. A separate instance from the migration demo's
+    /// (<see cref="StartDemo"/>), so neither disturbs the other. Hand it to <see cref="FakeCloudRouter"/>; its
+    /// <see cref="DemoAccounts"/> then lists the account. With <paramref name="dir"/>, changes are kept across launches;
+    /// without, they last for this run.
+    /// </summary>
+    public static FakeGoogle DriveDemo(string? dir = null, double latency = 0.02)
+    {
+        var g = new FakeGoogle();
+        g.StartDriveDemo(dir, latency);
+        return g;
+    }
+
+    /// <summary>Seeds this instance as the demo Google Drive account (see <see cref="DriveDemo"/>).</summary>
+    public void StartDriveDemo(string? dir = null, double latency = 0.02)
+    {
+        string? path = null;
+        if (dir is not null)
+        {
+            Directory.CreateDirectory(dir);
+            path = Path.Combine(dir, "google-drive-demo-v1.json");
+        }
+        lock (_lock)
+        {
+            var s = new State
+            {
+                Latency = latency, UserID = "demo-drive-user", Email = "alex@example.com", Name = "Alex Morgan", Usage = 3_400_000_000,
+                GrantedScopes = [GoogleScopes.Drive],
+            };
+            try { if (path is not null && File.Exists(path) && JsonSerializer.Deserialize<Saved>(File.ReadAllBytes(path)) is { } saved) saved.Restore(s); } catch { }
+            if (s.Files.Count == 0) SeedDriveDemo(s);
+            s.RefreshTokens[DriveDemoRefreshToken] = [GoogleScopes.Drive];
+            _state = s;
+            _persistPath = path;
+            _driveDemo = true;
+        }
+    }
+
+    static void SeedDriveDemo(State s)
+    {
+        static DateTimeOffset Day(double n) => DateTimeOffset.FromUnixTimeSeconds(1_760_000_000 + (long)(n * 86_400));
+        var documents = s.AddUserFolder("Documents");
+        var photos = s.AddUserFolder("Photos");
+        var projects = s.AddUserFolder("Projects");
+        var website = s.AddUserFolder("Website refresh", projects);
+        s.AddUserFile("Welcome.txt", Encoding.UTF8.GetBytes("Welcome to the Google Drive demo.\nEverything here lives in a pretend account.\n"), modified: Day(1));
+        s.AddUserDoc("Project plan", parent: projects, modified: Day(12));
+        var budget = s.AddUserDoc("Budget 2026", "spreadsheet", documents, modified: Day(20));
+        s.AddUserFile("Quarterly report.pdf", DemoPdf("Quarterly Report", ["Revenue up 12%", "Two new regions", "Hiring plan"]), documents, Day(18));
+        string[] scenes = ["Harbor at dawn", "Mountain trail", "City lights"];
+        for (int i = 0; i < scenes.Length; i++)
+            s.AddUserFile(scenes[i] + ".png", DemoArt.Png(960, 640, 0.1 * i + 0.05, scenes[i]), photos, Day(5 + i));
+        s.AddUserFile("Notes.md", Encoding.UTF8.GetBytes("# Website refresh\n- New colors\n- Faster pages\n"), website, Day(22));
+        s.AddUserShortcut("Photos", photos, website, Day(23));
+        s.AddUserShortcut("Budget 2026", budget, projects, Day(21));
+        s.AddUserDoc("Team survey", "form", modified: Day(15));
+        var old = s.AddUserFile("Old draft.txt", Encoding.UTF8.GetBytes("An earlier draft.\n"), modified: Day(2));
+        s.Files[old].Trashed = true;
+        foreach (var f in s.Files.Values)
+        {
+            f.ModifiedTime ??= Iso(Day(0));
+            f.CreatedTime = f.ModifiedTime;
+        }
+    }
+
+    /// <summary>A small one-page PDF with a title and a few lines (Helvetica).</summary>
+    public static byte[] DemoPdf(string title, IReadOnlyList<string> lines)
+    {
+        static string Esc(string t) => t.Replace("\\", "\\\\").Replace("(", "\\(").Replace(")", "\\)");
+        var text = new StringBuilder($"BT /F1 24 Tf 72 720 Td ({Esc(title)}) Tj /F1 14 Tf");
+        foreach (var l in lines) text.Append($" 0 -32 Td ({Esc(l)}) Tj");
+        text.Append(" ET");
+        var content = text.ToString();
+        string[] objects =
+        [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            $"<< /Length {content.Length} >>\nstream\n{content}\nendstream",
+        ];
+        var pdf = new StringBuilder("%PDF-1.4\n");
+        var offsets = new List<int>();
+        for (int i = 0; i < objects.Length; i++)
+        {
+            offsets.Add(pdf.Length);
+            pdf.Append($"{i + 1} 0 obj\n{objects[i]}\nendobj\n");
+        }
+        var xref = pdf.Length;
+        pdf.Append($"xref\n0 {objects.Length + 1}\n0000000000 65535 f \n");
+        foreach (var o in offsets) pdf.Append(o.ToString("D10", CultureInfo.InvariantCulture)).Append(" 00000 n \n");
+        pdf.Append($"trailer\n<< /Size {objects.Length + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n");
+        return Encoding.ASCII.GetBytes(pdf.ToString());
+    }
+
+    /// <summary>Google's hosts (OAuth, Drive, Docs export links, thumbnails, Photos).</summary>
+    public bool Handles(Uri uri) => Hosts.Contains(uri.Host);
+
+    /// <summary>The demo Google Drive account, once <see cref="StartDriveDemo"/> has seeded this instance (otherwise none).</summary>
+    public IReadOnlyList<CloudConnection> DemoAccounts()
+    {
+        lock (_lock)
+        {
+            if (!_driveDemo) return [];
+            var record = new CloudAccountRecord(CloudProvider.GoogleDrive, _state.Email, id: DriveDemoAccountID) { Added = DateTimeOffset.FromUnixTimeSeconds(1_760_000_000) };
+            return [new CloudConnection(record, new CloudSecret { RefreshToken = DriveDemoRefreshToken, ClientID = _state.ClientID, ClientSecret = _state.ClientSecret })];
         }
     }
 
@@ -339,20 +506,26 @@ public sealed class FakeGoogle : HttpMessageHandler
         var head = Encoding.UTF8.GetBytes($"FAKE-EXPORT {mime} of {f.Name} [{f.ModifiedTime}]\n");
         return [.. head, .. Enumerable.Repeat((byte)0x20, 3000)];
     }
-    static JsonObject FileJson(FileRec f)
+    JsonObject FileJson(FileRec f)
     {
         var props = new JsonObject();
         foreach (var (k, v) in f.AppProperties) props[k] = v;
         var pub = new JsonObject();
         foreach (var (k, v) in f.Properties) pub[k] = v;
+        // `trashed` is true inside a trashed folder too; `explicitlyTrashed` only for what was trashed itself.
         var o = new JsonObject
         {
-            ["kind"] = "drive#file", ["id"] = f.Id, ["name"] = f.Name, ["mimeType"] = f.MimeType, ["parents"] = Jx.Strings(f.Parents), ["trashed"] = f.Trashed,
-            ["appProperties"] = props, ["properties"] = pub, ["capabilities"] = new JsonObject { ["canDownload"] = f.CanDownload },
+            ["kind"] = "drive#file", ["id"] = f.Id, ["name"] = f.Name, ["mimeType"] = f.MimeType, ["parents"] = Jx.Strings(f.Parents),
+            ["trashed"] = _state.IsTrashed(f.Id), ["explicitlyTrashed"] = f.Trashed, ["appProperties"] = props, ["properties"] = pub,
+            ["capabilities"] = new JsonObject { ["canDownload"] = f.CanDownload, ["canRename"] = true, ["canTrash"] = true }, ["hasThumbnail"] = f.HasThumbnail,
         };
         if (f.MimeType != GoogleDrive.FolderMime && !f.IsNative) o["size"] = f.Size.ToString(CultureInfo.InvariantCulture);
         if (f.Md5 is not null) o["md5Checksum"] = f.Md5;
         if (f.ModifiedTime is not null) o["modifiedTime"] = f.ModifiedTime;
+        if ((f.CreatedTime ?? f.ModifiedTime) is { } created) o["createdTime"] = created;
+        if (f.HasThumbnail) o["thumbnailLink"] = $"https://lh3.googleusercontent.com/drive-storage/{f.Id}=s220";
+        if (f.ShortcutTarget is { } t)
+            o["shortcutDetails"] = new JsonObject { ["targetId"] = t, ["targetMimeType"] = _state.Files.GetValueOrDefault(t)?.MimeType ?? "application/octet-stream" };
         var ex = Exportable(f);
         if (ex.Count > 0)
         {
@@ -412,6 +585,8 @@ public sealed class FakeGoogle : HttpMessageHandler
                 if (!HasScope(GoogleScopes.PhotosPicker, r)) return Insufficient();
                 output = Picker(method, url);
                 break;
+            case "lh3.googleusercontent.com" when url.AbsolutePath.StartsWith("/drive-storage/", StringComparison.Ordinal):
+                return DriveThumbnail(url, r);
             case "lh3.googleusercontent.com":
             {
                 if (!HasScope(GoogleScopes.PhotosPicker, r)) return Error(403, "Forbidden");
@@ -423,7 +598,7 @@ public sealed class FakeGoogle : HttpMessageHandler
             case "docs.google.com":
             {
                 // exportLinks: works past files.export's 10 MB cap.
-                if (!HasScope(GoogleScopes.DriveReadonly, r)) return Error(403, "Forbidden");
+                if (!HasScope(GoogleScopes.DriveReadonly, r) && !HasScope(GoogleScopes.Drive, r)) return Error(403, "Forbidden");
                 var q = QueryOf(url);
                 if (!q.TryGetValue("id", out var id) || !_state.Files.TryGetValue(id, out var f) || !q.TryGetValue("mime", out var mime) || !Exportable(f).Contains(mime))
                     return Error(404, "Not found");
@@ -431,7 +606,7 @@ public sealed class FakeGoogle : HttpMessageHandler
                 return new Outcome(200, new() { ["Content-Type"] = mime }, [.. ExportBytes(f, mime), .. Enumerable.Repeat((byte)0x2E, 120_000)]);
             }
             default:
-                if (!HasScope(GoogleScopes.DriveFile, r) && !HasScope(GoogleScopes.DriveReadonly, r))
+                if (!HasScope(GoogleScopes.DriveFile, r) && !HasScope(GoogleScopes.DriveReadonly, r) && !HasScope(GoogleScopes.Drive, r))
                     return Error(403, "Insufficient Permission: Request had insufficient authentication scopes.", "insufficientPermissions");
                 output = Drive(method, url, r, body);
                 break;
@@ -480,7 +655,16 @@ public sealed class FakeGoogle : HttpMessageHandler
                 if (!f.TryGetValue("refresh_token", out var t) || !_state.RefreshTokens.TryGetValue(t, out var scopes)) return Bad("invalid_grant", "Token has been expired or revoked.");
                 _state.Refreshes++;
                 _state.AccessTokens[access] = (DateTimeOffset.UtcNow.AddSeconds(_state.AccessTTL), scopes);
-                return Json(200, new JsonObject { ["access_token"] = access, ["expires_in"] = _state.AccessTTL, ["scope"] = string.Join(' ', scopes), ["token_type"] = "Bearer" });
+                var reply = new JsonObject { ["access_token"] = access, ["expires_in"] = _state.AccessTTL, ["scope"] = string.Join(' ', scopes), ["token_type"] = "Bearer" };
+                if (_state.RotateRefreshTokens)
+                {
+                    var next = "1//fake-refresh-" + Guid.NewGuid();
+                    _state.RefreshTokens[next] = scopes;
+                    _state.RefreshTokens.Remove(t);
+                    reply["refresh_token"] = next;
+                    Persist();
+                }
+                return Json(200, reply);
             }
             default:
                 return Bad("unsupported_grant_type", "Invalid grant_type");
@@ -491,13 +675,133 @@ public sealed class FakeGoogle : HttpMessageHandler
 
     static string Resolve(string id) => id == "root" ? RootID : id;
 
-    bool FolderOK(string id)
+    /// <summary>A folder new items may go into: drive.file only into folders Cirrus made; the full drive scope into any.</summary>
+    bool FolderOK(string id, bool full = false)
     {
         id = Resolve(id);
-        return id == RootID || (_state.Files.TryGetValue(id, out var f) && f.MimeType == GoogleDrive.FolderMime && f.ByApp && !f.Trashed);
+        return id == RootID || (_state.Files.TryGetValue(id, out var f) && f.MimeType == GoogleDrive.FolderMime && (f.ByApp || full) && !_state.IsTrashed(f.Id));
     }
 
-    static readonly Regex ParentRx = new(@"'((?:[^'\\]|\\.)*)' in parents", RegexOptions.Compiled);
+    // MARK: Drive search queries (`q`)
+
+    abstract record QToken { public sealed record Str(string Value) : QToken; public sealed record Word(string Value) : QToken; }
+
+    /// <summary>
+    /// Splits a query into words and string literals. Inside quotes only \' and \\ are valid escapes; anything else (a
+    /// stray quote, a lone backslash) makes the query invalid, as at Google.
+    /// </summary>
+    static List<QToken>? Tokenize(string s)
+    {
+        var output = new List<QToken>();
+        int i = 0;
+        while (i < s.Length)
+        {
+            var c = s[i];
+            if (c == ' ') { i++; continue; }
+            if (c == '\'')
+            {
+                var lit = new StringBuilder();
+                var closed = false;
+                i++;
+                while (i < s.Length)
+                {
+                    var d = s[i];
+                    if (d == '\\')
+                    {
+                        if (i + 1 >= s.Length || (s[i + 1] != '\'' && s[i + 1] != '\\')) return null;
+                        lit.Append(s[i + 1]);
+                        i += 2;
+                        continue;
+                    }
+                    i++;
+                    if (d == '\'') { closed = true; break; }
+                    lit.Append(d);
+                }
+                if (!closed) return null;
+                output.Add(new QToken.Str(lit.ToString()));
+                continue;
+            }
+            if (c == '=') { output.Add(new QToken.Word("=")); i++; continue; }
+            if (c == '!')
+            {
+                if (i + 1 >= s.Length || s[i + 1] != '=') return null;
+                output.Add(new QToken.Word("!="));
+                i += 2;
+                continue;
+            }
+            var w = new StringBuilder();
+            while (i < s.Length && !" =!'".Contains(s[i])) w.Append(s[i++]);
+            output.Add(new QToken.Word(w.ToString()));
+        }
+        return output;
+    }
+
+    /// <summary>
+    /// The <c>q</c> subset Cirrus uses, joined with <c>and</c>: <c>'&lt;id&gt;' in parents</c>, <c>trashed = true|false</c>,
+    /// <c>name = | != | contains '&lt;text&gt;'</c>, <c>mimeType = | != '&lt;type&gt;'</c>. null = invalid (Google answers 400).
+    /// </summary>
+    Func<FileRec, bool>? Filter(string qs)
+    {
+        if (Tokenize(qs) is not { } toks) return null;
+        if (toks.Count == 0) return _ => true;
+        var clauses = new List<List<QToken>> { new() };
+        foreach (var t in toks)
+        {
+            if (t is QToken.Word { Value: "and" }) clauses.Add([]);
+            else clauses[^1].Add(t);
+        }
+        var preds = new List<Func<FileRec, bool>>();
+        foreach (var c in clauses)
+        {
+            if (c.Count != 3) return null;
+            switch (c[0], c[1], c[2])
+            {
+                case (QToken.Str id, QToken.Word { Value: "in" }, QToken.Word { Value: "parents" }):
+                    var p = Resolve(id.Value);
+                    preds.Add(f => f.Parents.Contains(p));
+                    break;
+                case (QToken.Word { Value: "trashed" }, QToken.Word { Value: "=" or "!=" } op, QToken.Word { Value: "true" or "false" } v):
+                    var want = (v.Value == "true") == (op.Value == "=");
+                    preds.Add(f => _state.IsTrashed(f.Id) == want);
+                    break;
+                case (QToken.Word { Value: "name" }, QToken.Word { Value: "=" }, QToken.Str n): preds.Add(f => f.Name == n.Value); break;
+                case (QToken.Word { Value: "name" }, QToken.Word { Value: "!=" }, QToken.Str n): preds.Add(f => f.Name != n.Value); break;
+                case (QToken.Word { Value: "name" }, QToken.Word { Value: "contains" }, QToken.Str n):
+                    preds.Add(f => f.Name.Contains(n.Value, StringComparison.CurrentCultureIgnoreCase)); break;
+                case (QToken.Word { Value: "mimeType" }, QToken.Word { Value: "=" }, QToken.Str m): preds.Add(f => f.MimeType == m.Value); break;
+                case (QToken.Word { Value: "mimeType" }, QToken.Word { Value: "!=" }, QToken.Str m): preds.Add(f => f.MimeType != m.Value); break;
+                default: return null;
+            }
+        }
+        return f => preds.All(p => p(f));
+    }
+
+    /// <summary>Removes a file or folder and everything inside it (files.delete on a folder).</summary>
+    void DeleteTree(string id)
+    {
+        foreach (var d in _state.Files.Keys.Where(k => _state.IsInside(k, id)).ToList())
+        {
+            if (_state.Files[d] is { } f && f.MimeType != GoogleDrive.FolderMime && !f.IsNative) _state.Usage = Math.Max(0, _state.Usage - f.Size);
+            _state.Files.Remove(d);
+            _state.Blobs.Remove(d);
+        }
+    }
+
+    /// <summary><c>thumbnailLink</c> targets: https://lh3.googleusercontent.com/drive-storage/&lt;id&gt;=s&lt;px&gt;</summary>
+    Outcome DriveThumbnail(Uri url, HttpRequestMessage r)
+    {
+        var full = HasScope(GoogleScopes.Drive, r) || HasScope(GoogleScopes.DriveReadonly, r);
+        if (!full && !HasScope(GoogleScopes.DriveFile, r)) return Error(403, "Forbidden");
+        var parts = url.AbsolutePath.Split('/').Last().Split('=');
+        var size = parts.Length > 1 && parts[1].StartsWith('s') && int.TryParse(parts[1][1..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var px) ? px : 220;
+        if (!_state.Files.TryGetValue(parts[0], out var f) || !(f.ByApp || full) || !f.HasThumbnail) return Error(404, "Not found");
+        _state.ThumbnailSizes.Add(size);
+        if (f.MimeType.StartsWith("image/", StringComparison.Ordinal) && _state.Blobs.TryGetValue(f.Id, out var d) && d.Length > 0)
+            return new Outcome(200, new() { ["Content-Type"] = f.MimeType }, d);
+        var side = Math.Clamp(size, 16, 1600);
+        var hue = (f.Id.Aggregate(7, (h, ch) => (h * 31 + ch) & 0x7FFFFFFF) % 100) / 100.0;
+        return new Outcome(200, new() { ["Content-Type"] = "image/png" }, DemoArt.Png(side, Math.Max(1, side * 3 / 4), hue, Path.GetFileNameWithoutExtension(f.Name)));
+    }
 
     static Dictionary<string, string> Props(JsonNode? n) =>
         n is JsonObject o ? o.Where(kv => kv.Value is JsonValue).ToDictionary(kv => kv.Key, kv => kv.Value!.ToString()) : [];
@@ -506,9 +810,12 @@ public sealed class FakeGoogle : HttpMessageHandler
     {
         var path = url.AbsolutePath;
         var q = QueryOf(url);
-        var readAll = HasScope(GoogleScopes.DriveReadonly, r);
-        var canWrite = HasScope(GoogleScopes.DriveFile, r);
+        // drive.file: only what Cirrus created. drive.readonly: read everything. drive: read and change everything.
+        var full = HasScope(GoogleScopes.Drive, r);
+        var readAll = HasScope(GoogleScopes.DriveReadonly, r) || full;
+        var canWrite = HasScope(GoogleScopes.DriveFile, r) || full;
         bool Visible(FileRec f) => f.ByApp || readAll;
+        bool Editable(FileRec f) => canWrite && (f.ByApp || full);
         if (path == "/drive/v3/about")
         {
             if (!q.ContainsKey("fields")) return Error(400, "The 'fields' parameter is required for this method.", "required");
@@ -524,12 +831,8 @@ public sealed class FakeGoogle : HttpMessageHandler
         }
         if (path == "/drive/v3/files" && method == "GET")
         {
-            var qs = q.GetValueOrDefault("q") ?? "";
-            string? parent = null;
-            if (ParentRx.Match(qs) is { Success: true } m) parent = Resolve(m.Groups[1].Value.Replace("\\'", "'").Replace("\\\\", "\\"));
-            var list = _state.Files.Values.Where(Visible).ToList();   // drive.file: only what Cirrus created
-            if (parent is not null) list = list.Where(f => f.Parents.Contains(parent)).ToList();
-            if (qs.Contains("trashed = false")) list = list.Where(f => !f.Trashed).ToList();
+            if (Filter(q.GetValueOrDefault("q") ?? "") is not { } matches) return Error(400, "Invalid Value", "invalid");
+            var list = _state.Files.Values.Where(Visible).Where(matches).ToList();   // drive.file: only what Cirrus created
             list = list.OrderBy(f => f.Id, StringComparer.Ordinal).ToList();
             var size = int.TryParse(q.GetValueOrDefault("pageSize"), out var ps) ? ps : 100;
             var start = int.TryParse(q.GetValueOrDefault("pageToken"), out var st) ? st : 0;
@@ -543,17 +846,22 @@ public sealed class FakeGoogle : HttpMessageHandler
             if (!canWrite) return Insufficient();
             var j = JsonNode.Parse(body) as JsonObject ?? [];
             var parents = (j["parents"] as JsonArray ?? []).Select(x => Resolve(x!.ToString())).ToList();
-            if (parents.Count != 1 || !FolderOK(parents[0])) return Error(404, "File not found: parent.", "notFound");
+            if (parents.Count != 1 || !FolderOK(parents[0], full)) return Error(404, "File not found: parent.", "notFound");
             var f = new FileRec
             {
                 Id = NewID("f"), Name = j["name"]?.ToString() ?? "Untitled", MimeType = j["mimeType"]?.ToString() ?? "application/octet-stream", Parents = parents,
                 ModifiedTime = j["modifiedTime"]?.ToString(), AppProperties = Props(j["appProperties"]), Properties = Props(j["properties"]), ByApp = true,
+                CreatedTime = Iso(DateTimeOffset.UtcNow),
             };
             _state.Files[f.Id] = f;
             return Json(200, FileJson(f));
         }
-        if (path == "/drive/v3/files/root" && method == "GET")
-            return Json(200, new JsonObject { ["id"] = RootID, ["name"] = "My Drive", ["mimeType"] = GoogleDrive.FolderMime });
+        if ((path == "/drive/v3/files/root" || path == "/drive/v3/files/" + RootID) && method == "GET")
+            return Json(200, new JsonObject
+            {
+                ["id"] = RootID, ["name"] = "My Drive", ["mimeType"] = GoogleDrive.FolderMime, ["trashed"] = false, ["parents"] = new JsonArray(),
+                ["capabilities"] = new JsonObject { ["canDownload"] = true, ["canRename"] = false, ["canTrash"] = false },
+            });
         if (path.StartsWith("/drive/v3/files/", StringComparison.Ordinal) && path.EndsWith("/export", StringComparison.Ordinal) && method == "GET")
         {
             var id = path["/drive/v3/files/".Length..^"/export".Length];
@@ -584,15 +892,31 @@ public sealed class FakeGoogle : HttpMessageHandler
                 }
                 case "PATCH":
                 {
-                    if (!canWrite || !f.ByApp) return Insufficient();
+                    if (!Editable(f)) return Insufficient();
                     var j = JsonNode.Parse(body) as JsonObject ?? [];
+                    if (q.ContainsKey("addParents") || q.ContainsKey("removeParents"))
+                    {
+                        // Moving: parents not listed in removeParents stay; a file may have only one parent.
+                        var parents = f.Parents.ToList();
+                        foreach (var p in (q.GetValueOrDefault("removeParents") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries).Select(Resolve)) parents.Remove(p);
+                        foreach (var p in (q.GetValueOrDefault("addParents") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries).Select(Resolve))
+                        {
+                            if (!FolderOK(p, full)) return Error(404, $"File not found: {p}.", "notFound");
+                            if (f.MimeType == GoogleDrive.FolderMime && _state.IsInside(p, id))
+                                return Error(403, "A folder can’t be moved into itself or one of its subfolders.", "invalidParent");
+                            if (!parents.Contains(p)) parents.Add(p);
+                        }
+                        if (parents.Count > 1) return Error(403, "Increasing the number of parents is not allowed.", "cannotAddParent");
+                        f.Parents = parents;
+                    }
                     if (j["trashed"] is JsonValue tv && tv.TryGetValue(out bool t)) f.Trashed = t;
                     if (j["name"]?.ToString() is { } n) f.Name = n;
                     return Json(200, FileJson(f));
                 }
                 case "DELETE":
+                    if (!Editable(f)) return Insufficient();
                     _state.PermanentDeletes++;
-                    _state.Files.Remove(id);
+                    DeleteTree(id);
                     return new Outcome(204, [], []);
                 default: return Error(405, "Method not allowed");
             }
@@ -604,13 +928,15 @@ public sealed class FakeGoogle : HttpMessageHandler
             {
                 var meta = JsonNode.Parse(body) as JsonObject ?? [];
                 var parents = (meta["parents"] as JsonArray ?? []).Select(x => Resolve(x!.ToString())).ToList();
-                if (parents.Count != 1 || !FolderOK(parents[0])) return Error(404, "File not found: parent.", "notFound");
+                if (parents.Count != 1 || !FolderOK(parents[0], full)) return Error(404, "File not found: parent.", "notFound");
                 if (!long.TryParse(H(r, "X-Upload-Content-Length"), out var total)) return Error(400, "Cirrus always sends X-Upload-Content-Length", "badRequest");
                 if (_state.Limit is { } l && _state.Usage + total > l) return Error(403, "The user's Drive storage quota has been exceeded.", "storageQuotaExceeded");
                 var sid = NewID("u");
                 meta["parents"] = Jx.Strings(parents);
                 meta["x-content-type"] = H(r, "X-Upload-Content-Type");
-                _state.DriveSessions[sid] = new DriveSession { Meta = meta, Total = total };
+                // Content is kept only for full-drive-scope uploads (Google Drive accounts read them back); the move's
+                // uploads are never downloaded, and the migration demo's saved state stays small.
+                _state.DriveSessions[sid] = new DriveSession { Meta = meta, Total = total, KeepData = full };
                 _state.DriveSessionsStarted++;
                 return new Outcome(200, new() { ["Location"] = $"https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id={sid}" }, []);
             }
@@ -635,9 +961,11 @@ public sealed class FakeGoogle : HttpMessageHandler
                 Id = NewID("f"), Name = name, MimeType = s.Meta["x-content-type"]?.ToString() ?? GoogleDrive.MimeType(name),
                 Parents = (s.Meta["parents"] as JsonArray ?? []).Select(x => x!.ToString()).ToList(), Size = s.Total, Md5 = Md5(data),
                 ModifiedTime = s.Meta["modifiedTime"]?.ToString(), AppProperties = Props(s.Meta["appProperties"]), ByApp = true,
+                CreatedTime = Iso(DateTimeOffset.UtcNow),
             };
             _state.Files[f.Id] = f;
             _state.Usage += s.Total;
+            if (s.KeepData) _state.Blobs[f.Id] = data;
             s.FileID = f.Id;
             s.Data = new MemoryStream();
             return Json(200, FileJson(f));
