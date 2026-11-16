@@ -88,7 +88,7 @@ sealed class SyncJobsWindow : Window
     internal static string Describe(SyncEndpoint e) => e.Kind switch
     {
         EndpointKind.Local => e.Path ?? "",
-        EndpointKind.Account => AccountManager.Shared.Account(e.Account) is { } a ? (a.Kind == AccountKind.Demo ? "Demo iCloud" : a.Title) : "(signed out account)",
+        EndpointKind.Account => AccountManager.Shared.Account(e.Account) is { } a ? (a.Kind == AccountKind.Demo ? "Demo iCloud" : a.IsICloud ? a.Title : $"{a.DriveTitle} ({a.Title})") : "(signed out account)",
         _ => e.Title,
     };
 
@@ -177,8 +177,9 @@ sealed class JobEditor : Window
             ScheduleKind.Daily => 4, ScheduleKind.WhenConnected => 5, _ => 0,
         };
         _modeRow = Ui.Labeled("Mode", _mode);
-        var srcButtons = Ui.Row(Ui.Button("Folder…", () => PickLocal(true)), Ui.Button("iCloud…", () => PickCloud(true)));
-        var dstButtons = Ui.Row(Ui.Button("Folder…", () => PickLocal(false)), Ui.Button("iCloud…", () => PickCloud(false)));
+        var cloudLabel = AccountManager.Shared.CloudAccounts.Count > 0 ? "Cloud…" : "iCloud…";
+        var srcButtons = Ui.Row(Ui.Button("Folder…", () => PickLocal(true)), Ui.Button(cloudLabel, () => PickCloud(true)));
+        var dstButtons = Ui.Row(Ui.Button("Folder…", () => PickLocal(false)), Ui.Button(cloudLabel, () => PickCloud(false)));
         _kind.SelectionChanged += (_, _) => Refresh();
         var root = Ui.Stack(
             Ui.Labeled("Name", _name),
@@ -217,7 +218,7 @@ sealed class JobEditor : Window
         var needPhotos = (Kind == JobKind.PhotosExport && source) || (Kind == JobKind.PhotosImport && !source);
         if (Kind == JobKind.Backup && source)
         {
-            var accts = AccountManager.Shared.Accounts.Where(a => a.Kind != AccountKind.Native || a.DriveRoot is not null).ToList();
+            var accts = AccountManager.Shared.Accounts.Where(a => a.IsICloud && (a.Kind != AccountKind.Native || a.DriveRoot is not null)).ToList();
             var names = accts.Select(a => a.Kind == AccountKind.Demo ? "Demo iCloud" : a.Title).Append("Cancel").ToArray();
             var i = Dialogs.Ask(this, "Back up which account?", "", names, 0, names.Length - 1);
             if (i >= 0 && i < accts.Count) { _source = SyncEndpoint.ForAccount(accts[i].Id); Refresh(); }

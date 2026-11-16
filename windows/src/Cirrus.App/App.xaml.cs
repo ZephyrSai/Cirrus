@@ -51,8 +51,11 @@ public partial class App : Application
             ? new FileSecretStore(Paths.SupportDir("Secrets"), new DpapiProtector())
             : new MemorySecretStore();
         AccountManager.Shared = new AccountManager(secrets, new WindowsPresence()) { DemoMode = BuildInfo.DemoMode };
-        AccountManager.Shared.Load();
         Services.GoogleAccounts.Shared = new Services.GoogleAccounts(secrets, new WindowsPresence());
+#if DEBUG
+        if (AccountManager.Shared.DemoMode) Services.DemoClouds.Install();   // fake clouds (Debug builds only)
+#endif
+        AccountManager.Shared.Load();
         SyncStore.Shared.Load();
         JobScheduler.Shared.Start();
         TransferManager.Shared.Changed += () => Dispatcher.InvokeAsync(() => KeepAwake.Set(TransferManager.Shared.IsBusy));

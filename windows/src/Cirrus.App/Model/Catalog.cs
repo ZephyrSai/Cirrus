@@ -89,6 +89,7 @@ public sealed class Catalog
 
     public static string Glyph(Location loc) => loc.Kind switch
     {
+        LocKind.Drive when loc.AccountRef is { Kind: AccountKind.Cloud, Drive: { } d } a && d.RootID == loc.Id => a.Provider!.Value.Glyph(),
         LocKind.Computer => "\uE7F8",
         LocKind.Local => "\uE8B7",
         LocKind.Drive => "\uE753",
@@ -118,17 +119,17 @@ public sealed class Catalog
             case LocKind.Drive:
             {
                 var a = loc.AccountRef;
-                if (a?.Drive is { } d && d.RootID == loc.Id) return "iCloud Drive";
+                if (a?.Drive is { } d && d.RootID == loc.Id) return a.DriveTitle;
                 lock (_lock) return _driveNames.TryGetValue(loc.Account + "|" + loc.Id, out var n) ? n.Name : "Folder";
             }
-            case LocKind.DriveTrash: return "Recently Deleted";
+            case LocKind.DriveTrash: return loc.AccountRef?.DeletedTitle ?? "Recently Deleted";
             case LocKind.Photos:
             {
                 if (loc.Id is { } folder) return AlbumIn(loc.Account!, loc.Library!, folder)?.Name ?? "Folder";
                 List<PhotoLibraryRef>? libs;
                 lock (_lock) _libraries.TryGetValue(loc.Account!, out libs);
                 if (libs is { Count: > 1 } && libs.FirstOrDefault(l => l.Id == loc.Library) is { } lib) return lib.Name;
-                return "Photos";
+                return loc.AccountRef is { Kind: AccountKind.Cloud } ca ? ca.DriveTitle : "Photos";
             }
             default:
                 return AlbumIn(loc.Account!, loc.Library!, loc.Id!)?.Name ?? (loc.Id!.StartsWith("smart:") ? loc.Id[6..] : "Album");
@@ -145,8 +146,15 @@ public sealed class Catalog
     public string AccountTitle(Location loc) => loc.AccountRef is { } a ? (a.Kind == AccountKind.Demo ? "Demo iCloud" : a.Title) : "";
 
     /// <summary>Window/tab title: "Docs — iCloud Drive (name)" for remote places.</summary>
-    public string LongTitle(Location loc) => loc.IsRemote && AccountManager.Shared.WebAccounts.Count + (AccountManager.Shared.DemoMode ? 1 : 0) > 1
-        ? $"{Title(loc)} — {AccountTitle(loc)}" : Title(loc);
+    public string LongTitle(Location loc)
+    {
+        if (!loc.IsRemote) return Title(loc);
+        var am = AccountManager.Shared;
+        // Another cloud: name its account when two of that service are connected.
+        if (loc.AccountRef is { Kind: AccountKind.Cloud } c)
+            return am.CloudAccounts.Count(x => x.Provider == c.Provider) > 1 ? $"{Title(loc)} — {c.Title}" : Title(loc);
+        return am.WebAccounts.Count + (am.DemoMode ? 1 : 0) > 1 ? $"{Title(loc)} — {AccountTitle(loc)}" : Title(loc);
+    }
 
     // MARK: Parents and breadcrumbs
 
@@ -185,7 +193,9 @@ public sealed class Catalog
 
     public LocationCaps Caps(Location loc)
     {
-        var ro = SafetyPolicy.ReadOnlyICloud;
+        // Read-only mode protects iCloud only; other clouds are always writable.
+        var icloudAcct = loc.AccountRef?.IsICloud ?? true;
+        var ro = SafetyPolicy.ReadOnlyICloud && icloudAcct;
         switch (loc.Kind)
         {
             case LocKind.Local:
@@ -193,16 +203,16 @@ public sealed class Catalog
                 var writable = !(icloud && ro);
                 return new LocationCaps(writable, "New Folder", writable, writable, writable, IsICloud: icloud);
             case LocKind.Drive:
-                return new LocationCaps(!ro, "New Folder", !ro, !ro, !ro, IsICloud: true);
+                return new LocationCaps(!ro, "New Folder", !ro, !ro, !ro, IsICloud: icloudAcct);
             case LocKind.DriveTrash:
-                return new LocationCaps(IsTrash: true, CanDeleteForever: !ro, IsICloud: true);
+                return new LocationCaps(IsTrash: true, CanDeleteForever: !ro && (loc.AccountRef?.CanListTrash ?? true), IsICloud: icloudAcct);
             case LocKind.Photos:
-                return new LocationCaps(!ro && loc.Id is null, "New Album", !ro, IsICloud: true);
+                return new LocationCaps(!ro && loc.Id is null, "New Album", !ro, IsICloud: icloudAcct);
             case LocKind.Album:
                 var a = AlbumIn(loc.Account!, loc.Library!, loc.Id!);
-                if (loc.Id == "smart:Recently Deleted") return new LocationCaps(IsTrash: true, IsICloud: true);
+                if (loc.Id == "smart:Recently Deleted") return new LocationCaps(IsTrash: true, IsICloud: icloudAcct);
                 var accepts = !ro && (loc.Id == "smart:All Photos" || a?.Kind == PhotoAlbumKind.Album);
-                return new LocationCaps(false, "New Album", accepts, CanTrash: !ro, IsICloud: true);
+                return new LocationCaps(false, "New Album", accepts, CanTrash: !ro, IsICloud: icloudAcct);
             default:
                 return new LocationCaps();
         }
@@ -329,7 +339,8 @@ public sealed class Catalog
             {
                 var acct = loc.AccountRef ?? throw ICloudException.NeedsSignIn();
                 var drive = acct.Drive ?? throw ICloudException.NeedsSignIn();
-                var web = acct.Kind == AccountKind.Web;
+                // Last known listings on disk: iCloud web accounts and other clouds (both are slow to list).
+                var web = acct.Kind is AccountKind.Web or AccountKind.Cloud;
                 if (web && !forced && ListingCache.Shared.LoadDrive(acct.Id, loc.Id!) is { } cached)
                     page?.Invoke(cached.Nodes.Select(n => DriveItem(acct, n)).ToList());   // last known contents at once
                 var gen = Generation(loc);
@@ -340,6 +351,7 @@ public sealed class Catalog
             case LocKind.DriveTrash:
             {
                 var acct = loc.AccountRef ?? throw ICloudException.NeedsSignIn();
+                if (!acct.CanListTrash) return [];   // OneDrive's and Dropbox's can't be listed: the empty view explains
                 var nodes = await (acct.Drive ?? throw ICloudException.NeedsSignIn()).ListTrashAsync(ct);
                 return nodes.Select(n => DriveItem(acct, n, inTrash: true)).ToList();
             }
@@ -407,13 +419,24 @@ public sealed class Catalog
     public Item DriveItem(Account acct, DriveNode n, bool inTrash = false)
     {
         RememberDrive(acct.Id, n);
+        var native = n.IsGoogleNative();   // Google Docs, Sheets…: no size, Google's own kind name
         return new Item
         {
-            Key = "drive:" + acct.Id + "|" + n.Id, Name = n.Name, IsContainer = n.IsFolder, Size = n.IsFolder ? null : n.Size, Modified = n.Modified, Created = n.Created,
+            Key = "drive:" + acct.Id + "|" + n.Id, Name = n.Name, IsContainer = n.IsFolder, Size = n.IsFolder || native ? null : n.Size, Modified = n.Modified, Created = n.Created,
+            KindName = native ? GoogleKind(n.Zone) : null,
             Node = n, AccountID = acct.Id, Count = n.ChildCount, Target = n.IsFolder && !inTrash ? Location.Drive(acct.Id, n.Id) : null,
             Glyph = n.IsFolder ? "\uE8B7" : "\uE8A5",
         };
     }
+
+    static string GoogleKind(string mime) => mime[CloudConventions.GoogleNativePrefix.Length..] switch
+    {
+        "document" => "Google Docs document",
+        "spreadsheet" => "Google Sheets spreadsheet",
+        "presentation" => "Google Slides presentation",
+        "drawing" => "Google Drawings drawing",
+        _ => GoogleDocFormats.KindName(mime),
+    };
 
     public static Item PhotoItem(Account acct, PhotoAsset a) => new()
     {

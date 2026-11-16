@@ -162,7 +162,12 @@ static class Ops
     // MARK: Local files → anywhere
 
     /// <summary>Local files (from Explorer, another app, or a local tab) into a destination.</summary>
-    public static async Task Deliver(IReadOnlyList<string> files, Destination dest, bool move, DependencyObject? owner, string? cleanupTemp = null)
+    /// <param name="retire">
+    /// With <paramref name="move"/>: what replaces moving a delivered file to the Recycle Bin (a cross-service move retires the
+    /// original in its own service instead of the relay copy). Called only once that file or folder is fully at the destination.
+    /// </param>
+    public static async Task Deliver(IReadOnlyList<string> files, Destination dest, bool move, DependencyObject? owner, string? cleanupTemp = null,
+        Func<string, Transfer, CancellationToken, Task>? retire = null)
     {
         if (files.Count == 0) return;
         var list = files.ToList();
@@ -182,7 +187,7 @@ static class Ops
             switch (dest)
             {
                 case Destination.Local l: await DeliverLocal(list, l, move, cleanupTemp is not null, group, owner); break;
-                case Destination.Drive d: await DeliverDrive(list, d, move, group, owner); break;
+                case Destination.Drive d: await DeliverDrive(list, d, move, group, owner, retire); break;
                 case Destination.Photos p: DeliverPhotos(list, p, group, owner); break;
             }
         }
@@ -238,9 +243,11 @@ static class Ops
         }
     }
 
-    static async Task DeliverDrive(List<string> files, Destination.Drive dest, bool move, string? group, DependencyObject? owner)
+    static async Task DeliverDrive(List<string> files, Destination.Drive dest, bool move, string? group, DependencyObject? owner,
+        Func<string, Transfer, CancellationToken, Task>? retire = null)
     {
         if (dest.Account.Drive is not { } drive) return;
+        Task Retire(string f, Transfer t, CancellationToken ct) => retire is null ? Task.Run(() => LocalFiles.SafeTrash(f, null), ct) : retire(f, t, ct);
         var names = await ResolveNames(files.Select(f => WinNames.FromLocal(Path.GetFileName(f))).ToList(), dest, owner);
         if (names is null) return;
         var existing = await SafeList(drive, dest.FolderID);
@@ -287,8 +294,8 @@ static class Ops
                         int onDisk;
                         try { onDisk = Directory.EnumerateFileSystemEntries(f, "*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = false, AttributesToSkip = 0 }).Count(); }
                         catch { onDisk = -1; }
-                        if (allThere && onDisk == sa.Count) LocalFiles.SafeTrash(f, null);
-                        else t.SetDetail("Uploaded. The original folder was kept because some of its items weren’t uploaded (excluded, links or already different in iCloud).");
+                        if (allThere && onDisk == sa.Count) await Retire(f, t, ct);
+                        else t.SetDetail($"Uploaded. The original folder was kept because some of its items weren’t uploaded (excluded, links or already different in {dest.Account.DriveTitle}).");
                     }
                     Refresh(dest);
                 }, "Uploading folder to " + Title(dest), TransferDirection.Upload, LocalFiles.TreeSize(f), group, quota);
@@ -302,7 +309,7 @@ static class Ops
                     var mtime = new DateTimeOffset(File.GetLastWriteTimeUtc(f), TimeSpan.Zero);
                     // Upload first; only then retire the old copy (SafeReplace).
                     await drive.SafeReplaceAsync(f, finalName, dest.FolderID, replace ? old : null, mtime, (d, tot) => t.Report(d, tot), ct);
-                    if (move) LocalFiles.SafeTrash(f, null);
+                    if (move) await Retire(f, t, ct);
                     Refresh(dest);
                 }, "Uploading to " + Title(dest), TransferDirection.Upload, size, group, quota);
             }
@@ -363,7 +370,7 @@ static class Ops
                 if (nodes.Count > 0)
                 {
                     if (!move && !Dialogs.Confirm(owner, $"Move {(nodes.Count == 1 ? $"“{nodes[0].Name}”" : $"{nodes.Count} items")} to “{Title(dest)}”?",
-                            "Inside the same iCloud Drive, items are moved rather than copied.", "Move")) return;
+                            $"Inside the same {dd.Account.DriveTitle}, items are moved rather than copied.", "Move")) return;
                     TM.Enqueue(nodes.Count == 1 ? nodes[0].Name : $"{nodes.Count} items", async (_, ct) =>
                     {
                         await drive.MoveAsync(nodes, dd.FolderID, ct);
@@ -372,7 +379,7 @@ static class Ops
                     }, "Moving to " + Title(dest));
                 }
                 var rest = remote.Except(same).ToList();
-                if (rest.Count > 0) await ViaTemp(rest, dest, owner);
+                if (rest.Count > 0) await ViaTemp(rest, dest, owner, move);
                 return;
             }
         }
@@ -387,31 +394,38 @@ static class Ops
                     TM.Enqueue($"Adding {assets.Count} to “{album.Name}”", async (_, ct) => { await photos.AddAsync(assets, album, dp.Library, ct); Refresh(dest); });
                 }
                 var rest = remote.Except(same).ToList();
-                if (rest.Count > 0) await ViaTemp(rest, dest, owner);
+                if (rest.Count > 0) await ViaTemp(rest, dest, owner, move);
                 return;
             }
         }
         if (dest is Destination.Local l) { await Download(remote, l.Dir, owner, move); return; }
-        await ViaTemp(remote, dest, owner);
+        await ViaTemp(remote, dest, owner, move);
     }
 
-    /// <summary>Remote → remote across services: materialise into a relay folder, then deliver.</summary>
-    static async Task ViaTemp(List<Item> items, Destination dest, DependencyObject? owner)
+    /// <summary>
+    /// Remote → remote across services: materialise into a relay folder, then deliver. A move (Shift-drag, Cut and Paste)
+    /// retires each original in its own service (its trash) only after that item fully arrived at the destination; items
+    /// that were skipped, excluded or failed stay where they were.
+    /// </summary>
+    static async Task ViaTemp(List<Item> items, Destination dest, DependencyObject? owner, bool move = false)
     {
+        // Only drive items can be retired after a move; photos are copied (their library keeps them).
+        move = move && dest is Destination.Drive && items.Any(i => i.Node is not null);
         var pre = new PreflightResult { Files = items.Count, Bytes = items.Sum(i => i.TransferSize) };
         switch (dest)
         {
             case Destination.Drive d:
-                pre.Available = await Pre.ICloudFree(d.Account); pre.AvailableLabel = "in iCloud";
-                foreach (var i in items.Where(i => i.TransferSize > Limits.ICloudDriveMax)) pre.Blocked.Add(new BlockedItem(i.Name, i.TransferSize, "larger than iCloud Drive’s 50 GB limit"));
+                pre.Available = await Pre.ICloudFree(d.Account); pre.AvailableLabel = Preflight.SpaceLabel(d.Account);
+                var (max, reason) = Preflight.DriveLimit(d.Account);
+                if (max is long mx) foreach (var i in items.Where(i => i.TransferSize > mx)) pre.Blocked.Add(new BlockedItem(i.Name, i.TransferSize, reason));
                 break;
-            case Destination.Photos p when p.Account.Kind == AccountKind.Web:
-                pre.Available = await Pre.ICloudFree(p.Account); pre.AvailableLabel = "in iCloud";
+            case Destination.Photos p when p.Account.Kind is AccountKind.Web or AccountKind.Cloud:
+                pre.Available = await Pre.ICloudFree(p.Account); pre.AvailableLabel = Preflight.SpaceLabel(p.Account);
                 break;
         }
         var relayRoot = Paths.CacheDir("relay");
         pre.Available = pre.Available is long a ? Math.Min(a, Pre.LocalFree(relayRoot) ?? long.MaxValue) : pre.Available;
-        if (!Confirm(pre, "Copy", $"“{Title(dest)}”", owner)) return;
+        if (!Confirm(pre, move ? "Move" : "Copy", $"“{Title(dest)}”", owner)) return;
         var blocked = pre.BlockedNames;
         items = items.Where(i => !blocked.Contains(i.Name)).ToList();
         if (items.Count == 0) return;
@@ -431,7 +445,32 @@ static class Ops
         await TM.WaitFor(t);
         if (t.State != TransferState.Done) { try { Directory.Delete(tmp, true); } catch { } return; }
         var files = Directory.EnumerateFileSystemEntries(tmp).ToList();
-        await Deliver(files, dest, false, owner, cleanupTemp: tmp);
+        if (!move) { await Deliver(files, dest, false, owner, cleanupTemp: tmp); return; }
+        // Each relay entry back to the item it came from (by the name it was written under).
+        var origin = new Dictionary<string, Item>(StringComparer.OrdinalIgnoreCase);
+        foreach (var i in items.Where(i => i.Node is not null)) origin.TryAdd(OutputName(i), i);
+        await Deliver(files, dest, true, owner, cleanupTemp: tmp, retire: (f, t, ct) => RetireMovedSource(origin, f, t, ct));
+    }
+
+    /// <summary>A cross-service move's last step: the original goes to its own service's trash (never deleted for good).</summary>
+    static async Task RetireMovedSource(Dictionary<string, Item> origin, string relayPath, Transfer t, CancellationToken ct)
+    {
+        if (!origin.TryGetValue(Path.GetFileName(relayPath), out var item) || item.Node is not { } n) return;
+        var acct = AccountManager.Shared.Account(item.AccountID);
+        if (acct?.Drive is not { } drive) return;
+        try
+        {
+            await drive.TrashAsync([n], ct);
+            if (n.ParentID is { } parent) Catalog.Shared.Invalidate(Location.Drive(acct.Id, parent));
+            if (acct.CanListTrash) Catalog.Shared.Invalidate(Location.DriveTrash(acct.Id));
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception e)
+        {
+            // The copy arrived; only the clean-up failed. Never fail (and so retry) the upload for it.
+            Log.Status("couldn’t retire a moved original: " + e.GetType().Name);
+            t.SetDetail($"Copied. The original is still in {acct.DriveTitle}: {e.Message}");
+        }
     }
 
     public static string OutputName(Item item)
@@ -737,13 +776,14 @@ static class Ops
         if (nodes.Count > 0 && loc.AccountRef?.Drive is { } drive)
         {
             try { await drive.TrashAsync(nodes); Catalog.Shared.Invalidate(loc); Catalog.Shared.Invalidate(Location.DriveTrash(loc.Account!)); }
-            catch (Exception e) { ShowError(e, "Couldn’t move to Recently Deleted", owner); }
+            catch (Exception e) { ShowError(e, "Couldn’t move to " + (loc.AccountRef?.DeletedTitle ?? "Recently Deleted"), owner); }
         }
         var assets = items.Where(i => i.Photo is not null).Select(i => i.Photo!).ToList();
-        if (assets.Count > 0 && loc.AccountRef is { Photos: { } photos })
+        if (assets.Count > 0 && loc.AccountRef is { Photos: { } photos } pa)
         {
             if (!Dialogs.Confirm(owner, assets.Count == 1 ? "Delete this photo?" : $"Delete {assets.Count} photos?",
-                    "They’ll move to Recently Deleted in iCloud Photos, on all your devices, and can be recovered for 30 days.", "Delete", destructive: true)) return;
+                    pa.IsICloud ? "They’ll move to Recently Deleted in iCloud Photos, on all your devices, and can be recovered for 30 days."
+                        : $"They’ll move to {pa.DriveTitle}’s {pa.DeletedTitle}, where you can put them back.", "Delete", destructive: true)) return;
             try
             {
                 await photos.DeleteAsync(assets);
@@ -778,16 +818,18 @@ static class Ops
         if (loc.Kind != LocKind.DriveTrash || loc.AccountRef?.Drive is not { } drive) return;
         var nodes = items.Where(i => i.Node is { IsInTrash: true }).Select(i => i.Node!).ToList();
         if (nodes.Count == 0) return;
-        // Re-check Recently Deleted right now: act only on items still there and unchanged (not restored elsewhere).
+        var acct = loc.AccountRef!;
+        // Re-check the trash right now: act only on items still there and unchanged (not restored elsewhere).
         try
         {
             var current = await drive.ListTrashAsync();
             nodes = nodes.Select(n => current.FirstOrDefault(c => c.Id == n.Id && c.Etag == n.Etag)).OfType<DriveNode>().ToList();
         }
-        catch (Exception e) { ShowError(e, "Couldn’t check Recently Deleted", owner); return; }
-        if (nodes.Count == 0) { Catalog.Shared.Invalidate(loc); Dialogs.Info(owner, "Nothing to delete", "Those items are no longer in Recently Deleted."); return; }
+        catch (Exception e) { ShowError(e, "Couldn’t check " + acct.DeletedTitle, owner); return; }
+        if (nodes.Count == 0) { Catalog.Shared.Invalidate(loc); Dialogs.Info(owner, "Nothing to delete", $"Those items are no longer in {acct.DeletedTitle}."); return; }
         if (!Dialogs.Confirm(owner, $"Delete {nodes.Count} item{(nodes.Count == 1 ? "" : "s")} immediately?",
-                "They’ll be removed from iCloud for good, on all your devices. You can’t undo this.", "Delete Immediately", destructive: true)) return;
+                acct.IsICloud ? "They’ll be removed from iCloud for good, on all your devices. You can’t undo this."
+                    : $"They’ll be removed from {acct.DriveTitle} for good. You can’t undo this.", "Delete Immediately", destructive: true)) return;
         try { await drive.DeleteForeverAsync(nodes); Catalog.Shared.Invalidate(loc); }
         catch (Exception e) { ShowError(e, "Couldn’t delete", owner); }
     }

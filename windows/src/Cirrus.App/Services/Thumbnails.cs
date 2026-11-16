@@ -17,6 +17,7 @@ static class Thumbnails
     static readonly SemaphoreSlim PhotoGate = new(12);       // iCloud Photos renditions (small, many)
     static readonly SemaphoreSlim LocalGate = new(4);
     static readonly SemaphoreSlim PreviewGate = new(3);      // whole-file downloads for iCloud Drive previews
+    static readonly SemaphoreSlim CloudGate = new(8);        // other clouds' server-made thumbnails (small)
     static readonly object Lock = new();
     static readonly Dictionary<string, ImageSource> Memory = [];
     static readonly LinkedList<string> Order = new();
@@ -38,8 +39,15 @@ static class Thumbnails
     }
 
     static bool DrivePreviewable(Item item) =>
-        item.Node is { IsFolder: false } n && Settings.Current.DrivePreviews && n.Size is > 0 and <= DrivePreviewMax
-        && (Decodable.Contains(Path.GetExtension(n.Name)) || Path.GetExtension(n.Name).Equals(".pdf", StringComparison.OrdinalIgnoreCase));
+        item.Node is { IsFolder: false } n && Settings.Current.DrivePreviews && (ServerThumbnail(item) || (n.Size is > 0 and <= DrivePreviewMax && SmallCopyPreviewable(n)));
+
+    static bool SmallCopyPreviewable(DriveNode n) =>
+        Decodable.Contains(Path.GetExtension(n.Name)) || Path.GetExtension(n.Name).Equals(".pdf", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Other clouds make thumbnails themselves (images, videos, PDFs), whatever the file's size.</summary>
+    static bool ServerThumbnail(Item item) =>
+        item.Node is { IsFolder: false } n && !n.IsGoogleNative() && AccountManager.Shared.Account(item.AccountID)?.Drive is ICloudDriveBackend
+        && (Decodable.Contains(Path.GetExtension(n.Name)) || ShellPreviewable.Contains(Path.GetExtension(n.Name)));
 
     static bool LocalPreviewable(Item item) =>
         item.LocalPath is { } lp && !item.IsContainer && item.Cloud != LocalFiles.CloudState.CloudOnly
@@ -52,7 +60,7 @@ static class Thumbnails
         if (item.Thumbnail is not null || !CanPreview(item)) return;
         var key = item.Key + "|" + (item.Node?.Etag ?? item.Modified?.ToUnixTimeSeconds().ToString() ?? "") + "@" + px;
         lock (Lock) if (Memory.TryGetValue(key, out var hit)) { item.Thumbnail = hit; return; }
-        var gate = item.Photo is not null ? PhotoGate : item.Node is not null ? PreviewGate : LocalGate;
+        var gate = item.Photo is not null ? PhotoGate : ServerThumbnail(item) ? CloudGate : item.Node is not null ? PreviewGate : LocalGate;
         await gate.WaitAsync(ct);
         try
         {
@@ -63,7 +71,11 @@ static class Thumbnails
                 var data = await backend.ThumbnailAsync(asset, px, ct);
                 if (data is not null) img = await Task.Run(() => Decode(new MemoryStream(data), px), ct);
             }
-            else if (item.Node is { } node && AccountManager.Shared.Account(item.AccountID)?.Drive is { } drive)
+            else if (item.Node is { } cn && AccountManager.Shared.Account(item.AccountID)?.Drive is ICloudDriveBackend cloud
+                     && ServerThumbnail(item) && await cloud.ThumbnailAsync(cn, px, ct) is { } thumb)
+                img = await Task.Run(() => Decode(new MemoryStream(thumb), px), ct);
+            else if (item.Node is { } node && AccountManager.Shared.Account(item.AccountID)?.Drive is { } drive
+                     && node.Size is > 0 and <= DrivePreviewMax && SmallCopyPreviewable(node))
             {
                 // Read-only: the file is downloaded once into Cirrus' preview cache (keyed by item and version, cleared after a day).
                 var dir = Paths.AccountCacheDir("preview", item.AccountID ?? "");

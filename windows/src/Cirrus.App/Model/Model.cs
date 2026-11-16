@@ -59,6 +59,8 @@ public sealed class Item : INotifyPropertyChanged
     public bool IsHiddenFile { get; init; }
     public LocalFiles.CloudState Cloud { get; init; }
     public string Glyph { get; init; } = "\uE8A5";
+    /// <summary>A kind the service names itself (Google Docs…), instead of the one from the file name.</summary>
+    public string? KindName { get; init; }
 
     string? _kind;
     public string KindText
@@ -66,6 +68,7 @@ public sealed class Item : INotifyPropertyChanged
         get
         {
             if (_kind is not null) return _kind;
+            if (KindName is not null) return _kind = KindName;
             if (Album is { } a) return _kind = a.Kind switch { PhotoAlbumKind.Folder => "Album Folder", PhotoAlbumKind.Smart => "Smart Album", _ => "Album" };
             if (Volume is { } v) return _kind = v.IsRemovable ? "Removable Disk" : v.IsNetwork ? "Network Drive" : "Local Disk";
             if (Photo is { IsVideo: true }) return _kind = "Video";
@@ -85,7 +88,8 @@ public sealed class Item : INotifyPropertyChanged
         LocalFiles.CloudState.CloudOnly => "Available when online",
         LocalFiles.CloudState.Downloaded => "Available on this device",
         LocalFiles.CloudState.Pinned => "Always available",
-        _ => Node is not null || Photo is not null ? "In iCloud" : "",
+        _ => Node is not null || Photo is not null
+            ? (AccountManager.Shared.Account(AccountID) is { Kind: AccountKind.Cloud } c ? "In " + c.DriveTitle : "In iCloud") : "",
     };
 
     public bool IsPhoto => Photo is not null;

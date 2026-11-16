@@ -30,6 +30,8 @@ public partial class MainWindow : Window
         SyncStore.Shared.Changed += () => Dispatcher.InvokeAsync(() => { _sidebarRefresh.Stop(); _sidebarRefresh.Start(); });
         TransferManager.Shared.Changed += () => Dispatcher.InvokeAsync(UpdateTransferStatus);
         Sidebar.Drop += Sidebar_Drop;
+        AddAccountWindow.Added += OpenAddedAccount;
+        Closed += (_, _) => AddAccountWindow.Added -= OpenAddedAccount;
         Sidebar.DragOver += Sidebar_DragOver;
         PreviewKeyDown += OnKey;
         Loaded += (_, _) =>
@@ -407,6 +409,14 @@ public partial class MainWindow : Window
         await Ops.Transfer(sel, dest, move, this);
     }
 
+    /// <summary>A cloud account was just connected: show it.</summary>
+    void OpenAddedAccount(Account a)
+    {
+        if (ActiveTab is not { } tab) return;
+        if (a.Drive is { } d) tab.Navigate(Location.Drive(a.Id, d.RootID));
+        else if (a.Photos is not null) tab.Navigate(Location.Album(a.Id, a.PrimaryLibraryID, "smart:All Photos"));
+    }
+
     // MARK: Sidebar
 
     sealed record SidebarAction(Action Run);
@@ -450,7 +460,31 @@ public partial class MainWindow : Window
             if (native.DriveRoot is { } dr) Node(s, "iCloud Drive", "\uE753", Location.Local(dr));
             if (native.PhotosRoot is { } pr) Node(s, "iCloud Photos", "\uEB9F", Location.Local(pr));
         }
-        foreach (var a in am.Accounts.Where(a => a.Kind != AccountKind.Native))
+        // A photo library's sidebar rows: Photos, Albums (filled when opened) and its deleted items.
+        void PhotosNodes(TreeViewItem s, Account a, string deletedLabel)
+        {
+            var lib = a.PrimaryLibraryID;
+            Node(s, "Photos", "\uEB9F", Location.Album(a.Id, lib, "smart:All Photos"));
+            var albums = Node(s, "Albums", "\uE8B9", Location.Photos(a.Id, lib));
+            albums.Items.Add(new TreeViewItem { Header = "Loading…", IsEnabled = false });
+            albums.Expanded += async (_, _) =>
+            {
+                if (albums.Items.Count != 1 || albums.Items[0] is not TreeViewItem { IsEnabled: false }) return;
+                try
+                {
+                    var list = await Catalog.Shared.Albums(a, lib);
+                    albums.Items.Clear();
+                    foreach (var al in list.Where(x => x.Kind is PhotoAlbumKind.Album or PhotoAlbumKind.Shared && x.ParentID is null).OrderBy(x => x.Name, NaturalComparer.Instance))
+                        Node(albums, al.Name, "\uE8B9", Location.Album(a.Id, lib, al.Id));
+                    foreach (var f in list.Where(x => x.Kind == PhotoAlbumKind.Folder && x.ParentID is null))
+                        Node(albums, f.Name, "\uE8B7", Location.Photos(a.Id, lib, f.Id));
+                }
+                catch (Exception e) { albums.Items.Clear(); albums.Items.Add(new TreeViewItem { Header = e.Message, IsEnabled = false }); }
+            };
+            Node(s, deletedLabel, "\uE74D", Location.Album(a.Id, lib, "smart:Recently Deleted"));
+        }
+
+        foreach (var a in am.Accounts.Where(a => a.Kind is AccountKind.Web or AccountKind.Demo))
         {
             var s = Section(a.Kind == AccountKind.Demo ? "Demo iCloud" : "iCloud — " + a.Title);
             s.Tag = a;
@@ -468,32 +502,40 @@ public partial class MainWindow : Window
                 Node(s, "iCloud Drive", "\uE753", Location.Drive(a.Id, d.RootID));
                 Node(s, "Recently Deleted", "\uE74D", Location.DriveTrash(a.Id));
             }
-            if (a.Photos is not null)
-            {
-                var lib = a.PrimaryLibraryID;
-                Node(s, "Photos", "\uEB9F", Location.Album(a.Id, lib, "smart:All Photos"));
-                var albums = Node(s, "Albums", "\uE8B9", Location.Photos(a.Id, lib));
-                albums.Items.Add(new TreeViewItem { Header = "Loading…", IsEnabled = false });
-                albums.Expanded += async (_, _) =>
-                {
-                    if (albums.Items.Count != 1 || albums.Items[0] is not TreeViewItem { IsEnabled: false }) return;
-                    try
-                    {
-                        var list = await Catalog.Shared.Albums(a, lib);
-                        albums.Items.Clear();
-                        foreach (var al in list.Where(x => x.Kind is PhotoAlbumKind.Album or PhotoAlbumKind.Shared && x.ParentID is null).OrderBy(x => x.Name, NaturalComparer.Instance))
-                            Node(albums, al.Name, "\uE8B9", Location.Album(a.Id, lib, al.Id));
-                        foreach (var f in list.Where(x => x.Kind == PhotoAlbumKind.Folder && x.ParentID is null))
-                            Node(albums, f.Name, "\uE8B7", Location.Photos(a.Id, lib, f.Id));
-                    }
-                    catch (Exception e) { albums.Items.Clear(); albums.Items.Add(new TreeViewItem { Header = e.Message, IsEnabled = false }); }
-                };
-                Node(s, "Photos Recently Deleted", "\uE74D", Location.Album(a.Id, lib, "smart:Recently Deleted"));
-            }
+            if (a.Photos is not null) PhotosNodes(s, a, "Photos Recently Deleted");
             Node(s, "Back Up…", "\uE8F7", new SidebarAction(() => ShowBackup(a.Id)));
         }
         if (!am.WebAccounts.Any())
             Node(Section("iCloud"), "Sign In with Apple ID…", "\uE8FA", new SidebarAction(() => SignIn(null)));
+
+        // Other clouds: one section per account (its name), its service as the row.
+        TreeViewItem? lastCloud = null;
+        foreach (var a in am.CloudAccounts)
+        {
+            var p = a.Provider!.Value;
+            var s = Section(a.Title);
+            s.Tag = a;
+            s.ContextMenu = SidebarMenu(a);
+            s.ToolTip = $"{p.DisplayName()} — {a.Title}";
+            lastCloud = s;
+            if (a.Status == AccountStatus.NeedsSignIn)
+            {
+                Node(s, $"Sign In to {p.DisplayName()} Again…", "\uE7BA", new SidebarAction(() => AddAccountWindow.Show(this, reconnecting: a.Cloud)), Brushes.DarkOrange);
+                continue;
+            }
+            if (a.Status == AccountStatus.Error)
+            {
+                Node(s, $"{p.DisplayName()} isn’t available", "\uE783", new SidebarAction(() => Dialogs.Error(this, $"{p.DisplayName()} isn’t available", a.StatusDetail ?? "")), Brushes.IndianRed);
+                continue;
+            }
+            if (a.Drive is { } d)
+            {
+                Node(s, p.DisplayName(), p.Glyph(), Location.Drive(a.Id, d.RootID));
+                if (a.CanListTrash) Node(s, a.DeletedTitle, "\uE74D", Location.DriveTrash(a.Id));
+            }
+            if (a.Photos is not null) PhotosNodes(s, a, a.DeletedTitle);
+        }
+        Node(lastCloud ?? Section("Other Clouds"), "Add Account…", "\uE710", new SidebarAction(() => AddAccountWindow.Show(this)));
 
         var pc = Section("This PC");
         Node(pc, "This PC", "\uE7F8", Location.Computer);
@@ -533,8 +575,39 @@ public partial class MainWindow : Window
                     }
                 }));
                 return m;
+            case Account a when a.Kind == AccountKind.Cloud:
+                m.Items.Add(MenuItem("Account Info…", "\uE946", () => ShowCloudInfo(a)));
+                m.Items.Add(MenuItem("Sign In Again…", "\uE8FA", () => AddAccountWindow.Show(this, reconnecting: a.Cloud)));
+                m.Items.Add(MenuItem("Remove Account…", "\uE74D", () =>
+                {
+                    var service = a.Provider!.Value.DisplayName();
+                    if (Dialogs.Confirm(this, $"Remove {a.Title}?", $"Cirrus forgets this {service} account’s sign-in and what it cached. Nothing changes in {service}.", "Remove"))
+                    {
+                        AccountManager.Shared.RemoveCloud(a);
+                        Catalog.Shared.ForgetAccount(a.Id);
+                    }
+                }));
+                return m;
             default: return null;
         }
+    }
+
+    /// <summary>A cloud account's service, login and storage.</summary>
+    async void ShowCloudInfo(Account a)
+    {
+        var p = a.Provider!.Value;
+        var lines = new List<string> { "Service: " + p.DisplayName(), "Account: " + a.Title };
+        if (a.Cloud?.Server is { Length: > 0 } server) lines.Add("Server: " + server);
+        if (a.Cloud?.Option("bucket") is { Length: > 0 } bucket) lines.Add("Bucket: " + bucket);
+        if (a.Cloud?.Option("region") is { Length: > 0 } region) lines.Add("Region: " + region);
+        var quota = a.StorageUsageAsync();
+        var usage = await Task.WhenAny(quota, Task.Delay(8000)) == quota ? quota.Result : null;
+        if (usage is { Total: > 0 } u) lines.Add($"Storage: {u.Used.ByteString()} used of {u.Total.ByteString()} ({u.Available.ByteString()} available)");
+        else if (usage is { } used) lines.Add($"Storage: {used.Used.ByteString()} used");
+        lines.Add("Added: " + (a.Cloud?.Added.ToLocalTime().ToString("d") ?? ""));
+        lines.Add("");
+        lines.Add("The sign-in is kept encrypted for your Windows account on this PC. Removing the account forgets it; nothing changes in " + p.DisplayName() + ".");
+        Dialogs.Info(this, a.Title, string.Join("\n", lines));
     }
 
     void SelectSidebar(Location loc)

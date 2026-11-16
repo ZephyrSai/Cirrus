@@ -110,13 +110,13 @@ sealed class LocationPicker : Window
             if (native.DriveRoot is { } dr) Node(s, "iCloud Drive", "\uE753", Location.Local(dr), c => LocalChildren(c, dr));
             if (native.PhotosRoot is { } pr && !_foldersOnly) Node(s, "iCloud Photos", "\uEB9F", Location.Local(pr), c => LocalChildren(c, pr));
         }
-        foreach (var a in am.Accounts.Where(a => a.Kind != AccountKind.Native && a.Status != AccountStatus.NeedsSignIn))
+        foreach (var a in am.Accounts.Where(a => a.Kind != AccountKind.Native && a.Status != AccountStatus.NeedsSignIn && (a.Drive is not null || a.Photos is not null)))
         {
-            var s = Node(_tree, a.Kind == AccountKind.Demo ? "Demo iCloud" : a.Title, "\uE77B", null);
+            var s = Node(_tree, a.Kind == AccountKind.Demo ? "Demo iCloud" : a.Title, a.IsICloud ? "\uE77B" : a.Provider!.Value.Glyph(), null);
             s.IsExpanded = true;
             if (a.Drive is { } d)
             {
-                var root = Node(s, "iCloud Drive", "\uE753", Location.Drive(a.Id, d.RootID), c => DriveChildren(c, a, d.RootID));
+                var root = Node(s, a.DriveTitle, a.IsICloud ? "\uE753" : a.Provider!.Value.Glyph(), Location.Drive(a.Id, d.RootID), c => DriveChildren(c, a, d.RootID));
                 root.IsExpanded = false;
             }
             if (includePhotos && !_foldersOnly && a.Photos is not null)

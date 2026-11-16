@@ -44,7 +44,8 @@ sealed class BackupWindow : Window
         _verify = Ui.Check("Verify each download’s size", o.Verify);
         foreach (var c in new[] { _live, _edited, _raw, _hidden, _shared, _albums }) c.Margin = new Thickness(22, 2, 0, 2);
 
-        var accounts = AccountManager.Shared.Accounts.Where(a => a.HasDrive || a.Photos is not null || a.PhotosRoot is not null).ToList();
+        // iCloud accounts only: Back Up iCloud is about iCloud (other clouds can be copied or synced to a folder instead).
+        var accounts = AccountManager.Shared.Accounts.Where(a => a.IsICloud && (a.HasDrive || a.Photos is not null || a.PhotosRoot is not null)).ToList();
         _account.ItemsSource = accounts.Select(a => a.Kind switch { AccountKind.Demo => "Demo iCloud", AccountKind.Native => "iCloud for Windows (this PC’s folders)", _ => $"{a.Title} ({a.AppleID})" }).ToList();
         _account.Tag = accounts;
         _account.SelectedIndex = Math.Max(0, accounts.FindIndex(a => a.Id == accountID));

@@ -69,6 +69,24 @@ sealed class SettingsWindow : Window
             accounts.Children.Add(row);
         }
         if (accounts.Children.Count == 0) accounts.Children.Add(Ui.Text("No Apple IDs signed in to Cirrus.", 12, opacity: 0.7));
+        // Other clouds (OneDrive, Nextcloud…): forget one here, or add another.
+        foreach (var a in AccountManager.Shared.CloudAccounts)
+        {
+            var row = new DockPanel { Margin = new Thickness(0, 2, 0, 2) };
+            var service = a.Provider!.Value.DisplayName();
+            var remove = Ui.Button("Remove…", () =>
+            {
+                if (Dialogs.Confirm(this, $"Remove {a.Title}?", $"Cirrus forgets this {service} account’s sign-in and what it cached. Nothing changes in {service}.", "Remove"))
+                { AccountManager.Shared.RemoveCloud(a); Cirrus.App.Model.Catalog.Shared.ForgetAccount(a.Id); Close(); }
+            });
+            DockPanel.SetDock(remove, Dock.Right);
+            row.Children.Add(remove);
+            row.Children.Add(new TextBlock { Text = $"{service}: {a.Title}{(a.Status == AccountStatus.Ready ? "" : " — " + a.Status)}", VerticalAlignment = VerticalAlignment.Center });
+            accounts.Children.Add(row);
+        }
+        var addCloud = Ui.Button("Add Account…", () => { Close(); AddAccountWindow.Show(Owner); });
+        addCloud.HorizontalAlignment = HorizontalAlignment.Left;
+        accounts.Children.Add(addCloud);
         var native = AccountManager.Shared.NativeAccount;
         accounts.Children.Add(Ui.Text(native is null
             ? "iCloud for Windows isn’t set up on this PC (no iCloudDrive folder found)."

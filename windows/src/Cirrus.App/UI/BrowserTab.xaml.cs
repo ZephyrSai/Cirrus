@@ -213,7 +213,7 @@ public partial class BrowserTab : UserControl
 
     static string EmptyText(Location loc) => loc.Kind switch
     {
-        LocKind.DriveTrash => "Recently Deleted is empty.",
+        LocKind.DriveTrash => (loc.AccountRef?.DeletedTitle ?? "Recently Deleted") + " is empty.",
         LocKind.Album => "No photos here.",
         _ => "This folder is empty. Drop files here to copy them in.",
     };

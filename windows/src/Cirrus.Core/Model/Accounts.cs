@@ -3,12 +3,12 @@ using System.Text.Json;
 
 namespace Cirrus.Core;
 
-public enum AccountKind { Native, Web, Demo }
+public enum AccountKind { Native, Web, Demo, Cloud }
 public enum AccountStatus { Ready, NeedsSignIn, WaitingForApproval, Error }
 
 /// <summary>
-/// One place Cirrus reads iCloud from: this PC's iCloud for Windows folders, an Apple ID signed in inside
-/// Cirrus (web services), or the built-in demo.
+/// One place Cirrus reads from: this PC's iCloud for Windows folders, an Apple ID signed in inside Cirrus (web services),
+/// the built-in demo, or another cloud service (OneDrive, Nextcloud…).
 /// </summary>
 public sealed class Account
 {
@@ -25,19 +25,38 @@ public sealed class Account
     public ICloudSession? Session { get; set; }
     public AccountStatus Status { get; set; } = AccountStatus.Ready;
     public string? StatusDetail { get; set; }
+    /// <summary>Another cloud service (Kind == Cloud).</summary>
+    public CloudAccountRecord? Cloud { get; set; }
 
     public Account(string id, AccountKind kind, string title) { Id = id; Kind = kind; Title = title; }
 
     public bool HasDrive => Drive is not null || DriveRoot is not null;
+    public CloudProvider? Provider => Cloud?.Provider;
+    public bool IsICloud => Kind != AccountKind.Cloud;
+    /// <summary>What the top folder of <see cref="Drive"/> is called: "iCloud Drive", "OneDrive", "Nextcloud"…</summary>
+    public string DriveTitle => Cloud?.Provider.DisplayName() ?? "iCloud Drive";
+    /// <summary>Where deleted items go: "Recently Deleted", "Recycle Bin", "Deleted Files"…</summary>
+    public string DeletedTitle => Cloud?.Provider.DeletedTitle() ?? "Recently Deleted";
+    /// <summary>Can its deleted items be listed (and restored) in Cirrus?</summary>
+    public bool CanListTrash => Drive is ICloudDriveBackend c ? c.CanListTrash : Drive is not null;
 
     public async Task<StorageUsage?> StorageUsageAsync()
     {
+        if (Drive is ICloudDriveBackend c) { try { return await c.QuotaAsync().ConfigureAwait(false); } catch { return null; } }
         if (Session is null) return null;
         try { return await Session.StorageUsageAsync().ConfigureAwait(false); } catch { return null; }
     }
 
-    /// <summary>Library id of the main Photos library for this account.</summary>
-    public string PrimaryLibraryID => Kind == AccountKind.Demo ? "demo" : "PrimarySync";
+    /// <summary>Library id of the main Photos library for this account (a photo-library cloud: set when it's connected).</summary>
+    public string PrimaryLibraryID => Kind switch
+    {
+        AccountKind.Demo => "demo",
+        AccountKind.Cloud => CloudLibraryID ?? Cloud?.Provider.Raw() ?? "cloud",
+        _ => "PrimarySync",
+    };
+
+    /// <summary>A photo-library cloud's library id (its backend's only library).</summary>
+    public string? CloudLibraryID { get; set; }
 }
 
 /// <summary>Accounts shown in the sidebar, multiple Apple IDs included.</summary>
@@ -62,6 +81,11 @@ public sealed class AccountManager
     public IReadOnlyList<Account> Accounts { get { lock (_lock) return _accounts.ToList(); } }
     public Account? NativeAccount => Accounts.FirstOrDefault(a => a.Kind == AccountKind.Native);
     public IReadOnlyList<Account> WebAccounts => Accounts.Where(a => a.Kind == AccountKind.Web).ToList();
+    public IReadOnlyList<Account> CloudAccounts => Accounts.Where(a => a.Kind == AccountKind.Cloud).ToList();
+    /// <summary>Debug demo mode: the fake services' accounts (set by the app before <see cref="Load"/>).</summary>
+    public Func<IReadOnlyList<CloudConnection>>? DemoClouds { get; set; }
+    readonly MemorySecretStore _demoCloudStore = new();
+    bool _demoCloudsAdded;
     public Account? Account(string? id) => id is null ? null : Accounts.FirstOrDefault(a => a.Id == id);
 
     /// <summary>iCloud for Windows' iCloud Drive folder, when installed and signed in.</summary>
@@ -113,6 +137,15 @@ public sealed class AccountManager
         if (DemoMode)
             list.Add(previous.FirstOrDefault(p => p.Kind == AccountKind.Demo)
                 ?? new Account("demo", AccountKind.Demo, "Demo iCloud") { AppleID = "demo@example.com", Drive = DemoDrive.Shared, Photos = DemoPhotos.Shared });
+        // Other clouds. Demo mode keeps them in memory only (never the saved accounts or the secret store).
+        CloudStore.Store = DemoMode ? _demoCloudStore : _secrets;
+        if (DemoMode && !_demoCloudsAdded && DemoClouds is { } demoClouds)
+        {
+            _demoCloudsAdded = true;
+            foreach (var c in demoClouds()) CloudStore.Save(c.Record, c.Secret);
+        }
+        foreach (var r in CloudStore.Records())
+            list.Add(previous.FirstOrDefault(p => p.Id == r.Id && p.Kind == AccountKind.Cloud) ?? MakeCloudAccount(r, CloudStore.Secret(r.Id)));
         lock (_lock) _accounts = list;
         ThumbnailDiskCache.PruneOldVersions(list.Select(a => a.Photos?.CacheKey).OfType<string>());
         ListingCache.Shared.PruneAccounts(list.Select(a => a.Id));
@@ -211,6 +244,59 @@ public sealed class AccountManager
         try { var d = Paths.AccountCacheDir("preview", account.Id); if (Directory.Exists(d)) Directory.Delete(d, true); } catch { }
         try { var d = Paths.AccountCacheDir("open", account.Id); if (Directory.Exists(d)) LocalFiles.SafeTrash(d, Paths.CacheDir("open")); }
         catch (Exception e) { Log.Status("couldn’t clear opened copies at sign-out: " + e.GetType().Name); }
+    }
+
+    // MARK: Other clouds
+
+    Account MakeCloudAccount(CloudAccountRecord r, CloudSecret? secret)
+    {
+        var a = new Account(r.Id, AccountKind.Cloud, r.Title) { Cloud = r };
+        if (secret is null) { a.Status = AccountStatus.NeedsSignIn; return a; }
+        try
+        {
+            if (r.Provider.IsPhotoLibrary()) { a.Photos = CloudBackends.MakePhotos(r, secret); return a; }
+            var backend = CloudBackends.Make(r, secret);
+            // OAuth services hand out new refresh tokens now and then: keep the newest one.
+            if (backend is ICloudTokenRotating rot)
+            {
+                var id = r.Id;
+                rot.OnNewRefreshToken = token => { if (CloudStore.Secret(id) is { } s) CloudStore.SetSecret(id, s with { RefreshToken = token }); };
+            }
+            a.Drive = backend;
+        }
+        catch (CloudException e) when (e.Kind == CloudErrorKind.SignInNeeded) { a.Status = AccountStatus.NeedsSignIn; }
+        catch (Exception e) { a.Status = AccountStatus.Error; a.StatusDetail = e.Message; }
+        return a;
+    }
+
+    /// <summary>A newly connected cloud account (from Add Account). Replaces one with the same id, keeping its place.</summary>
+    public Account AddCloud(CloudConnection c)
+    {
+        CloudStore.Save(c.Record, c.Secret);
+        ListingCache.Shared.Revive(c.Record.Id);
+        var a = MakeCloudAccount(c.Record, c.Secret);
+        lock (_lock)
+        {
+            var i = _accounts.FindIndex(x => x.Id == a.Id);
+            if (i >= 0) _accounts[i] = a; else _accounts.Add(a);
+        }
+        Changed?.Invoke();
+        return a;
+    }
+
+    /// <summary>The same service and login already connected (so a second sign-in updates it instead of adding a twin).</summary>
+    public CloudAccountRecord? ExistingCloud(CloudAccountRecord r) =>
+        Accounts.Select(a => a.Cloud).OfType<CloudAccountRecord>().Concat(CloudStore.Records()).FirstOrDefault(x =>
+            x.Provider == r.Provider && string.Equals(x.Title, r.Title, StringComparison.OrdinalIgnoreCase) && (x.Server ?? "") == (r.Server ?? ""));
+
+    /// <summary>Forget a cloud account: its sign-in and everything Cirrus cached for it. Nothing changes on the service.</summary>
+    public void RemoveCloud(Account account)
+    {
+        if (account.Kind != AccountKind.Cloud) return;
+        CloudStore.Remove(account.Id);
+        lock (_lock) _accounts.RemoveAll(a => a.Id == account.Id);
+        WipeCaches(account);
+        Changed?.Invoke();
     }
 
     public void NotifyChanged() => Changed?.Invoke();

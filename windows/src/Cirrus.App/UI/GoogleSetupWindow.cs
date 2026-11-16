@@ -39,7 +39,8 @@ sealed class GoogleSetupWindow : Window
             "Select Add or remove scopes. Under “Manually add scopes”, paste these lines, select Add to table, then Update and Save.\n"
             + GoogleScopes.DriveFile + "\n" + GoogleScopes.PhotosAppend
             + "\nTo copy from Google into iCloud too, also add (Google calls reading Drive “restricted” — fine for your own project):\n"
-            + GoogleScopes.DriveReadonly + "\n" + GoogleScopes.PhotosPicker,
+            + GoogleScopes.DriveReadonly + "\n" + GoogleScopes.PhotosPicker
+            + "\nTo browse Google Drive in Cirrus’s sidebar (Add Account › Google Drive), also add:\n" + GoogleScopes.Drive,
             "https://console.developers.google.com/auth/scopes", "Open Data Access"),
         new("Create the client",
             "Select Create client. Application type: Desktop app. Name: Cirrus for Windows. Select Create, then copy the Client ID and Client secret into the boxes below — Google shows the secret in full only this once.",

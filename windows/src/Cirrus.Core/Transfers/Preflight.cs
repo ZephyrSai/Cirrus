@@ -98,10 +98,21 @@ public sealed class Preflight
     public static string VolumeKey(string dir) => "vol:" + (VolumeInfo.Info(dir)?.Root ?? Path.GetPathRoot(Path.GetFullPath(dir)) ?? "/").ToLowerInvariant();
     public static string ICloudKey(Account a) => "icloud:" + a.Id;
 
-    /// <summary>Free iCloud storage for a web account, minus uploads already queued to it.</summary>
+    /// <summary>The largest file a drive account takes, and how a blocked item is explained.</summary>
+    public static (long? Max, string Reason) DriveLimit(Account a)
+    {
+        if (a.Kind != AccountKind.Cloud) return (Limits.ICloudDriveMax, "larger than iCloud Drive’s 50 GB limit");
+        var p = a.Provider!.Value;
+        return p.MaxFileSize() is long m ? (m, $"larger than {p.DisplayName()}’s {m.ByteString()} limit") : (null, "");
+    }
+
+    /// <summary>"in iCloud", "in OneDrive"…: where an upload's free space was measured.</summary>
+    public static string SpaceLabel(Account a) => a.IsICloud ? "in iCloud" : "in " + a.DriveTitle;
+
+    /// <summary>Free storage for an iCloud web account or another cloud, minus uploads already queued to it.</summary>
     public async Task<long?> ICloudFree(Account acct)
     {
-        if (acct.Kind != AccountKind.Web) return null;
+        if (acct.Kind is not (AccountKind.Web or AccountKind.Cloud)) return null;
         StorageUsage? usage = null;
         lock (_lock)
             if (_storageCache.TryGetValue(acct.Id, out var c) && DateTimeOffset.UtcNow - c.At < TimeSpan.FromSeconds(120)) usage = c.Usage;
@@ -172,9 +183,10 @@ public sealed class Preflight
             case Destination.Drive d:
                 r.Bytes = files.Sum(f => f.Size);
                 r.Available = await ICloudFree(d.Account).ConfigureAwait(false);
-                r.AvailableLabel = "in iCloud";
-                foreach (var f in files.Where(f => f.Size > Limits.ICloudDriveMax)) Block(f, "larger than iCloud Drive’s 50 GB limit");
-                var risky = files.Where(f => f.Size > Limits.ICloudWebSoft && f.Size <= Limits.ICloudDriveMax).ToList();
+                r.AvailableLabel = SpaceLabel(d.Account);
+                var (max, reason) = DriveLimit(d.Account);
+                if (max is long mx) foreach (var f in files.Where(f => f.Size > mx)) Block(f, reason);
+                var risky = d.Account.IsICloud ? files.Where(f => f.Size > Limits.ICloudWebSoft && f.Size <= Limits.ICloudDriveMax).ToList() : [];
                 if (risky.Count > 0)
                     r.Cautions.Add((risky.Count == 1 ? $"“{System.IO.Path.GetFileName(risky[0].Path)}” is" : $"{risky.Count} files are") +
                         " over 10 GB. iCloud.com has been reported to refuse web uploads that large; Cirrus will try, and a failure will show in Transfers.");
@@ -185,6 +197,11 @@ public sealed class Preflight
                 var skipped = files.Count - media.Count;
                 if (skipped > 0) r.Cautions.Add($"{skipped} item{(skipped == 1 ? " isn’t a photo or video" : "s aren’t photos or videos")} and will be skipped.");
                 r.Files = media.Count;
+                if (p.Account.Kind == AccountKind.Cloud)
+                {
+                    r.Available = await ICloudFree(p.Account).ConfigureAwait(false);
+                    r.AvailableLabel = SpaceLabel(p.Account);
+                }
                 if (p.Account.Kind == AccountKind.Web)
                 {
                     r.Available = await ICloudFree(p.Account).ConfigureAwait(false);

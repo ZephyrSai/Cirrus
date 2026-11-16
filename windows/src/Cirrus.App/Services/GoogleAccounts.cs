@@ -48,6 +48,11 @@ sealed class GoogleAccounts
         _gate = new GoogleTokenGate(_store, presence, () => Settings.Current.RequireAuthForSavedPassword);
     }
 
+    /// <summary>Where Google requests go: the real Google (null) or, in Debug demo mode, the fake one.</summary>
+    public HttpMessageHandler? Transport => _handler;
+#if DEBUG
+    internal Cirrus.Fakes.FakeGoogle? Fake => _fake;
+#endif
     public GoogleOAuthClient? Client => _store.Client();
     public bool IsConfigured => Client?.LooksValid ?? false;
     public List<GoogleAccountInfo> Accounts => _store.Accounts().OrderBy(a => a.Connected).ToList();

@@ -27,6 +27,10 @@ public sealed class Settings
     /// <summary>null until the user changes it; then the default (on for TESTER builds) no longer applies.</summary>
     public bool? ReadOnlyICloudSetting { get; set; }
     public string? NativePhotosFolder { get; set; }
+    /// <summary>A Microsoft app registration the user pasted for OneDrive (empty: Cirrus's own, once registered).</summary>
+    public string? OneDriveClientID { get; set; }
+    /// <summary>A Dropbox app key the user pasted (empty: Cirrus's own, once registered).</summary>
+    public string? DropboxAppKey { get; set; }
     public List<string> Favorites { get; set; } = DefaultFavorites();
     public List<string> RecentTabs { get; set; } = [];
 

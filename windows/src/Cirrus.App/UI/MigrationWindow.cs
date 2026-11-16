@@ -186,7 +186,7 @@ sealed class MigrationWindow : Window
     void ReloadAccounts()
     {
         var previous = SelectedAccount?.Id;
-        _accounts = AccountManager.Shared.Accounts.Where(a => a.HasDrive || a.Photos is not null).ToList();
+        _accounts = AccountManager.Shared.Accounts.Where(a => a.IsICloud && (a.HasDrive || a.Photos is not null)).ToList();
         var titles = _accounts.Select(a => a.Kind switch
         {
             AccountKind.Native => "iCloud for Windows (this PC’s iCloud Drive folder)",
