@@ -351,7 +351,9 @@ enum CloudSignIn {
     }
 
     static func s3(endpoint: String, region: String, bucket: String, accessKey: String, secretKey: String) async throws -> (CloudAccountRecord, CloudSecret) {
-        throw CloudError.unsupported("S3 storage isn’t available in this build yet.")
+        let r = try await S3Storage.connect(endpoint: endpoint, region: region, bucket: bucket.isEmpty ? nil : bucket,
+                                            accessKey: accessKey, secretKey: secretKey, transport: CloudBackends.transport)
+        return (r.record, r.secret)
     }
 
     static func immich(server: String, apiKey: String) async throws -> (CloudAccountRecord, CloudSecret) {

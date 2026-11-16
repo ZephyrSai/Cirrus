@@ -86,6 +86,8 @@ enum DebugScreens {
             }
         case "cloud-add": s.addCloud = .init()
         case "cloud-immich": s.selection = .photos("cloud:immich:demo")
+        case "cloud-dropbox": s.selection = .drive("cloud:dropbox:demo")
+        case "cloud-s3": s.selection = .drive("cloud:s3:demo")
         case "cloud-immich-albums": s.selection = .albums("cloud:immich:demo")
         case "settings": s.selection = .settings
         case "signin", "code": s.signIn = .init(appleID: "taylor@example.com"); signInStep = screen
