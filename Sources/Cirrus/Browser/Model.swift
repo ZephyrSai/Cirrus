@@ -82,6 +82,15 @@ struct Item: Hashable {
         if case .volume(let v) = payload { return v.isInternal ? "Internal Disk" : "External Disk" }
         if case .camera = payload { return "Device" }
         if isContainer { return "Folder" }
+        if let z = driveNode?.zone, z.hasPrefix("application/vnd.google-apps.") {
+            switch z.dropFirst("application/vnd.google-apps.".count) {
+            case "document": return "Google Docs document"
+            case "spreadsheet": return "Google Sheets spreadsheet"
+            case "presentation": return "Google Slides presentation"
+            case "drawing": return "Google Drawings drawing"
+            default: return GoogleDocFormat.kindName(z)
+            }
+        }
         return utType?.localizedDescription?.capitalizedFirst ?? "Document"
     }
 
@@ -460,7 +469,9 @@ final class Catalog {
     }
 
     func driveItem(_ n: DriveNode, account: String) -> Item {
-        Item(key: "drive:" + account + ":" + n.id, name: n.name, isContainer: n.isFolder, size: n.isFolder ? nil : n.size, modified: n.modified,
+        // Google Docs, Sheets and Slides have no size until they're exported.
+        let native = n.zone.hasPrefix("application/vnd.google-apps.")
+        return Item(key: "drive:" + account + ":" + n.id, name: n.name, isContainer: n.isFolder, size: n.isFolder || native ? nil : n.size, modified: n.modified,
              created: n.created, typeID: n.isFolder ? UTType.folder.identifier : UTType(filenameExtension: (n.name as NSString).pathExtension)?.identifier,
              payload: .drive(n), target: n.isFolder ? .drive(account, n.id) : nil, count: n.childCount, symbol: n.isAppLibrary ? "app.badge" : nil,
              account: account)

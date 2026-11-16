@@ -303,7 +303,15 @@ enum CloudConnect {
     }
 
     static func googleDrive(open: @escaping @Sendable (URL) async -> Void) async throws -> (CloudAccountRecord, CloudSecret) {
-        throw CloudError.unsupported("Google Drive isn’t available in this build yet.")
+        guard let client = GoogleAccounts.shared.client, client.looksValid else {
+            throw CloudError.notConfigured("Set up Google sign-in first (your own Google client, the same one “Move to or from Google” uses).")
+        }
+        var open = open
+        #if DEBUG
+        if AccountManager.shared.demoMode { open = { url in await FakeGoogleServer.approve(url) } }
+        #endif
+        let r = try await GoogleDriveCloud.signIn(client: client, transport: GoogleAccounts.shared.transport, open: open)
+        return (r.record, r.secret)
     }
 
     static func webdav(url: String, user: String, password: String) async throws -> (CloudAccountRecord, CloudSecret) {

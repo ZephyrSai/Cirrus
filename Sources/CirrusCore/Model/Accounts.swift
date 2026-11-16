@@ -96,6 +96,13 @@ public final class AccountManager {
             demo.photos = DemoPhotos.shared
             list.append(demo)
         }
+        #if DEBUG
+        if demoMode {
+            CloudStore.inMemory = true
+            // Accounts added from the sheet in demo mode talk to the fake servers too.
+            CloudBackends.transport = [FakeGoogleServer.self]
+        }
+        #endif
         for r in CloudStore.records() { list.append(makeCloudAccount(r, secret: CloudStore.secret(r.id))) }
         #if DEBUG
         if demoMode && ProcessInfo.processInfo.environment["CIRRUS_NO_DEMO_CLOUDS"] == nil {

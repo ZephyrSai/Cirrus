@@ -77,13 +77,19 @@ public struct CloudSecret: Codable, Sendable, Equatable {
 public enum CloudStore {
     static let defaultsKey = "cloudAccounts"
     public static let keychainService = "Cirrus Cloud Account"
+    /// Demo mode and tests: keep accounts in memory only (never the Keychain or preferences).
+    nonisolated(unsafe) public static var inMemory = false
+    nonisolated(unsafe) static var memRecords = [CloudAccountRecord]()
+    nonisolated(unsafe) static var memSecrets = [String: CloudSecret]()
 
     public static func records() -> [CloudAccountRecord] {
+        if inMemory { return memRecords }
         guard let d = UserDefaults.standard.data(forKey: defaultsKey) else { return [] }
         return (try? JSONDecoder().decode([CloudAccountRecord].self, from: d)) ?? []
     }
 
     static func write(_ list: [CloudAccountRecord]) {
+        if inMemory { memRecords = list; return }
         if let d = try? JSONEncoder().encode(list) { UserDefaults.standard.set(d, forKey: defaultsKey) }
     }
 
@@ -99,15 +105,18 @@ public enum CloudStore {
     }
 
     public static func secret(_ id: String) -> CloudSecret? {
+        if inMemory { return memSecrets[id] }
         guard let d = Keychain.get(service: keychainService, account: id) else { return nil }
         return try? JSONDecoder().decode(CloudSecret.self, from: d)
     }
 
     public static func setSecret(_ id: String, _ s: CloudSecret) {
+        if inMemory { memSecrets[id] = s; return }
         if let d = try? JSONEncoder().encode(s) { Keychain.set(d, service: keychainService, account: id) }
     }
 
     public static func remove(_ id: String) {
+        if inMemory { memSecrets[id] = nil; write(records().filter { $0.id != id }); return }
         Keychain.delete(service: keychainService, account: id)
         write(records().filter { $0.id != id })
     }
