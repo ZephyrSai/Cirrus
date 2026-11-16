@@ -167,6 +167,8 @@ public protocol CloudTokenRotating: AnyObject {
     var onNewRefreshToken: (@Sendable (String) -> Void)? { get set }
 }
 
+extension OneDriveBackend: CloudTokenRotating {}
+
 /// Builds the backend for a saved account. `transport` swaps in URLProtocol fakes (tests, demo mode).
 public enum CloudBackends {
     nonisolated(unsafe) public static var transport: [AnyClass]? = nil

@@ -160,7 +160,7 @@ final class AddAccountSheet: NSWindowController, NSTextFieldDelegate {
         case .onedrive:
             info.stringValue = "Sign in with your Microsoft account in the browser (personal, work or school). Cirrus gets access to your OneDrive files, nothing else, and keeps the sign-in in your Keychain."
             if CloudConnect.oneDriveClientID.isEmpty {
-                info.stringValue += "\n\nThis copy of Cirrus has no Microsoft app ID yet. Register a free app at entra.microsoft.com (App registrations › New registration, “Personal Microsoft accounts and work or school accounts”, redirect “Mobile and desktop” http://localhost) and paste its Application (client) ID."
+                info.stringValue += "\n\nThis copy of Cirrus has no Microsoft app ID yet. Register a free one at entra.microsoft.com › App registrations › New registration: supported accounts “Accounts in any organizational directory and personal Microsoft accounts”, redirect URI platform “Public client/native (mobile & desktop)” with http://localhost. Then paste its Application (client) ID here. No client secret is needed."
                 formStack.addArrangedSubview(field("App (client) ID:", clientField))
             }
             primary.title = "Sign In with Microsoft"
@@ -283,9 +283,15 @@ final class AddAccountSheet: NSWindowController, NSTextFieldDelegate {
 /// The app's side of each service's sign-in. Kept apart from the sheet so tests and the debug script can use it.
 @MainActor
 enum CloudConnect {
-    /// OneDrive needs a Microsoft app ID: Cirrus's own (once registered) or one the user pastes.
+    /// OneDrive needs a Microsoft app ID: one the user pasted, or Cirrus's own once it's registered.
     static var oneDriveClientID: String {
-        get { UserDefaults.standard.string(forKey: "oneDriveClientID") ?? "" }
+        get {
+            #if DEBUG
+            if AccountManager.shared.demoMode { return FakeGraphServer.state.clientID }
+            #endif
+            let s = UserDefaults.standard.string(forKey: "oneDriveClientID") ?? ""
+            return s.isEmpty ? OneDrive.defaultClientID : s
+        }
         set { UserDefaults.standard.set(newValue, forKey: "oneDriveClientID") }
     }
 
@@ -299,7 +305,14 @@ enum CloudConnect {
     }
 
     static func oneDrive(open: @escaping @Sendable (URL) async -> Void) async throws -> (CloudAccountRecord, CloudSecret) {
-        throw CloudError.unsupported("OneDrive isn’t available in this build yet.")
+        let clientID = oneDriveClientID
+        guard !clientID.isEmpty else { throw CloudError.notConfigured("Paste the Application (client) ID of your Microsoft app registration first.") }
+        var open = open
+        #if DEBUG
+        if AccountManager.shared.demoMode { open = { url in await FakeGraphServer.approve(url) } }
+        #endif
+        let r = try await OneDrive.signIn(clientID: clientID, transport: CloudBackends.transport, open: open)
+        return (r.record, r.secret)
     }
 
     static func googleDrive(open: @escaping @Sendable (URL) async -> Void) async throws -> (CloudAccountRecord, CloudSecret) {

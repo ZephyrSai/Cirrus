@@ -100,7 +100,7 @@ public final class AccountManager {
         if demoMode {
             CloudStore.inMemory = true
             // Accounts added from the sheet in demo mode talk to the fake servers too.
-            CloudBackends.transport = [FakeGoogleServer.self]
+            CloudBackends.transport = [FakeGoogleServer.self, FakeGraphServer.self]
         }
         #endif
         for r in CloudStore.records() { list.append(makeCloudAccount(r, secret: CloudStore.secret(r.id))) }
@@ -249,7 +249,7 @@ public final class AccountManager {
 
     /// The same service and login already connected (so a second sign-in updates it instead of adding a twin).
     public func existingCloud(matching r: CloudAccountRecord) -> CloudAccountRecord? {
-        CloudStore.records().first {
+        (accounts.compactMap(\.cloud) + CloudStore.records()).first {
             $0.provider == r.provider && $0.title.caseInsensitiveCompare(r.title) == .orderedSame && ($0.server ?? "") == (r.server ?? "")
         }
     }
