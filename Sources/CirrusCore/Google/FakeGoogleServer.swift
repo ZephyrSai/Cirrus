@@ -26,7 +26,15 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
         public var properties: [String: String]? = nil
         public var description: String? = nil
         public var appClient: String? = nil
+        public var createdTime: String? = nil
+        /// Shortcuts (mimeType application/vnd.google-apps.shortcut): the file or folder they point to.
+        public var shortcutTarget: String? = nil
         public var isNative: Bool { mimeType.hasPrefix("application/vnd.google-apps.") && mimeType != GoogleDrive.folderMime }
+        /// Google makes thumbnails for pictures, videos, PDFs and Docs editors files.
+        public var hasThumbnail: Bool {
+            mimeType.hasPrefix("image/") || mimeType.hasPrefix("video/") || mimeType == "application/pdf"
+                || ["document", "spreadsheet", "presentation", "drawing"].map { "application/vnd.google-apps." + $0 }.contains(mimeType)
+        }
     }
     public struct MediaItem: Codable, Sendable { public var id: String; public var fileName: String; public var description: String?; public var size: Int64; public var md5: String }
     public struct Album: Codable, Sendable { public var id: String; public var title: String; public var items: [String] }
@@ -38,7 +46,7 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
     }
     struct Blob: Codable { var md5: String; var size: Int64 }
     struct Code { var challenge: String; var redirect: String; var scopes: [String] }
-    struct DriveSession { var meta: JSON; var total: Int64; var data = Data(); var fileID: String?; var client: String? = nil }
+    struct DriveSession { var meta: JSON; var total: Int64; var data = Data(); var fileID: String?; var client: String? = nil; var keepData = false }
     struct PhotoSession { var total: Int64; var data = Data(); var token: String? }
     struct PickerSession { var items: [String] = []; var set = false }
 
@@ -49,7 +57,7 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
         public var clientID = "demo-client.apps.googleusercontent.com"
         public var clientSecret: String? = "demo-secret"
         /// What the user ticks on the consent page (each sign-in gets the requested ones among these).
-        public var grantedScopes = GoogleScopes.all + [GoogleScopes.driveReadonly, GoogleScopes.photosPicker]
+        public var grantedScopes = GoogleScopes.all + [GoogleScopes.driveReadonly, GoogleScopes.photosPicker, GoogleScopes.drive]
         public var userID = "demo-google-user"
         public var email = "demo.person@gmail.example"
         public var name = "Demo Person"
@@ -83,6 +91,8 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
         public var rangedGets = 0
         public var exportLinkUses = 0
         public var pickerSessionsDeleted = 0
+        /// Pixel sizes asked of the Drive thumbnail endpoint (`…=s<px>`).
+        public var thumbnailSizes: [Int] = []
         /// Requests that reached a non-Google host, and whether they carried a bearer token.
         public var foreignRequests: [(host: String, hadToken: Bool)] = []
         // Fault injection
@@ -102,6 +112,8 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
         public var photosRequestsLeft: Int?
         /// batchCreate rejects items with these file names.
         public var rejectFileNames: Set<String> = []
+        /// Each refresh hands out a new refresh token and retires the old one (Google may rotate them).
+        public var rotateRefreshTokens = false
         public var latency: Double = 0
         public init() {}
 
@@ -142,6 +154,38 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
             files[id]?.size = Int64(data.count)
             files[id]?.md5 = FakeGoogleServer.md5(data)
             files[id]?.modifiedTime = GoogleDrive.iso(Date())
+        }
+        /// A Drive shortcut to another file or folder.
+        @discardableResult
+        public mutating func addUserShortcut(_ name: String, to target: String, parent: String = FakeGoogleServer.rootID,
+                                             modified: Date = Date(timeIntervalSince1970: 1_700_000_000)) -> String {
+            let id = FakeGoogleServer.newID("s")
+            var f = File(id: id, name: name, mimeType: FakeGoogleServer.shortcutMime, parents: [parent], size: 0, md5: nil,
+                         modifiedTime: GoogleDrive.iso(modified), trashed: false, appProperties: [:], byApp: false)
+            f.shortcutTarget = target
+            files[id] = f
+            return id
+        }
+        /// In the trash itself, or inside a folder that is (as Google reports `trashed`).
+        public func isTrashed(_ id: String) -> Bool {
+            var seen = Set<String>()
+            var cur = files[id]
+            while let f = cur {
+                if f.trashed { return true }
+                guard let p = f.parents.first, seen.insert(p).inserted else { return false }
+                cur = files[p]
+            }
+            return false
+        }
+        /// Whether `id` is `ancestor` or somewhere inside it.
+        func isInside(_ id: String, _ ancestor: String) -> Bool {
+            var seen = Set<String>()
+            var cur: String? = id
+            while let c = cur, seen.insert(c).inserted {
+                if c == ancestor { return true }
+                cur = files[c]?.parents.first
+            }
+            return false
         }
     }
 
@@ -263,31 +307,36 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
         case drop
     }
 
-    override public func startLoading() {
-        let req = request
+    override public func startLoading() { Self.serve(self, driveDemo: false) }
+
+    /// Answers one request from `p`. `driveDemo` serves it from `DriveDemo`'s separate account instead of `state`.
+    static func serve(_ p: URLProtocol, driveDemo: Bool) {
+        let req = p.request
         let body = Self.body(req)
         let (outcome, latency) = Self.lock.withLock { () -> (Outcome, Double) in
+            if driveDemo { DriveDemo.swapIn() }
+            defer { if driveDemo { DriveDemo.swapIn() } }
             let o = Self.handle(req, body: body)
             return (o, Self._state.latency)
         }
         if latency > 0 { Thread.sleep(forTimeInterval: latency) }
         switch outcome {
         case .drop:
-            client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
+            p.client?.urlProtocol(p, didFailWithError: URLError(.networkConnectionLost))
         case .redirect(let status, let location):
             // Like a careless HTTP stack: the next request carries every header, the token included.
             var next = req
             next.url = URL(string: location)
             let resp = HTTPURLResponse(url: req.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: ["Location": location, "Content-Length": "0"])!
-            client?.urlProtocol(self, wasRedirectedTo: next, redirectResponse: resp)
-            client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocolDidFinishLoading(self)
+            p.client?.urlProtocol(p, wasRedirectedTo: next, redirectResponse: resp)
+            p.client?.urlProtocol(p, didReceive: resp, cacheStoragePolicy: .notAllowed)
+            p.client?.urlProtocolDidFinishLoading(p)
         case .reply(let status, var headers, let data):
             if headers["Content-Type"] == nil { headers["Content-Type"] = "application/json; charset=UTF-8" }
             let resp = HTTPURLResponse(url: req.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
-            client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data)
-            client?.urlProtocolDidFinishLoading(self)
+            p.client?.urlProtocol(p, didReceive: resp, cacheStoragePolicy: .notAllowed)
+            p.client?.urlProtocol(p, didLoad: data)
+            p.client?.urlProtocolDidFinishLoading(p)
         }
     }
 
@@ -331,7 +380,8 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
         for i in URLComponents(url: u, resolvingAgainstBaseURL: false)?.queryItems ?? [] { q[i.name] = i.value ?? "" }
         return q
     }
-    static let exportExts = ["docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    static let shortcutMime = "application/vnd.google-apps.shortcut"
+    static let exportExts = ["docx":"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                              "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                              "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation", "pdf": "application/pdf"]
     static func exportable(_ f: File) -> [String] {
@@ -352,15 +402,23 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
     static func fileJSON(_ f: File) -> JSON {
         // appProperties are private to the OAuth client that wrote them.
         let mine = f.appClient == nil || f.appClient == requestClient
+        // `trashed` is true inside a trashed folder too; `explicitlyTrashed` only for what was trashed itself.
         var o: [String: JSON] = ["kind": "drive#file", "id": .string(f.id), "name": .string(f.name), "mimeType": .string(f.mimeType),
-                                 "parents": .array(f.parents.map { .string($0) }), "trashed": .bool(f.trashed),
+                                 "parents": .array(f.parents.map { .string($0) }), "trashed": .bool(_state.isTrashed(f.id)),
+                                 "explicitlyTrashed": .bool(f.trashed),
                                  "appProperties": .object(mine ? f.appProperties.mapValues { .string($0) } : [:]),
                                  "properties": .object((f.properties ?? [:]).mapValues { .string($0) }),
-                                 "capabilities": ["canDownload": .bool(f.canDownload)]]
+                                 "capabilities": ["canDownload": .bool(f.canDownload), "canRename": true, "canTrash": true],
+                                 "hasThumbnail": .bool(f.hasThumbnail)]
         if let d = f.description { o["description"] = .string(d) }
         if f.mimeType != GoogleDrive.folderMime && !f.isNative { o["size"] = .string(String(f.size)) }
         if let m = f.md5 { o["md5Checksum"] = .string(m) }
         if let t = f.modifiedTime { o["modifiedTime"] = .string(t) }
+        if let t = f.createdTime ?? f.modifiedTime { o["createdTime"] = .string(t) }
+        if f.hasThumbnail { o["thumbnailLink"] = .string("https://lh3.googleusercontent.com/drive-storage/\(f.id)=s220") }
+        if let t = f.shortcutTarget {
+            o["shortcutDetails"] = ["targetId": .string(t), "targetMimeType": .string(_state.files[t]?.mimeType ?? "application/octet-stream")]
+        }
         let ex = exportable(f)
         if !ex.isEmpty {
             o["exportLinks"] = .object(Dictionary(ex.map { ($0, JSON.string("https://docs.google.com/feeds/download/export?id=\(f.id)&mime=\($0.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? $0)")) },
@@ -435,6 +493,8 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
         case "photospicker.googleapis.com":
             guard has(GoogleScopes.photosPicker, r) else { return insufficient() }
             out = picker(method, url)
+        case "lh3.googleusercontent.com" where url.path.hasPrefix("/drive-storage/"):
+            return driveThumbnail(url, r)
         case "lh3.googleusercontent.com":
             guard has(GoogleScopes.photosPicker, r) else { return error(403, "Forbidden") }
             let last = url.lastPathComponent
@@ -443,7 +503,7 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
             return .reply(200, ["Content-Type": p.mime], p.data)
         case "docs.google.com":
             // exportLinks: works past files.export's 10 MB cap.
-            guard has(GoogleScopes.driveReadonly, r) else { return error(403, "Forbidden") }
+            guard has(GoogleScopes.driveReadonly, r) || has(GoogleScopes.drive, r) else { return error(403, "Forbidden") }
             let q = query(url)
             guard let id = q["id"], let f = _state.files[id], let mime = q["mime"], exportable(f).contains(mime) else { return error(404, "Not found") }
             _state.exportLinkUses += 1
@@ -451,7 +511,7 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
             d.append(Data(repeating: 0x2E, count: 120_000))
             return .reply(200, ["Content-Type": mime], d)
         default:
-            guard has(GoogleScopes.driveFile, r) || has(GoogleScopes.driveReadonly, r) else {
+            guard has(GoogleScopes.driveFile, r) || has(GoogleScopes.driveReadonly, r) || has(GoogleScopes.drive, r) else {
                 return error(403, "Insufficient Permission: Request had insufficient authentication scopes.", reason: "insufficientPermissions")
             }
             out = drive(method, url, r, body)
@@ -493,8 +553,17 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
             guard let t = f["refresh_token"], let scopes = _state.refreshTokens[t] else { return bad("invalid_grant", "Token has been expired or revoked.") }
             _state.refreshes += 1
             _state.accessTokens[access] = (Date().addingTimeInterval(_state.accessTTL), scopes, _state.refreshClients[t] ?? f["client_id"] ?? "")
-            return json(200, ["access_token": .string(access), "expires_in": .number(_state.accessTTL),
-                              "scope": .string(scopes.joined(separator: " ")), "token_type": "Bearer"])
+            var reply: [String: JSON] = ["access_token": .string(access), "expires_in": .number(_state.accessTTL),
+                                         "scope": .string(scopes.joined(separator: " ")), "token_type": "Bearer"]
+            if _state.rotateRefreshTokens {
+                let next = "1//fake-refresh-" + UUID().uuidString
+                _state.refreshTokens[next] = scopes
+                _state.refreshClients[next] = _state.refreshClients[t]
+                _state.refreshTokens[t] = nil
+                reply["refresh_token"] = .string(next)
+                persist()
+            }
+            return json(200, .object(reply))
         default:
             return bad("unsupported_grant_type", "Invalid grant_type")
         }
@@ -504,17 +573,126 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
 
     static func resolve(_ id: String) -> String { id == "root" ? rootID : id }
 
-    static func folderOK(_ id: String) -> Bool {
+    /// A folder new items may go into: drive.file only into folders Cirrus made; the full drive scope into any.
+    static func folderOK(_ id: String, full: Bool = false) -> Bool {
         let id = resolve(id)
-        return id == rootID || (_state.files[id].map { $0.mimeType == GoogleDrive.folderMime && $0.byApp && !$0.trashed } ?? false)
+        return id == rootID || (_state.files[id].map { $0.mimeType == GoogleDrive.folderMime && ($0.byApp || full) && !_state.isTrashed($0.id) } ?? false)
+    }
+
+    // MARK: Drive search queries (`q`)
+
+    enum QToken: Equatable { case string(String), word(String) }
+
+    /// Splits a query into words and string literals. Inside quotes only \' and \\ are valid escapes;
+    /// anything else (a stray quote, a lone backslash) makes the query invalid, as at Google.
+    static func tokenize(_ s: String) -> [QToken]? {
+        var out = [QToken]()
+        var i = s.startIndex
+        while i < s.endIndex {
+            let c = s[i]
+            if c == " " { i = s.index(after: i); continue }
+            if c == "'" {
+                var lit = ""
+                var closed = false
+                i = s.index(after: i)
+                while i < s.endIndex {
+                    let d = s[i]
+                    if d == "\\" {
+                        let n = s.index(after: i)
+                        guard n < s.endIndex, s[n] == "'" || s[n] == "\\" else { return nil }
+                        lit.append(s[n])
+                        i = s.index(after: n)
+                        continue
+                    }
+                    i = s.index(after: i)
+                    if d == "'" { closed = true; break }
+                    lit.append(d)
+                }
+                guard closed else { return nil }
+                out.append(.string(lit))
+                continue
+            }
+            if c == "=" { out.append(.word("=")); i = s.index(after: i); continue }
+            if c == "!" {
+                let n = s.index(after: i)
+                guard n < s.endIndex, s[n] == "=" else { return nil }
+                out.append(.word("!="))
+                i = s.index(after: n)
+                continue
+            }
+            var w = ""
+            while i < s.endIndex, !" =!'".contains(s[i]) { w.append(s[i]); i = s.index(after: i) }
+            out.append(.word(w))
+        }
+        return out
+    }
+
+    /// The `q` subset Cirrus uses, joined with `and`: `'<id>' in parents`, `trashed = true|false`,
+    /// `name = | != | contains '<text>'`, `mimeType = | != '<type>'`. nil = invalid (Google answers 400).
+    static func filter(_ qs: String) -> ((File) -> Bool)? {
+        guard let toks = tokenize(qs) else { return nil }
+        var clauses = [[QToken]]()
+        var cur = [QToken]()
+        for t in toks {
+            if t == .word("and") { clauses.append(cur); cur = [] } else { cur.append(t) }
+        }
+        clauses.append(cur)
+        if toks.isEmpty { return { _ in true } }
+        var preds = [(File) -> Bool]()
+        for c in clauses {
+            guard c.count == 3 else { return nil }
+            switch (c[0], c[1], c[2]) {
+            case (.string(let id), .word("in"), .word("parents")):
+                let p = resolve(id)
+                preds.append { $0.parents.contains(p) }
+            case (.word("trashed"), .word(let op), .word(let v)) where ["=", "!="].contains(op) && ["true", "false"].contains(v):
+                let want = (v == "true") == (op == "=")
+                preds.append { _state.isTrashed($0.id) == want }
+            case (.word("name"), .word("="), .string(let n)): preds.append { $0.name == n }
+            case (.word("name"), .word("!="), .string(let n)): preds.append { $0.name != n }
+            case (.word("name"), .word("contains"), .string(let n)): preds.append { $0.name.localizedCaseInsensitiveContains(n) }
+            case (.word("mimeType"), .word("="), .string(let m)): preds.append { $0.mimeType == m }
+            case (.word("mimeType"), .word("!="), .string(let m)): preds.append { $0.mimeType != m }
+            default: return nil
+            }
+        }
+        return { f in preds.allSatisfy { $0(f) } }
+    }
+
+    /// Removes a file or folder and everything inside it (files.delete on a folder).
+    static func deleteTree(_ id: String) {
+        let doomed = _state.files.keys.filter { _state.isInside($0, id) }
+        for d in doomed {
+            if let f = _state.files[d], f.mimeType != GoogleDrive.folderMime, !f.isNative { _state.usage = max(0, _state.usage - f.size) }
+            _state.files[d] = nil
+            _state.blobs[d] = nil
+        }
+    }
+
+    /// `thumbnailLink` targets: https://lh3.googleusercontent.com/drive-storage/<id>=s<px>
+    static func driveThumbnail(_ url: URL, _ r: URLRequest) -> Outcome {
+        let full = has(GoogleScopes.drive, r) || has(GoogleScopes.driveReadonly, r)
+        guard full || has(GoogleScopes.driveFile, r) else { return error(403, "Forbidden") }
+        let parts = url.lastPathComponent.components(separatedBy: "=")
+        let size = parts.count > 1 && parts[1].hasPrefix("s") ? Int(parts[1].dropFirst()) ?? 220 : 220
+        guard let f = _state.files[parts[0]], f.byApp || full, f.hasThumbnail else { return error(404, "Not found") }
+        _state.thumbnailSizes.append(size)
+        if f.mimeType.hasPrefix("image/"), let d = _state.blobs[f.id], !d.isEmpty { return .reply(200, ["Content-Type": f.mimeType], d) }
+        let side = max(16, min(size, 1600))
+        let hue = CGFloat(abs(f.id.hashValue % 100)) / 100
+        let d = DemoArt.jpeg(width: side, height: side * 3 / 4, hue: hue, label: (f.name as NSString).deletingPathExtension) ?? Data([0xFF, 0xD8, 0xFF, 0xD9])
+        return .reply(200, ["Content-Type": "image/jpeg"], d)
     }
 
     static func drive(_ method: String, _ url: URL, _ r: URLRequest, _ body: Data) -> Outcome {
         let path = url.path
         let q = query(url)
-        let readAll = has(GoogleScopes.driveReadonly, r)
-        let canWrite = has(GoogleScopes.driveFile, r)
+        // drive.file: only what Cirrus created. drive.readonly: read everything. drive: read and change everything.
+        let full = has(GoogleScopes.drive, r)
+        let readAll = has(GoogleScopes.driveReadonly, r) || full
+        let canWrite = has(GoogleScopes.driveFile, r) || full
         func visible(_ f: File) -> Bool { f.byApp || readAll }
+        func editable(_ f: File) -> Bool { canWrite && (f.byApp || full) }
         if path == "/drive/v3/about" {
             guard q["fields"] != nil else { return error(400, "The 'fields' parameter is required for this method.", reason: "required") }
             var quota: [String: JSON] = ["usage": .string(String(_state.usage)),
@@ -524,14 +702,8 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
                               "storageQuota": .object(quota)])
         }
         if path == "/drive/v3/files" && method == "GET" {
-            let qs = q["q"] ?? ""
-            var parent: String?
-            if let m = qs.range(of: #"'((?:[^'\\]|\\.)*)' in parents"#, options: .regularExpression) {
-                parent = resolve(String(qs[m].dropFirst().prefix { $0 != "'" }))
-            }
-            var list = _state.files.values.filter(visible)   // drive.file: only what Cirrus created
-            if let p = parent { list = list.filter { $0.parents.contains(p) } }
-            if qs.contains("trashed = false") { list = list.filter { !$0.trashed } }
+            guard let matches = filter(q["q"] ?? "") else { return error(400, "Invalid Value", reason: "invalid") }
+            var list = _state.files.values.filter(visible).filter(matches)   // drive.file: only what Cirrus created
             list.sort { $0.id < $1.id }
             let size = Int(q["pageSize"] ?? "") ?? 100
             let start = Int(q["pageToken"] ?? "") ?? 0
@@ -544,18 +716,20 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
             guard canWrite else { return insufficient() }
             let j = (try? JSON(data: body)) ?? .null
             let parents = j["parents"].array.compactMap(\.string).map(resolve)
-            guard parents.count == 1, folderOK(parents[0]) else { return error(404, "File not found: parent.", reason: "notFound") }
+            guard parents.count == 1, folderOK(parents[0], full: full) else { return error(404, "File not found: parent.", reason: "notFound") }
             var f = File(id: newID("f"), name: j["name"].string ?? "Untitled", mimeType: j["mimeType"].string ?? "application/octet-stream", parents: parents,
-                         size: 0, md5: nil, modifiedTime: j["modifiedTime"].string, trashed: false,
+                         size: 0, md5: nil, modifiedTime: j["modifiedTime"].string ?? GoogleDrive.iso(Date()), trashed: false,
                          appProperties: j["appProperties"].object.compactMapValues(\.string), byApp: true)
             f.properties = j["properties"].object.compactMapValues(\.string)
             f.description = j["description"].string
             f.appClient = requestClient
+            f.createdTime = GoogleDrive.iso(Date())
             _state.files[f.id] = f
             return json(200, fileJSON(f))
         }
-        if path == "/drive/v3/files/root" && method == "GET" {
-            return json(200, ["id": .string(rootID), "name": "My Drive", "mimeType": .string(GoogleDrive.folderMime)])
+        if (path == "/drive/v3/files/root" || path == "/drive/v3/files/" + rootID) && method == "GET" {
+            return json(200, ["id": .string(rootID), "name": "My Drive", "mimeType": .string(GoogleDrive.folderMime), "trashed": false,
+                              "parents": [], "capabilities": ["canDownload": true, "canRename": false, "canTrash": false]])
         }
         if path.hasPrefix("/drive/v3/files/") && path.hasSuffix("/export") && method == "GET" {
             let id = String(path.dropFirst("/drive/v3/files/".count).dropLast("/export".count))
@@ -581,8 +755,24 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
                 let b = min(ab.count > 1 ? ab[1] : data.count - 1, data.count - 1)
                 return .reply(206, ["Content-Type": f.mimeType, "Content-Range": "bytes \(a)-\(b)/\(data.count)"], data.subdata(in: a..<(b + 1)))
             case "PATCH":
-                guard canWrite, f.byApp else { return insufficient() }
+                guard editable(f) else { return insufficient() }
                 let j = (try? JSON(data: body)) ?? .null
+                if q["addParents"] != nil || q["removeParents"] != nil {
+                    // Moving: parents not listed in removeParents stay; a file may have only one parent.
+                    var parents = f.parents
+                    for p in (q["removeParents"] ?? "").split(separator: ",").map({ resolve(String($0)) }) { parents.removeAll { $0 == p } }
+                    for p in (q["addParents"] ?? "").split(separator: ",").map({ resolve(String($0)) }) {
+                        guard folderOK(p, full: full) else { return error(404, "File not found: \(p).", reason: "notFound") }
+                        if f.mimeType == GoogleDrive.folderMime && _state.isInside(p, id) {
+                            return error(403, "A folder can’t be moved into itself or one of its subfolders.", reason: "invalidParent")
+                        }
+                        if !parents.contains(p) { parents.append(p) }
+                    }
+                    guard parents.count <= 1 else {
+                        return error(403, "Increasing the number of parents is not allowed.", reason: "cannotAddParent")
+                    }
+                    f.parents = parents
+                }
                 if let t = j["trashed"].bool { f.trashed = t }
                 if let n = j["name"].string { f.name = n }
                 if case .object(let props) = j["properties"] { f.properties = (f.properties ?? [:]).merging(props.compactMapValues(\.string)) { $1 } }
@@ -590,8 +780,9 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
                 _state.files[id] = f
                 return json(200, fileJSON(f))
             case "DELETE":
+                guard editable(f) else { return insufficient() }
                 _state.permanentDeletes += 1
-                _state.files[id] = nil
+                deleteTree(id)
                 return .reply(204, [:], Data())
             default: return error(405, "Method not allowed")
             }
@@ -601,7 +792,7 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
             if method == "POST" && q["uploadType"] == "resumable" {
                 let meta = (try? JSON(data: body)) ?? .null
                 let parents = meta["parents"].array.compactMap(\.string).map(resolve)
-                guard parents.count == 1, folderOK(parents[0]) else { return error(404, "File not found: parent.", reason: "notFound") }
+                guard parents.count == 1, folderOK(parents[0], full: full) else { return error(404, "File not found: parent.", reason: "notFound") }
                 guard let total = r.value(forHTTPHeaderField: "X-Upload-Content-Length").flatMap({ Int64($0) }) else {
                     return error(400, "Cirrus always sends X-Upload-Content-Length", reason: "badRequest")
                 }
@@ -611,7 +802,7 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
                 let sid = newID("u")
                 var m = meta
                 if case .object(var o) = m { o["parents"] = .array(parents.map { .string($0) }); m = .object(o) }
-                _state.driveSessions[sid] = DriveSession(meta: m, total: total, client: requestClient)
+                _state.driveSessions[sid] = DriveSession(meta: m, total: total, client: requestClient, keepData: full)
                 _state.driveSessionsStarted += 1
                 return .reply(200, ["Location": "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=\(sid)"], Data())
             }
@@ -633,11 +824,16 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
             let name = meta["name"].string ?? "Untitled"
             var f = File(id: newID("f"), name: name, mimeType: r.value(forHTTPHeaderField: "X-Upload-Content-Type") ?? GoogleDrive.mimeType(for: name),
                          parents: meta["parents"].array.compactMap(\.string), size: s.total, md5: md5(s.data),
-                         modifiedTime: meta["modifiedTime"].string, trashed: false, appProperties: meta["appProperties"].object.compactMapValues(\.string), byApp: true)
+                         modifiedTime: meta["modifiedTime"].string ?? GoogleDrive.iso(Date()), trashed: false,
+                         appProperties: meta["appProperties"].object.compactMapValues(\.string), byApp: true)
             f.properties = meta["properties"].object.compactMapValues(\.string)
             f.appClient = s.client
+            f.createdTime = GoogleDrive.iso(Date())
             _state.files[f.id] = f
             _state.usage += s.total
+            // Kept only for full-drive-scope uploads (Google Drive accounts read them back); the move's uploads
+            // are never downloaded, and the migration demo's saved state stays small.
+            if s.keepData { _state.blobs[f.id] = s.data }
             s.fileID = f.id
             s.data = Data()
             _state.driveSessions[sid] = s
@@ -834,6 +1030,93 @@ public final class FakeGoogleServer: URLProtocol, @unchecked Sendable {
         }
         _state.photoSessions[sid] = s
         return status(200)
+    }
+}
+
+extension FakeGoogleServer {
+    /// A second, independent fake Google account for Google Drive browsing (demo mode's "Google Drive"
+    /// account). Same wire protocol, its own files and tokens, so neither the migration demo
+    /// (`startDemo`) nor tests that reset `FakeGoogleServer.state` disturb it. Use `[DriveDemo.self]` as the transport.
+    public final class DriveDemo: URLProtocol, @unchecked Sendable {
+        nonisolated(unsafe) static var other = State()
+        nonisolated(unsafe) static var otherPersistURL: URL?
+        nonisolated(unsafe) static var started = false
+        /// The demo account's long-lived sign-in (the fake knows it; no browser round trip).
+        public static let refreshToken = "1//fake-drive-demo-refresh"
+
+        public static var state: State {
+            get { FakeGoogleServer.lock.withLock { other } }
+            set { FakeGoogleServer.lock.withLock { other = newValue } }
+        }
+        public static func update(_ f: (inout State) -> Void) { FakeGoogleServer.lock.withLock { f(&other) } }
+
+        /// Swaps the demo account in for `FakeGoogleServer`'s own (and back again). Call under the lock.
+        static func swapIn() {
+            swap(&FakeGoogleServer._state, &other)
+            swap(&FakeGoogleServer.persistURL, &otherPersistURL)
+        }
+
+        /// Seeds the demo account once per run (folders, a Doc, a Sheet, pictures, a PDF, a shortcut, a Form and
+        /// something in the trash) and returns it. With `storage`, changes are kept across launches.
+        @discardableResult
+        public static func start(storage dir: URL?, latency: Double = 0.02) -> State {
+            FakeGoogleServer.lock.withLock {
+                if started { return other }
+                started = true
+                var s = State()
+                s.latency = latency
+                s.userID = "demo-drive-user"
+                s.email = "alex@example.com"
+                s.name = "Alex Morgan"
+                s.usage = 3_400_000_000
+                s.grantedScopes = [GoogleScopes.drive]
+                var url: URL?
+                if let dir {
+                    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                    url = dir.appendingPathComponent("google-drive-demo-v1.json")
+                    if let u = url, let d = try? Data(contentsOf: u), let saved = try? JSONDecoder().decode(Saved.self, from: d) { saved.restore(into: &s) }
+                }
+                if s.files.isEmpty { seed(&s) }
+                s.refreshTokens[refreshToken] = [GoogleScopes.drive]
+                s.refreshClients[refreshToken] = s.clientID
+                other = s
+                otherPersistURL = url
+                return s
+            }
+        }
+
+        static func seed(_ s: inout State) {
+            func day(_ n: Double) -> Date { Date(timeIntervalSince1970: 1_760_000_000 + n * 86_400) }
+            let documents = s.addUserFolder("Documents")
+            let photos = s.addUserFolder("Photos")
+            let projects = s.addUserFolder("Projects")
+            let website = s.addUserFolder("Website refresh", parent: projects)
+            s.addUserFile("Welcome.txt", data: Data("Welcome to the Google Drive demo.\nEverything here lives in a pretend account.\n".utf8), modified: day(1))
+            s.addUserDoc("Project plan", parent: projects, modified: day(12))
+            let budget = s.addUserDoc("Budget 2026", kind: "spreadsheet", parent: documents, modified: day(20))
+            s.addUserFile("Quarterly report.pdf", parent: documents,
+                          data: DemoArt.pdf(title: "Quarterly Report", lines: ["Revenue up 12%", "Two new regions", "Hiring plan"], hue: 0.36), modified: day(18))
+            for (i, name) in ["Harbor at dawn", "Mountain trail", "City lights"].enumerated() {
+                let jpg = DemoArt.scenic(width: 960, height: 640, seed: i + 7) ?? DemoArt.jpeg(width: 960, height: 640, hue: 0.1 * CGFloat(i), label: name) ?? Data()
+                s.addUserFile(name + ".jpg", parent: photos, data: jpg, modified: day(Double(5 + i)))
+            }
+            s.addUserFile("Notes.md", parent: website, data: Data("# Website refresh\n- New colors\n- Faster pages\n".utf8), modified: day(22))
+            s.addUserShortcut("Photos", to: photos, parent: website, modified: day(23))
+            s.addUserShortcut("Budget 2026", to: budget, parent: projects, modified: day(21))
+            s.addUserDoc("Team survey", kind: "form", modified: day(15))
+            let old = s.addUserFile("Old draft.txt", data: Data("An earlier draft.\n".utf8), modified: day(2))
+            s.files[old]?.trashed = true
+            for (id, var f) in s.files {
+                if f.modifiedTime == nil { f.modifiedTime = GoogleDrive.iso(day(0)) }
+                f.createdTime = f.modifiedTime
+                s.files[id] = f
+            }
+        }
+
+        override public class func canInit(with request: URLRequest) -> Bool { FakeGoogleServer.hosts.contains(request.url?.host ?? "") }
+        override public class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+        override public func startLoading() { FakeGoogleServer.serve(self, driveDemo: true) }
+        override public func stopLoading() {}
     }
 }
 #endif
