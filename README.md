@@ -19,10 +19,11 @@ A native app for browsing, moving, syncing and backing up iCloud Drive and iClou
 - **Back Up iCloud.** Checks space, then downloads everything as ordinary files and folders on a drive you choose. Photos are sorted into `YYYY/MM` folders with their Live Photo videos, edits and RAW files. Later runs fetch only what's new.
 - **iCloud ⇄ Google.** Move iCloud Drive and Photos to Google Drive and Google Photos, or bring Google Drive and a Google Takeout export of your photos into iCloud. Albums and favorites come along. Runs are resumable and incremental, and nothing is ever deleted.
 - **Two ways in.** Uses the Mac's own iCloud when it's signed in. Otherwise, sign in to one or more Apple IDs the way iCloud.com does, including two-factor and Advanced Data Protection approval.
+- **Other clouds beside iCloud (Mac).** Add OneDrive, Google Drive, Nextcloud or any WebDAV server (ownCloud, OpenCloud, Synology, QNAP…) with File › Add Account. They get the same browsing, drag and drop, transfer queue and sync jobs as iCloud Drive, server thumbnails, their own trash, and copies between any two of them. Nextcloud, OneDrive and Google sign in through your browser, so Cirrus never sees those passwords; Google Drive uses your own free Google Cloud client, and OneDrive a free Microsoft app registration.
 
 ## Privacy and safety
 
-- **Talks only to Apple.** No servers, analytics or accounts of its own.
+- **Talks only to Apple and the services you add.** No servers, analytics or accounts of its own. Other clouds' sign-ins (tokens and app passwords) live only in the Keychain.
 - **Password.** Your Apple ID password is sent only to Apple, using SRP (it never leaves in plain form). Cirrus keeps it only if you ask: in this Mac's Keychain, never synced, and unlocked by Touch ID or your Mac password.
 - **Nothing is deleted outright.** Removed items go to the Trash or to iCloud's Recently Deleted. Replacing a file uploads the new copy first.
 - **Sync guards.** Sync stops if a folder is missing or unreadable, or if a run would empty one side or trash an unusual share of files.
@@ -37,6 +38,7 @@ A native app for browsing, moving, syncing and backing up iCloud Drive and iClou
 | **iPhone and iPad** (iOS 17+) | Build from source: SwiftUI app on the same Swift engine, with multiple Apple IDs, exports and backups to USB drives (`ios/`, `scripts/build-ios.sh`) |
 | **Windows 10/11** (x64 and Arm64) | Preview: WPF app with the same engine, ported to .NET |
 | **iCloud ⇄ Google Drive / Google Photos** | In the Mac and Windows apps (bring your own free Google Cloud OAuth client) |
+| **OneDrive, Google Drive, Nextcloud, WebDAV** | Mac app: browse, transfer and sync beside iCloud (File › Add Account) |
 
 ## Building
 

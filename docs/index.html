@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cirrus — a Finder for iCloud</title>
-<meta name="description" content="Cirrus is a native app to browse, move, sync and back up iCloud Drive and iCloud Photos on Mac, Windows, iPhone and iPad. Free, open source, private by design.">
+<meta name="description" content="Cirrus is a native app to browse, move, sync and back up iCloud Drive and iCloud Photos on Mac, Windows, iPhone and iPad, beside OneDrive, Google Drive and Nextcloud. Free, open source, private by design.">
 <meta property="og:title" content="Cirrus — a Finder for iCloud">
 <meta property="og:description" content="Browse, drag, sync and back up iCloud Drive and Photos on Mac, Windows, iPhone and iPad. Free and open source.">
 <meta property="og:type" content="website">
@@ -178,7 +178,7 @@ footer p { margin: 4px 0; max-width: 640px; }
   <div class="wrap">
     <img class="appicon" src="img/icon-512.webp" alt="Cirrus app icon" width="92" height="92">
     <h1>Your iCloud, <span class="grad">in a real Finder.</span></h1>
-    <p class="lede">Browse, drag, sync and back up iCloud Drive and iCloud Photos — on Mac, Windows, iPhone and iPad, even where you're not signed in to iCloud.</p>
+    <p class="lede">Browse, drag, sync and back up iCloud Drive and iCloud Photos — on Mac, Windows, iPhone and iPad, even where you're not signed in to iCloud. On the Mac, your OneDrive, Google Drive and Nextcloud sit right beside it.</p>
     <div class="ctas">
       <a class="btn primary" href="https://github.com/ZephyrSai/Cirrus/releases/latest">Download for Mac</a>
       <a class="btn" href="https://github.com/ZephyrSai/Cirrus/releases/latest">Windows</a>
@@ -201,9 +201,9 @@ footer p { margin: 4px 0; max-width: 640px; }
       <div class="card"><div class="ico p">🔎</div><h3>Search, tags, rename</h3><p>Search through subfolders, add Finder tags, click a name to rename it, or rename many files at once. Also: folder sizes, New File, Make Alias, Go to Folder and Open in Terminal.</p></div>
       <div class="card"><div class="ico g">💾</div><h3>Back up &amp; sync</h3><p>Back up all of iCloud to any drive as ordinary folders, with photos sorted by year and month. Sync jobs copy, mirror or two-way sync, and you always see a preview first.</p></div>
       <div class="card"><div class="ico">⇄</div><h3>iCloud ⇄ Google</h3><p>Move to Google Drive and Google Photos, or back again (Google Takeout included). Your albums come along, and nothing is ever deleted.</p></div>
-      <div class="card"><div class="ico p">🔑</div><h3>Any Apple ID</h3><p>Use your device's own iCloud, or sign in to any Apple ID the way iCloud.com does, with two-factor and Advanced Data Protection.</p></div>
+      <div class="card"><div class="ico p">☁️</div><h3>Every cloud, one place</h3><p>Your device's iCloud or any Apple ID first, plus OneDrive, Google Drive, Nextcloud and any WebDAV server. Browse them all the same way, and drag or sync between them.</p></div>
       <div class="card"><div class="ico r">🛡️</div><h3>Safe by design</h3><p>Removals only ever go to the Trash or Recently Deleted. In read-only mode, nothing in iCloud can change at all.</p></div>
-      <div class="card"><div class="ico g">🔒</div><h3>Private</h3><p>Cirrus talks only to Apple and Google, with no analytics and no servers of its own. Passwords stay on your device behind Touch ID or Face ID.</p></div>
+      <div class="card"><div class="ico g">🔒</div><h3>Private</h3><p>Cirrus talks only to Apple and the services you add, with no analytics and no servers of its own. Sign-ins stay on your device, in the Keychain.</p></div>
     </div>
     <p class="keys">⌘1–4 views · ⌘T new tab · ⌘N new window · ⇧⌘P preview · Space Quick Look · ⌘↓ open · ⇧⌘G go to folder · ⌥⌘O open in new window · pinch, swipe and force click</p>
   </div>
@@ -244,6 +244,7 @@ footer p { margin: 4px 0; max-width: 640px; }
     <div class="faq">
       <details><summary>Is Cirrus made by Apple?</summary><p>No. It's an independent open-source project. It uses the same web services as iCloud.com, or your device's own iCloud.</p></details>
       <details><summary>Does it need my Apple ID password?</summary><p>Only to add an Apple ID. It goes only to Apple, using the same secure sign-in as iCloud.com. Cirrus keeps it only if you ask, on this device and behind Touch ID or Face ID.</p></details>
+      <details><summary>Which other clouds can I add?</summary><p>On the Mac: OneDrive, Google Drive, Nextcloud and any WebDAV server (ownCloud, OpenCloud, Synology, QNAP and more), with File › Add Account. Sign-in happens in your browser wherever the service allows it, so Cirrus never sees those passwords. Everything Cirrus can do with iCloud Drive works there too.</p></details>
       <details><summary>Can it delete my stuff by accident?</summary><p>Removals only go to the Trash or Recently Deleted. Sync runs show a preview first and stop if they would remove an unusual number of files. Read-only mode blocks every change.</p></details>
       <details><summary>macOS says it can't open the app?</summary><p>Releases aren't notarized yet. Open it once from System Settings › Privacy &amp; Security › Open Anyway, or build it yourself.</p></details>
     </div>
@@ -274,8 +275,8 @@ footer p { margin: 4px 0; max-width: 640px; }
 (() => {
   // [file, caption, width, height] — sizes reserve space so the strips never jump while loading
   const sets = {
-    mac: [['photos', 'Photos by month', 1024, 640], ['gallery', 'Gallery view', 1024, 640], ['columns', 'Column view', 1024, 640],
-          ['tabdrop', 'Drop on any tab', 1024, 640], ['preview', 'Preview pane', 1024, 640], ['notice', 'Every drop confirmed', 1024, 640],
+    mac: [['photos', 'Photos by month', 1024, 640], ['clouds', 'iCloud beside OneDrive, Google Drive and Nextcloud', 1024, 640], ['gallery', 'Gallery view', 1024, 640], ['columns', 'Column view', 1024, 640],
+          ['tabdrop', 'Drop on any tab', 1024, 640], ['preview', 'Preview pane', 1024, 640], ['notice', 'Every drop confirmed', 1024, 640], ['addaccount', 'Add another cloud', 1024, 640],
           ['drive', 'iCloud Drive', 1024, 640], ['dual', 'Two panes', 1024, 640], ['list', 'List view', 1024, 640],
           ['google', 'Move to or from Google', 492, 640], ['albums', 'Albums', 1024, 640], ['backup', 'Back Up iCloud', 528, 640]],
     ios: [['drive', 'iCloud Drive', 396, 860], ['photos', 'Photos by month', 396, 860], ['photo', 'Live Photo', 396, 860], ['albums', 'Albums', 396, 860],

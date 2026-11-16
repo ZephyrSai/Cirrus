@@ -124,7 +124,8 @@ final class SidebarController: NSViewController, NSOutlineViewDataSource, NSOutl
         var lastCloud: SidebarNode?
         for a in am.cloudAccounts {
             guard let r = a.cloud else { continue }
-            let s = SidebarNode(.section, "\(r.provider.displayName) — \(a.title)")
+            // Like the iCloud sections: the account as the (small) header, the service as the row.
+            let s = SidebarNode(.section, a.title)
             switch a.status {
             case .needsSignIn:
                 s.children.append(SidebarNode(.action("cloudsignin:" + a.id), "Sign In Again…", "exclamationmark.triangle.fill", tint: .systemYellow))
@@ -135,7 +136,9 @@ final class SidebarController: NSViewController, NSOutlineViewDataSource, NSOutl
             default: break
             }
             if let d = a.drive {
-                s.children.append(SidebarNode(.location(.drive(a.id, d.rootID)), r.provider.displayName, r.provider.symbol, tint: Self.tint(r.provider)))
+                let root = SidebarNode(.location(.drive(a.id, d.rootID)), r.provider.displayName, r.provider.symbol, tint: Self.tint(r.provider))
+                root.toolTip = "\(r.provider.displayName) — \(a.title)" + (r.server.map { "\n\($0)" } ?? "")
+                s.children.append(root)
                 if a.canListTrash { s.children.append(SidebarNode(.location(.driveTrash(a.id)), r.provider.deletedTitle, "trash", tint: .secondaryLabelColor)) }
             }
             out.append(s)
