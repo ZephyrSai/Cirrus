@@ -11,7 +11,9 @@ final class AddAccountSheet: NSWindowController, NSTextFieldDelegate {
         if let c = current { c.window?.makeKeyAndOrderFront(nil); return }
         let s = AddAccountSheet(provider: provider ?? reconnecting?.provider ?? .nextcloud, reconnecting: reconnecting)
         current = s
-        if let parent, parent.attachedSheet == nil { parent.beginSheet(s.window!) } else { s.window?.center(); s.showWindow(nil) }
+        if let parent, parent.attachedSheet == nil {
+            parent.beginSheet(s.window!) { _ in MainActor.assumeIsolated { if AddAccountSheet.current === s { AddAccountSheet.current = nil } } }
+        } else { s.window?.center(); s.showWindow(nil) }
     }
 
     static func reconnect(_ id: String, on parent: NSWindow?) {
