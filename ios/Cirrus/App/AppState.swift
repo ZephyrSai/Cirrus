@@ -56,7 +56,8 @@ final class AppState {
     }
 
     func reloadAccounts() {
-        accounts = AccountManager.shared.accounts
+        // Other clouds (OneDrive, Nextcloud…) are Mac-only for now: the iPhone app lists iCloud accounts.
+        accounts = AccountManager.shared.accounts.filter { $0.isICloud }
         if let device = deviceAccount {
             device.title = UIDevice.current.userInterfaceIdiom == .pad ? "This iPad" : "This iPhone"
         }
@@ -113,6 +114,7 @@ extension Account {
         case .web: return appleID != title ? appleID : nil
         case .demo: return "Sample data on this device"
         case .mac: return "Photos on this device"
+        case .cloud: return cloud?.provider.displayName
         }
     }
     var needsSignIn: Bool { if case .needsSignIn = status { return true }; return false }
