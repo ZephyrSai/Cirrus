@@ -105,13 +105,16 @@ public struct PKCE: Sendable {
 final class LoopbackReceiver: @unchecked Sendable {
     private let fd: Int32
     let port: UInt16
+    /// Named on the page the browser shows afterwards and in errors ("Google", "OneDrive").
+    let service: String
     private let lock = NSLock()
     private var cancelled = false
     private var closed = false
 
-    init() throws {
+    init(service: String = "Google") throws {
+        self.service = service
         let s = socket(AF_INET, SOCK_STREAM, 0)
-        guard s >= 0 else { throw GoogleError.badResponse("Couldn’t open a local port for the Google sign-in.") }
+        guard s >= 0 else { throw GoogleError.badResponse("Couldn’t open a local port for the \(service) sign-in.") }
         var yes: Int32 = 1
         setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
         setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &yes, socklen_t(MemoryLayout<Int32>.size))
@@ -121,7 +124,7 @@ final class LoopbackReceiver: @unchecked Sendable {
         addr.sin_port = 0                               // the kernel picks a free port
         addr.sin_addr.s_addr = inet_addr("127.0.0.1")
         let bound = withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(s, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
-        guard bound == 0, listen(s, 8) == 0 else { Darwin.close(s); throw GoogleError.badResponse("Couldn’t open a local port for the Google sign-in.") }
+        guard bound == 0, listen(s, 8) == 0 else { Darwin.close(s); throw GoogleError.badResponse("Couldn’t open a local port for the \(service) sign-in.") }
         var out = sockaddr_in()
         var len = socklen_t(MemoryLayout<sockaddr_in>.size)
         _ = withUnsafeMutablePointer(to: &out) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(s, $0, &len) } }
@@ -161,7 +164,7 @@ final class LoopbackReceiver: @unchecked Sendable {
                 continue
             }
             let ok = q["code"] != nil
-            Self.respond(c, status: "200 OK", body: Self.page(ok))
+            Self.respond(c, status: "200 OK", body: Self.page(ok, service: service))
             return q
         }
     }
@@ -199,9 +202,9 @@ final class LoopbackReceiver: @unchecked Sendable {
         }
     }
 
-    static func page(_ ok: Bool) -> String {
-        let title = ok ? "Cirrus is connected to Google" : "Cirrus wasn’t connected"
-        let text = ok ? "You can close this tab and go back to Cirrus." : "Google access wasn’t allowed. Go back to Cirrus to try again."
+    static func page(_ ok: Bool, service: String = "Google") -> String {
+        let title = ok ? "Cirrus is connected to \(service)" : "Cirrus wasn’t connected"
+        let text = ok ? "You can close this tab and go back to Cirrus." : "\(service) access wasn’t allowed. Go back to Cirrus to try again."
         return """
         <!doctype html><html><head><meta charset="utf-8"><title>\(title)</title>
         <style>body{font:16px -apple-system,system-ui,sans-serif;margin:15vh auto;max-width:28em;padding:0 1em;color:#222}
