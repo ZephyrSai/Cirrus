@@ -61,7 +61,9 @@ foreach ($arch in $Archs) {
 Cirrus $Version for Windows ($arch)$(if ($Tester) {' - tester build'})
 
 A Finder-style browser for iCloud Drive and iCloud Photos: drag and drop, transfers, sync jobs and
-full iCloud backups. Requires Windows 10 (version 2004 or later) or Windows 11. No install needed:
+full iCloud backups. OneDrive, Google Drive, Dropbox, Nextcloud, WebDAV, S3-compatible storage and
+Immich can sit beside it (Add Account in the sidebar), with copies and moves between any of them.
+Requires Windows 10 (version 2004 or later) or Windows 11. No install needed:
 unzip anywhere and run Cirrus.exe. Settings and logs live in %LOCALAPPDATA%\Cirrus.
 Only one Cirrus runs at a time: opening it again (any copy or build) brings the running one forward.
 $(if ($Tester) {"`r`nThis tester build starts in read-only mode: nothing in iCloud can change until you turn that`r`noff in Settings > Safety. Browsing, downloading, exporting and backing up still work.`r`n"})

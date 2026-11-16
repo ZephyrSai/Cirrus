@@ -203,7 +203,7 @@ ARCHS=x64 SKIP_TESTS=1 scripts/build-windows.sh
 
 The script runs these steps:
 
-1. `dotnet test windows/tests/Cirrus.Core.Tests`.
+1. `dotnet test windows/tests/Cirrus.Core.Tests`. With only a newer .NET runtime installed, set `DOTNET_ROLL_FORWARD=Major`.
 2. `dotnet publish` for each architecture: `-r win-<arch> --self-contained`, `PublishSingleFile`, `IncludeNativeLibrariesForSelfExtract`, `EnableCompressionInSingleFile`.
 3. Zips `Cirrus.exe` and a `README.txt` into `build/dist/`.
 4. Prints SHA-256s.
@@ -274,7 +274,7 @@ Release builds honour only the user-facing switches, `CIRRUS_DEMO` and `CIRRUS_P
 
 | Variable | Builds | Effect |
 |---|---|---|
-| `CIRRUS_DEMO=1` | all | Adds a disk-backed demo iCloud (Drive + Photos), so everything can be tried without an Apple ID. It never touches real accounts. Windows Debug builds also get a demo Google account (the tests' fake server) for Move to or from Google; Release builds always talk to the real Google. |
+| `CIRRUS_DEMO=1` | all | Adds a disk-backed demo iCloud (Drive + Photos), so everything can be tried without an Apple ID. It never touches real accounts. Windows Debug builds also get a demo Google account (the tests' fake server) for Move to or from Google, and demo OneDrive, Google Drive, Dropbox, Nextcloud, WebDAV, S3 and Immich accounts on the tests' fake servers (kept in memory, never the saved accounts); Release builds always talk to the real services. |
 | `CIRRUS_PROFILE=<name>` | all | Separate settings, caches and secrets (`Cirrus-<name>`). |
 | `CIRRUS_DEMO_FAST=1`, `CIRRUS_DEMO_PHOTOS=<n>` | Debug | Demo without simulated network delays; size of the demo library. |
 | `CIRRUS_DEBUG=1` | Debug | Verbose logging to stderr, including lines that may name files. |
