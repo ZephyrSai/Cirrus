@@ -683,7 +683,11 @@ final class Ops {
                 undo?.setActionName("Rename")
             case .drive(let n):
                 guard let drive = item.account.flatMap({ AccountManager.shared.account(id: $0) })?.drive else { return }
-                _ = try await drive.rename(n, to: name)
+                let renamed = try await drive.rename(n, to: name)
+                // Services that name items by path (WebDAV) give the item a new id: the old one must not linger
+                // as a "just uploaded" entry, and the new name is what a lagging listing should still show.
+                Catalog.shared.forgetUploads([n.id])
+                if renamed.id != n.id, let parent = n.parentID, let acct = item.account { Catalog.shared.noteUploaded(renamed, account: acct, folder: parent) }
             default:
                 return
             }

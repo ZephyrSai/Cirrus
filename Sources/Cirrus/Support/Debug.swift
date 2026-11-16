@@ -227,6 +227,17 @@ enum Debug {
             AddAccountSheet.show(on: b?.window, provider: CloudProvider(rawValue: arg))
             try? await Task.sleep(nanoseconds: 600_000_000)
             if let w = b?.window?.attachedSheet { offscreen(w); lastWindow = w }
+        case "connectwebdav", "connectnextcloud":   // connectwebdav:url|user|pass  /  connectnextcloud:server
+            let f = arg.components(separatedBy: "|")
+            do {
+                let (r, sec) = cmd == "connectwebdav"
+                    ? try await CloudConnect.webdav(url: f[0], user: f.count > 1 ? f[1] : "", password: f.count > 2 ? f[2] : "")
+                    : try await CloudConnect.nextcloud(server: f[0], open: { _ in }, waiting: {})
+                var rec = r
+                if let e = AccountManager.shared.existingCloud(matching: r) { rec.id = e.id }
+                let a = AccountManager.shared.addCloud(rec, secret: sec)
+                log("\(cmd): added \(r.provider.rawValue) \(a.title) status=\(a.status) drive=\(a.drive != nil)")
+            } catch { log("\(cmd) failed: \(error.localizedDescription)") }
         case "cloudaccounts":
             for a in AccountManager.shared.cloudAccounts { log("cloud \(a.provider?.rawValue ?? "?") \(a.title) status=\(a.status) drive=\(a.drive != nil) trash=\(a.canListTrash)") }
         case "selectname":

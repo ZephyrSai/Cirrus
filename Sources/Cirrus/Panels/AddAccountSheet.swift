@@ -301,7 +301,17 @@ enum CloudConnect {
 
     static func nextcloud(server: String, open: @escaping @Sendable (URL) async -> Void,
                           waiting: @escaping @MainActor () -> Void) async throws -> (CloudAccountRecord, CloudSecret) {
-        throw CloudError.unsupported("Nextcloud isn’t available in this build yet.")
+        let base = try NextcloudLoginFlow.baseURL(from: server)
+        let pending = try await NextcloudLoginFlow.begin(server: base, transport: CloudBackends.transport)
+        var demo = false
+        #if DEBUG
+        demo = AccountManager.shared.demoMode
+        if demo { FakeWebDAVServer.approve(pending.loginURL) }
+        #endif
+        if !demo { await open(pending.loginURL) }
+        waiting()
+        let r = try await NextcloudLoginFlow.poll(pending, transport: CloudBackends.transport)
+        return (r.record, r.secret)
     }
 
     static func oneDrive(open: @escaping @Sendable (URL) async -> Void) async throws -> (CloudAccountRecord, CloudSecret) {
@@ -328,6 +338,8 @@ enum CloudConnect {
     }
 
     static func webdav(url: String, user: String, password: String) async throws -> (CloudAccountRecord, CloudSecret) {
-        throw CloudError.unsupported("WebDAV isn’t available in this build yet.")
+        let u = try WebDAV.folderURL(from: url)
+        let r = try await WebDAV.connect(url: u, username: user, password: password, transport: CloudBackends.transport)
+        return (r.record, r.secret)
     }
 }
