@@ -17,6 +17,9 @@ public enum GoogleScopes {
     public static let driveReadonly = "https://www.googleapis.com/auth/drive.readonly"
     /// Google → iCloud only: photos the user picks in Google Photos' own picker.
     public static let photosPicker = "https://www.googleapis.com/auth/photospicker.mediaitems.readonly"
+    /// Google Drive as a browsable account: see, edit, create and delete all of the user's Drive files
+    /// (restricted scope; fine with the user's own OAuth client).
+    public static let drive = "https://www.googleapis.com/auth/drive"
 }
 
 /// The user's own OAuth client ("Desktop app" type). Google treats desktop clients as public:
