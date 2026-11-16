@@ -31,7 +31,9 @@ sealed class AddAccountWindow : Window
     CloudProvider _provider;
     readonly ComboBox _picker = new() { MinWidth = 340 };
     readonly TextBox _info = new() { IsReadOnly = true, TextWrapping = TextWrapping.Wrap, BorderThickness = new Thickness(0), Background = Brushes.Transparent, Padding = new Thickness(0), Opacity = 0.75, FontSize = 12 };
-    readonly TextBox _server = new(), _user = new(), _client = new(), _region = new(), _bucket = new();
+    readonly TextBox _server = new(), _user = new(), _client = new(), _region = new(), _bucket = new(), _code = new();
+    /// <summary>Dropbox's fallback when its sign-in ports are taken: the user pastes the code Dropbox shows.</summary>
+    DropboxCodeSignIn? _dropboxCode;
     readonly PasswordBox _pass = new();
     readonly StackPanel _form = new();
     readonly TextBlock _status = Ui.Text("", 12);
@@ -54,7 +56,7 @@ sealed class AddAccountWindow : Window
         foreach (var p in CloudProviders.MenuOrder)
             _picker.Items.Add(new ComboBoxItem { Content = Ui.Row(Ui.Glyph(p.Glyph(), 14), Ui.Text(MenuTitle(p), wrap: false)), Tag = p });
         _picker.SelectionChanged += (_, _) => { if (_picker.SelectedItem is ComboBoxItem { Tag: CloudProvider p }) Select(p); };
-        foreach (var t in new[] { _server, _user, _client, _region, _bucket }) t.TextChanged += (_, _) => Validate();
+        foreach (var t in new[] { _server, _user, _client, _region, _bucket, _code }) t.TextChanged += (_, _) => Validate();
         _pass.PasswordChanged += (_, _) => Validate();
         _status.Visibility = Visibility.Collapsed;
 
@@ -121,6 +123,7 @@ sealed class AddAccountWindow : Window
     void Select(CloudProvider p)
     {
         _provider = p;
+        _dropboxCode = null;
         var idx = CloudProviders.MenuOrder.ToList().IndexOf(p);
         if (_picker.SelectedIndex != idx) _picker.SelectedIndex = idx;
         _form.Children.Clear();
@@ -196,7 +199,7 @@ sealed class AddAccountWindow : Window
             CloudProvider.WebDAV => s.Length > 0 && _user.Text.Length > 0 && _pass.Password.Length > 0,
             CloudProvider.OneDrive => CloudConnect.OneDriveClientID.Length > 0 || CloudConnect.LooksLikeClientID(_client.Text),
             CloudProvider.GoogleDrive => true,
-            CloudProvider.Dropbox => CloudConnect.DropboxAppKey.Length > 0 || _client.Text.Trim().Length >= 8,
+            CloudProvider.Dropbox => _dropboxCode is not null ? _code.Text.Trim().Length > 0 : CloudConnect.DropboxAppKey.Length > 0 || _client.Text.Trim().Length >= 8,
             CloudProvider.S3 => s.Length > 0 && _user.Text.Length > 0 && _pass.Password.Length > 0,
             _ => s.Length > 0 && _pass.Password.Length > 0,
         };
@@ -268,6 +271,10 @@ sealed class AddAccountWindow : Window
                     SetStatus("Connecting to the server…", busy: true);
                     result = await CloudConnect.WebDAV(server, user, pass, cts.Token);
                     break;
+                case CloudProvider.Dropbox when _dropboxCode is { } codeSignIn:
+                    SetStatus("Checking the code…", busy: true);
+                    result = await codeSignIn.FinishAsync(_code.Text.Trim(), CloudBackends.Transport, cts.Token);
+                    break;
                 case CloudProvider.Dropbox:
                     if (client.Length > 0) CloudConnect.DropboxAppKey = client;
                     SetStatus("Sign in to Dropbox in your browser. Waiting…", busy: true);
@@ -292,6 +299,22 @@ sealed class AddAccountWindow : Window
             Activate();
             Close();
             Added?.Invoke(a);
+        }
+        catch (CloudException e) when (p == CloudProvider.Dropbox && _dropboxCode is null && e.Message == DropboxCloud.PortsBusyMessage)
+        {
+            // Another app holds Dropbox's redirect ports: sign in with a code Dropbox shows instead.
+            if (_work == cts) _work = null;
+            try
+            {
+                _dropboxCode = DropboxCloud.BeginCodeSignIn(CloudConnect.DropboxAppKey);
+                Field("Code", _code, "The code Dropbox shows after you allow Cirrus");
+                _primary.Content = "Finish Sign-In";
+                SetStatus("Another app is using Cirrus’s Dropbox sign-in ports, so Dropbox will show a code instead. Allow Cirrus in the browser, then paste the code here.");
+                _ = CloudConnect.OpenSignInPage(CloudProvider.Dropbox, _dropboxCode.AuthorizationURL);
+            }
+            catch (Exception e2) { SetStatus(e2.Message, error: true); }
+            Validate();
+            Activate();
         }
         catch (OperationCanceledException) { if (_work == cts) _work = null; }
         catch (CloudException e) when (e.Kind == CloudErrorKind.Cancelled) { if (_work == cts) _work = null; }

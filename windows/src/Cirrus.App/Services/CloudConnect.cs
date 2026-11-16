@@ -66,6 +66,9 @@ static class CloudConnect
         return u => { OpenInBrowser(u); return Task.CompletedTask; };
     }
 
+    /// <summary>Opens a service's sign-in page (in demo mode, the fake answers it).</summary>
+    public static Task OpenSignInPage(CloudProvider p, Uri url) => Opener(p)(url);
+
     static HttpMessageHandler? Transport => CloudBackends.Transport;
 
     public static async Task<CloudConnection> Nextcloud(string server, Action waiting, CancellationToken ct)
