@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 namespace Cirrus.Core.Tests;
 
 /// <summary>Regression tests for the second safety audit (caching, retries, privacy).</summary>
+[Collection(CloudGlobals.Name)]
 public class SecondAuditTests
 {
     sealed class Scripted(Func<HttpRequestMessage, int, Task<HttpResponseMessage>> reply) : HttpMessageHandler

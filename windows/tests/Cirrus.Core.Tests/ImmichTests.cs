@@ -4,6 +4,7 @@ using Cirrus.Fakes;
 namespace Cirrus.Core.Tests;
 
 /// <summary>The Immich connector against FakeImmichServer (port of ImmichTests.swift; each test has its own fake).</summary>
+[Collection(CloudGlobals.Name)]
 public class ImmichTests
 {
     const string Key = FakeImmichServer.TestAPIKey;

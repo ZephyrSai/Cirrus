@@ -4,6 +4,7 @@ using Cirrus.Fakes;
 namespace Cirrus.Core.Tests;
 
 /// <summary>The S3 connector (port of S3Tests.swift): SigV4 against AWS's published vectors, then everything against FakeS3Server.</summary>
+[Collection(CloudGlobals.Name)]
 public class S3Tests
 {
     const string Key = FakeS3Server.AccessKey;

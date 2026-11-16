@@ -5,6 +5,7 @@ using Cirrus.Fakes;
 namespace Cirrus.Core.Tests;
 
 /// <summary>Google Drive as a browsable account (full <c>drive</c> scope), against FakeGoogle (port of GoogleDriveCloudTests.swift).</summary>
+[Collection(CloudGlobals.Name)]
 public class GoogleDriveCloudTests
 {
     static readonly GoogleOAuthClient Client = G.Client;

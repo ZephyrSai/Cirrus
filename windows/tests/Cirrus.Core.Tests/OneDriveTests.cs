@@ -4,6 +4,7 @@ using Cirrus.Fakes;
 namespace Cirrus.Core.Tests;
 
 /// <summary>OneDrive through the fake Graph server (port of OneDriveTests.swift). Sign-in goes through the real loopback listener.</summary>
+[Collection(CloudGlobals.Name)]
 public class OneDriveTests
 {
     static byte[] Bytes(int n, int seed = 7) => Enumerable.Range(0, n).Select(i => unchecked((byte)(((i * 31) ^ (i >> 9)) + seed))).ToArray();

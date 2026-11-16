@@ -5,6 +5,7 @@ using Cirrus.Fakes;
 namespace Cirrus.Core.Tests;
 
 /// <summary>The WebDAV / Nextcloud connector against FakeWebDAVServer (port of WebDAVTests.swift; each test has its own fake).</summary>
+[Collection(CloudGlobals.Name)]
 public class WebDAVTests
 {
     sealed class ProgressBox
