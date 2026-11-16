@@ -13,10 +13,10 @@ extension ICloudSession {
     }
 }
 
-/// One place Cirrus reads iCloud from: the Mac's own iCloud (native folders + PhotoKit),
-/// an Apple ID signed in inside Cirrus (web services), or the built-in demo.
+/// One place Cirrus reads from: the Mac's own iCloud (native folders + PhotoKit), an Apple ID signed in
+/// inside Cirrus (web services), the built-in demo, or another cloud service (OneDrive, Nextcloud…).
 public final class Account: Hashable, @unchecked Sendable {
-    public enum Kind: String, Sendable { case mac, web, demo }
+    public enum Kind: String, Sendable { case mac, web, demo, cloud }
     public enum Status: Equatable, Sendable { case ready, needsSignIn, waitingForApproval(String), error(String) }
 
     public let id: String
@@ -29,6 +29,16 @@ public final class Account: Hashable, @unchecked Sendable {
     public var photos: PhotosBackend?
     public var session: ICloudSession?
     public var status: Status = .ready
+    /// Another cloud service (kind == .cloud).
+    public var cloud: CloudAccountRecord?
+    public var provider: CloudProvider? { cloud?.provider }
+    public var isICloud: Bool { kind != .cloud }
+    /// What the top folder of `drive` is called: "iCloud Drive", "OneDrive", "Nextcloud"…
+    public var driveTitle: String { cloud?.provider.displayName ?? "iCloud Drive" }
+    /// Where deleted items go.
+    public var deletedTitle: String { cloud?.provider.deletedTitle ?? "Recently Deleted" }
+    /// Can deleted items be listed and restored in Cirrus?
+    public var canListTrash: Bool { (drive as? CloudDriveBackend)?.canListTrash ?? (drive != nil) }
 
     init(id: String, kind: Kind, title: String) { self.id = id; self.kind = kind; self.title = title }
 
@@ -38,6 +48,7 @@ public final class Account: Hashable, @unchecked Sendable {
     public var hasDrive: Bool { drive != nil || driveRoot != nil }
 
     public func storageUsage() async -> StorageUsage? {
+        if let c = drive as? CloudDriveBackend { return try? await c.quota() }
         guard let session else { return nil }
         return try? await session.storageUsage()
     }
@@ -53,6 +64,7 @@ public final class AccountManager {
 
     public var macAccount: Account? { accounts.first { $0.kind == .mac } }
     public var webAccounts: [Account] { accounts.filter { $0.kind == .web } }
+    public var cloudAccounts: [Account] { accounts.filter { $0.kind == .cloud } }
 
     /// Is this Mac signed in to iCloud with iCloud Drive on?
     public static var nativeDriveRoot: URL? {
@@ -84,6 +96,18 @@ public final class AccountManager {
             demo.photos = DemoPhotos.shared
             list.append(demo)
         }
+        for r in CloudStore.records() { list.append(makeCloudAccount(r, secret: CloudStore.secret(r.id))) }
+        #if DEBUG
+        if demoMode && ProcessInfo.processInfo.environment["CIRRUS_NO_DEMO_CLOUDS"] == nil {
+            for p in [CloudProvider.onedrive, .googleDrive, .nextcloud, .webdav] {
+                guard let (r, backend) = CloudBackends.demo(p) else { continue }
+                let a = Account(id: r.id, kind: .cloud, title: r.title)
+                a.cloud = r
+                a.drive = backend
+                list.append(a)
+            }
+        }
+        #endif
         accounts = list
         ThumbnailDiskCache.pruneOldVersions(keeping: list.compactMap { $0.photos?.cacheKey })
         NotificationCenter.default.post(name: Self.changed, object: self)
@@ -179,6 +203,63 @@ public final class AccountManager {
     }
 
     public func account(id: String) -> Account? { accounts.first { $0.id == id } }
+
+    // MARK: Other clouds
+
+    func makeCloudAccount(_ r: CloudAccountRecord, secret: CloudSecret?) -> Account {
+        let a = Account(id: r.id, kind: .cloud, title: r.title)
+        a.cloud = r
+        guard let secret else { a.status = .needsSignIn; return a }
+        do {
+            let backend = try CloudBackends.make(r, secret: secret)
+            // OAuth services hand out new refresh tokens now and then: keep the newest in the Keychain.
+            if let rot = backend as? CloudTokenRotating {
+                let id = r.id
+                rot.onNewRefreshToken = { token in
+                    guard var s = CloudStore.secret(id) else { return }
+                    s.refreshToken = token
+                    CloudStore.setSecret(id, s)
+                }
+            }
+            a.drive = backend
+        } catch let e as CloudError {
+            if case .signInNeeded = e { a.status = .needsSignIn } else { a.status = .error(e.localizedDescription) }
+        } catch {
+            a.status = .error(error.localizedDescription)
+        }
+        return a
+    }
+
+    /// A newly connected cloud account (from the Add Account sheet). Replaces one with the same id.
+    @discardableResult
+    public func addCloud(_ r: CloudAccountRecord, secret: CloudSecret) -> Account {
+        CloudStore.save(r, secret: secret)
+        let a = makeCloudAccount(r, secret: secret)
+        if let i = accounts.firstIndex(where: { $0.id == r.id }) { accounts[i] = a } else { accounts.append(a) }
+        NotificationCenter.default.post(name: Self.changed, object: self)
+        return a
+    }
+
+    /// The same service and login already connected (so a second sign-in updates it instead of adding a twin).
+    public func existingCloud(matching r: CloudAccountRecord) -> CloudAccountRecord? {
+        CloudStore.records().first {
+            $0.provider == r.provider && $0.title.caseInsensitiveCompare(r.title) == .orderedSame && ($0.server ?? "") == (r.server ?? "")
+        }
+    }
+
+    /// Forget a cloud account: its sign-in and everything Cirrus cached for it. Nothing changes on the service.
+    public func removeCloud(_ account: Account) {
+        guard account.kind == .cloud else { return }
+        CloudStore.remove(account.id)
+        accounts.removeAll { $0 == account }
+        try? FileManager.default.removeItem(at: Paths.cacheDir("listings").appendingPathComponent(account.id.replacingOccurrences(of: ":", with: "_")))
+        let mine = Paths.accountCacheName(account.id)
+        try? FileManager.default.removeItem(at: Paths.caches.appendingPathComponent("Preview").appendingPathComponent(mine))
+        let opened = Paths.caches.appendingPathComponent("Open").appendingPathComponent(mine)
+        for u in (try? FileManager.default.contentsOfDirectory(at: opened, includingPropertiesForKeys: nil)) ?? [] { Paths.retireOpenCopy(u) }
+        if ((try? FileManager.default.contentsOfDirectory(atPath: opened.path)) ?? []).isEmpty { try? FileManager.default.removeItem(at: opened) }
+        NotificationCenter.default.post(name: Self.changed, object: self)
+    }
 
     /// Apple IDs used on this Mac (most recent first) for the sign-in suggestions.
     public static var knownAppleIDs: [String] { UserDefaults.standard.stringArray(forKey: "knownAppleIDs") ?? [] }

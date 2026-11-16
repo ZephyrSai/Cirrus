@@ -278,23 +278,29 @@ final class InfoPanel: NSObject {
 enum AccountInfo {
     static func show(_ a: Account, window: NSWindow?) {
         let alert = NSAlert()
-        alert.messageText = a.appleID ?? a.title
-        alert.informativeText = "Loading iCloud storage…"
+        let p = a.provider
+        alert.messageText = p.map { "\($0.displayName) — \(a.title)" } ?? (a.appleID ?? a.title)
+        let server = a.cloud?.server.map { "\nServer: \($0)" } ?? ""
+        alert.informativeText = "Loading \(p?.displayName ?? "iCloud") storage…" + server
         alert.addButton(withTitle: "Done")
         if a.kind == .web { alert.addButton(withTitle: "Sign Out…") }
+        if a.kind == .cloud { alert.addButton(withTitle: "Remove from Cirrus…") }
         let bar = StorageBar(frame: NSRect(x: 0, y: 0, width: 360, height: 88))
         alert.accessoryView = bar
         Task {
             if let u = await a.storageUsage() {
                 bar.usage = u
-                alert.informativeText = "\(u.used.byteString) of \(u.total.byteString) used — \(u.available.byteString) available"
+                alert.informativeText = (u.total > 0 ? "\(u.used.byteString) of \(u.total.byteString) used — \(u.available.byteString) available"
+                                         : "\(u.used.byteString) used") + server
+            } else if p != nil {
+                alert.informativeText = (a.status == .ready ? "This service didn’t report its storage." : "Sign in again to see storage.") + server
             } else {
                 alert.informativeText = a.kind == .mac ? "This Mac’s iCloud is managed by macOS (System Settings › Apple Account)." : "Storage information isn’t available right now."
             }
         }
         let handle: (NSApplication.ModalResponse) -> Void = { r in
             if r == .alertSecondButtonReturn {
-                AccountManager.shared.signOut(a)
+                if a.kind == .cloud { AccountManager.shared.removeCloud(a) } else { AccountManager.shared.signOut(a) }
             }
         }
         if let window { alert.beginSheetModal(for: window, completionHandler: handle) } else { handle(alert.runModal()) }
@@ -310,6 +316,11 @@ final class StorageBar: NSView {
         NSColor.quaternaryLabelColor.setFill()
         barRect.fill()
         guard let u = usage, u.total > 0 else { return }
+        if u.categories.isEmpty {
+            NSColor.controlAccentColor.setFill()
+            NSRect(x: barRect.minX, y: barRect.minY, width: max(1, barRect.width * CGFloat(Double(u.used) / Double(u.total))), height: barRect.height).fill()
+            return
+        }
         var x = barRect.minX
         for (i, c) in u.categories.enumerated() where c.bytes > 0 {
             let w = barRect.width * CGFloat(Double(c.bytes) / Double(u.total))

@@ -125,10 +125,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case 4: loc = .local(home.appendingPathComponent("Downloads").path)
         case 5:
             if let root = AccountManager.shared.macAccount?.driveRoot { loc = .local(root.path) }
-            else if let a = AccountManager.shared.accounts.first(where: { $0.drive != nil }) { loc = .drive(a.id, a.drive!.rootID) }
+            else if let a = AccountManager.shared.accounts.first(where: { $0.isICloud && $0.drive != nil }) { loc = .drive(a.id, a.drive!.rootID) }
             else { signIn(appleID: nil, window: activeBrowser?.window) }
         case 6:
-            if let a = AccountManager.shared.accounts.first(where: { $0.kind != .mac && $0.photos != nil }) ?? AccountManager.shared.macAccount, a.photos != nil {
+            if let a = AccountManager.shared.accounts.first(where: { $0.kind != .mac && $0.isICloud && $0.photos != nil }) ?? AccountManager.shared.macAccount, a.photos != nil {
                 loc = .album(a.id, SidebarController.libraryID(a), SidebarController.allPhotosID(a))
             }
         case 7: loc = .computer
@@ -167,6 +167,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if let window { window.beginSheet(s.window!) } else { s.showWindow(nil) }
     }
+
+    @objc func addCloudAccount(_ sender: Any?) { AddAccountSheet.show(on: activeBrowser?.window) }
 
     @objc func showAccountInfoMenu(_ sender: NSMenuItem) { if let id = sender.representedObject as? String { showAccountInfo(id) } }
 

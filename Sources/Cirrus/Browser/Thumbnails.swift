@@ -88,6 +88,9 @@ final class Thumbnails {
         case .photo: return true
         case .device(let d): return !d.isFolder
         case .drive(let n):
+            // Services with server thumbnails (OneDrive, Google Drive, Nextcloud) make them for any size.
+            if !n.isFolder, let t = item.utType, (t.conforms(to: .image) || t.conforms(to: .movie) || t.conforms(to: .pdf)),
+               item.account.flatMap({ AccountManager.shared.account(id: $0)?.drive as? CloudDriveBackend }) != nil { return true }
             // iCloud.com's API has no thumbnails: fetch small previewable files once and thumbnail them locally.
             guard Self.drivePreviews, !n.isFolder, n.size > 0, n.size <= Self.drivePreviewMax, let t = item.utType else { return false }
             return t.conforms(to: .image) || t.conforms(to: .pdf) || t.conforms(to: .movie) || t.conforms(to: .presentation)
@@ -120,7 +123,15 @@ final class Thumbnails {
             case .device(let d):
                 guard let cg = await DeviceManager.shared.thumbnail(d) else { return nil }
                 return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
-            case .drive:
+            case .drive(let n):
+                if let cloud = await MainActor.run(body: { item.account.flatMap { AccountManager.shared.account(id: $0)?.drive as? CloudDriveBackend } }) {
+                    await limiterRemote.acquire()
+                    let data = try? await cloud.thumbnail(n, maxPixel: target)
+                    await limiterRemote.release()
+                    if let data, let img = NSImage(data: data) { return img }
+                    // No server thumbnail: fall back to a local one for small files only.
+                    guard n.size > 0, n.size <= Self.drivePreviewMax else { return nil }
+                }
                 await previewLimit.acquire()
                 defer { Task { await previewLimit.release() } }
                 guard let u = try? await Ops.shared.localCopy(item, cache: "Open", progressTitle: nil) else { return nil }

@@ -347,6 +347,11 @@ final class Ops {
         pre.files = items.count
         pre.bytes = items.reduce(0) { $0 + $1.transferSize }
         switch dest {
+        case .drive(let acct, _) where acct.kind == .cloud:
+            pre.available = await Preflight.iCloudFree(acct); pre.availableLabel = "in \(acct.provider?.displayName ?? acct.title)"
+            if let p = acct.provider, let (limit, text) = Limits.cloudFileMax(p) {
+                for i in items where i.transferSize > limit { pre.blocked.append((i.name, i.transferSize, text)) }
+            }
         case .drive(let acct, _):
             pre.available = await Preflight.iCloudFree(acct); pre.availableLabel = "in iCloud"
             for i in items where i.transferSize > Limits.iCloudDriveMax { pre.blocked.append((i.name, i.transferSize, "larger than iCloud Drive’s 50 GB limit")) }
@@ -708,7 +713,7 @@ final class Ops {
         let nodes = items.compactMap(\.driveNode)
         if !nodes.isEmpty, let drive = loc.account?.drive {
             do { try await drive.trash(nodes); Catalog.shared.forgetUploads(nodes.map(\.id)); refresh(loc); refresh(.driveTrash(loc.accountID ?? "")) }
-            catch { displayError(error, title: "Couldn’t move to Recently Deleted", window: window) }
+            catch { displayError(error, title: "Couldn’t move to \(loc.account?.deletedTitle ?? "Recently Deleted")", window: window) }
         }
         let assets = items.compactMap(\.photo)
         if !assets.isEmpty, let acct = loc.account, let photos = acct.photos {

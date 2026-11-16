@@ -103,8 +103,12 @@ final class LocationPicker: NSWindowController, NSOutlineViewDataSource, NSOutli
             if let root = am.macAccount?.driveRoot {
                 out.append(Node("iCloud Drive (this Mac)", "icloud", .local(root.path), expandable: true, canPick: true))
             }
-            for a in am.accounts where a.drive != nil && a.kind != .mac {
+            for a in am.accounts where a.drive != nil && a.kind != .mac && a.isICloud {
                 out.append(Node("iCloud Drive — \(a.kind == .demo ? "Demo" : (a.appleID ?? a.title))", "icloud", .drive(a.id, a.drive!.rootID), expandable: true, canPick: true))
+            }
+            for a in am.cloudAccounts where a.drive != nil {
+                let p = a.provider ?? .webdav
+                out.append(Node("\(p.displayName) — \(a.title)", p.symbol, .drive(a.id, a.drive!.rootID), expandable: true, canPick: true))
             }
         }
         if mode != .driveFolder {

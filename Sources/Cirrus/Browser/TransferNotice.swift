@@ -33,7 +33,8 @@ final class TransferNotice {
         let what = count == 1 ? "1 item" : "\(count) items"
         let text: String
         switch dest {
-        case .drive: text = "Checking iCloud space and names, then uploading \(what) to “\(dest.title)”…"
+        case .drive(let acct, _):
+            text = "Checking \(acct.isICloud ? "iCloud" : (acct.provider?.displayName ?? "")) space and names, then uploading \(what) to “\(dest.title)”…"
         case .photos: text = "Preparing to import \(what) into \(dest.title)…"
         case .local: text = "Preparing to \(move ? "move" : "copy") \(what) to “\(dest.title)”…"
         }

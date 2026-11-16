@@ -590,7 +590,7 @@ final class PaneController: NSViewController, NSCollectionViewDataSource, NSColl
         emptyLabel.isHidden = !shown.isEmpty
         if let t = tagQuery { emptyLabel.stringValue = searchResults == nil ? "Searching…" : "No files tagged “\(t)”"; return }
         if searchTask != nil && shown.isEmpty { emptyLabel.stringValue = "Searching…"; emptyLabel.isHidden = false; return }
-        emptyLabel.stringValue = filter.isEmpty ? (caps.isTrash ? "Recently Deleted is empty" : "No items") : "No results for “\(filter)”"
+        emptyLabel.stringValue = filter.isEmpty ? (caps.isTrash ? "\(Catalog.shared.title(location)) is empty" : "No items") : "No results for “\(filter)”"
     }
 
     func updateBanner() {

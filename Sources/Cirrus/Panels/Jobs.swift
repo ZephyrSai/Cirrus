@@ -24,7 +24,7 @@ final class JobRunner {
         case .local(let p): return LocalSide(root: URL(fileURLWithPath: p, isDirectory: true), excludes: excludes, createIfMissing: create)
         case .drive(let a, let fid, let path):
             guard let acct = AccountManager.shared.account(id: a), let d = acct.drive else { throw ICloudError.needsSignIn }
-            return DriveSide(drive: d, rootID: fid, label: path.isEmpty ? "iCloud Drive" : (path as NSString).lastPathComponent, excludes: excludes)
+            return DriveSide(drive: d, rootID: fid, label: path.isEmpty ? acct.driveTitle : (path as NSString).lastPathComponent, excludes: excludes)
         default: throw SyncError.unavailable("This endpoint can’t be used for folder sync.")
         }
     }

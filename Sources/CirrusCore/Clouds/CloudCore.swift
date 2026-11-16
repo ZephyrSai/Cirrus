@@ -153,6 +153,11 @@ public protocol CloudDriveBackend: DriveBackend {
     func thumbnail(_ node: DriveNode, maxPixel: Int) async throws -> Data?
 }
 
+/// OAuth backends whose refresh token can change (Microsoft rotates them): the app stores each new one.
+public protocol CloudTokenRotating: AnyObject {
+    var onNewRefreshToken: (@Sendable (String) -> Void)? { get set }
+}
+
 /// Builds the backend for a saved account. `transport` swaps in URLProtocol fakes (tests, demo mode).
 public enum CloudBackends {
     nonisolated(unsafe) public static var transport: [AnyClass]? = nil

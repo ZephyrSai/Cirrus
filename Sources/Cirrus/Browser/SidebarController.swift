@@ -12,6 +12,7 @@ final class SidebarNode: NSObject {
     var volume: VolumeInfo?
     var cameraID: String?
     var isFavorite = false
+    var toolTip: String?
     init(_ kind: Kind, _ title: String, _ symbol: String = "folder", tint: NSColor? = nil) { self.kind = kind; self.title = title; self.symbol = symbol; self.tint = tint }
     var location: Location? { if case .location(let l) = kind { return l }; return nil }
     var isSection: Bool { if case .section = kind { return true }; return false }
@@ -58,6 +59,15 @@ final class SidebarController: NSViewController, NSOutlineViewDataSource, NSOutl
                     if note.name == TransferManager.changed { self?.refreshJobSpinners() } else { self?.rebuild() }
                 }
             })
+        }
+    }
+
+    static func tint(_ p: CloudProvider) -> NSColor {
+        switch p {
+        case .onedrive: return .systemBlue
+        case .googleDrive: return .systemGreen
+        case .nextcloud: return .systemTeal
+        case .webdav: return .systemGray
         }
     }
 
@@ -110,6 +120,30 @@ final class SidebarController: NSViewController, NSOutlineViewDataSource, NSOutl
             let s = out.first { $0.title == "iCloud" } ?? { let x = SidebarNode(.section, "iCloud"); out.append(x); return x }()
             s.children.append(SidebarNode(.action("signin"), signedInMac ? "Add Another Apple ID…" : "Sign In to iCloud…", "person.crop.circle.badge.plus", tint: .systemBlue))
         }
+        // Other clouds: one section per account, then "Add Account…".
+        var lastCloud: SidebarNode?
+        for a in am.cloudAccounts {
+            guard let r = a.cloud else { continue }
+            let s = SidebarNode(.section, "\(r.provider.displayName) — \(a.title)")
+            switch a.status {
+            case .needsSignIn:
+                s.children.append(SidebarNode(.action("cloudsignin:" + a.id), "Sign In Again…", "exclamationmark.triangle.fill", tint: .systemYellow))
+            case .error(let msg):
+                let n = SidebarNode(.action("cloudsignin:" + a.id), "Can’t Connect — Sign In Again…", "exclamationmark.triangle.fill", tint: .systemYellow)
+                n.toolTip = msg
+                s.children.append(n)
+            default: break
+            }
+            if let d = a.drive {
+                s.children.append(SidebarNode(.location(.drive(a.id, d.rootID)), r.provider.displayName, r.provider.symbol, tint: Self.tint(r.provider)))
+                if a.canListTrash { s.children.append(SidebarNode(.location(.driveTrash(a.id)), r.provider.deletedTitle, "trash", tint: .secondaryLabelColor)) }
+            }
+            out.append(s)
+            lastCloud = s
+        }
+        let addTo = lastCloud ?? { let x = SidebarNode(.section, "Other Clouds"); out.append(x); return x }()
+        addTo.children.append(SidebarNode(.action("addcloud"), "Add Account…", "plus.circle", tint: .systemBlue))
+
         if let mac = am.macAccount, !signedInMac, mac.photos != nil, !Debug.screenshotMode {
             let s = SidebarNode(.section, "This Mac")
             s.children.append(SidebarNode(.location(.album(mac.id, "local", "smart:all")), "Photos Library", "photo.on.rectangle.angled", tint: .systemOrange))
@@ -198,6 +232,7 @@ final class SidebarController: NSViewController, NSOutlineViewDataSource, NSOutl
             t.font = .systemFont(ofSize: 11, weight: .semibold)
             t.textColor = .secondaryLabelColor
             t.lineBreakMode = .byTruncatingTail
+            t.toolTip = node.title
             v.addSubview(t); v.textField = t
             t.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([t.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 2), t.trailingAnchor.constraint(lessThanOrEqualTo: v.trailingAnchor),
@@ -211,6 +246,7 @@ final class SidebarController: NSViewController, NSOutlineViewDataSource, NSOutl
         let metrics = Self.metrics(for: o.effectiveRowSizeStyle)
         img.symbolConfiguration = .init(pointSize: metrics.symbol, weight: .regular)
         let t = NSTextField(labelWithString: node.title)
+        v.toolTip = node.toolTip
         t.font = .systemFont(ofSize: metrics.font)
         t.lineBreakMode = .byTruncatingTail
         v.addSubview(img); v.addSubview(t)
@@ -280,6 +316,8 @@ final class SidebarController: NSViewController, NSOutlineViewDataSource, NSOutl
             else if a == "newsync" { app?.showSync(nil) }
             else if a.hasPrefix("tag:") { browser?.activePane?.showTag(String(a.dropFirst(4))) }
             else if a.hasPrefix("signin") { app?.signIn(appleID: a.hasPrefix("signin:") ? String(a.dropFirst(7)) : nil, window: view.window) }
+            else if a == "addcloud" { AddAccountSheet.show(on: view.window) }
+            else if a.hasPrefix("cloudsignin:") { AddAccountSheet.reconnect(String(a.dropFirst(12)), on: view.window) }
         case .job(let id):
             app?.showSync(id)
         case .section: break
@@ -335,6 +373,12 @@ extension SidebarController: NSMenuDelegate {
             menu.addItem(withTitle: "Account Info…", action: #selector(accountInfo(_:)), keyEquivalent: "").representedObject = acct.id
             menu.addItem(withTitle: "Sign Out of \(acct.appleID ?? acct.title)…", action: #selector(signOut(_:)), keyEquivalent: "").representedObject = acct.id
         }
+        if case .location(let l) = n.kind, let acct = l.account, acct.kind == .cloud {
+            menu.addItem(.separator())
+            menu.addItem(withTitle: "Account Info…", action: #selector(accountInfo(_:)), keyEquivalent: "").representedObject = acct.id
+            menu.addItem(withTitle: "Sign In Again…", action: #selector(cloudSignIn(_:)), keyEquivalent: "").representedObject = acct.id
+            menu.addItem(withTitle: "Remove \(acct.provider?.displayName ?? "Account")…", action: #selector(removeCloud(_:)), keyEquivalent: "").representedObject = acct.id
+        }
         if case .job(let id) = n.kind {
             menu.addItem(withTitle: "Run Now", action: #selector(runJob(_:)), keyEquivalent: "").representedObject = id
             menu.addItem(withTitle: "Edit…", action: #selector(editJob(_:)), keyEquivalent: "").representedObject = id
@@ -356,6 +400,17 @@ extension SidebarController: NSMenuDelegate {
         alert.informativeText = "Cirrus forgets the session and any saved password for this Apple ID. Nothing is deleted from iCloud."
         alert.addButton(withTitle: "Sign Out"); alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn { AccountManager.shared.signOut(a); browser?.activePane?.navigate(to: .home()) }
+    }
+    @objc func cloudSignIn(_ s: NSMenuItem) { if let id = s.representedObject as? String { AddAccountSheet.reconnect(id, on: view.window) } }
+    @objc func removeCloud(_ s: NSMenuItem) {
+        guard let id = s.representedObject as? String, let a = AccountManager.shared.account(id: id), let p = a.provider else { return }
+        let alert = NSAlert()
+        alert.messageText = "Remove \(p.displayName) (\(a.title)) from Cirrus?"
+        alert.informativeText = "Cirrus forgets this sign-in and what it cached. Nothing is deleted from \(p.displayName)."
+        alert.addButton(withTitle: "Remove"); alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if let pane = browser?.activePane, pane.location.accountID == id { pane.navigate(to: .home()) }
+        AccountManager.shared.removeCloud(a)
     }
     @objc func accountInfo(_ s: NSMenuItem) { if let id = s.representedObject as? String { (NSApp.delegate as? AppDelegate)?.showAccountInfo(id) } }
     @objc func runJob(_ s: NSMenuItem) { if let id = s.representedObject as? UUID, let j = SyncStore.shared.job(id) { JobRunner.shared.run(j, window: view.window) } }

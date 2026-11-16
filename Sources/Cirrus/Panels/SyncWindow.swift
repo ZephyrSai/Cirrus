@@ -111,14 +111,15 @@ final class SyncWindowController: NSWindowController, NSTableViewDataSource, NST
         let am = AccountManager.shared
         let browserLoc = (NSApp.delegate as? AppDelegate)?.activeBrowser?.activePane?.location
         func driveChoices() {
-            out.append(.init(title: "Choose an iCloud Drive Folder…", endpoint: nil, action: "pickdrive"))
+            out.append(.init(title: (am.cloudAccounts.isEmpty ? "Choose an iCloud Drive Folder…" : "Choose a Folder in iCloud Drive or Another Cloud…"), endpoint: nil, action: "pickdrive"))
             if let root = am.macAccount?.driveRoot { out.append(.init(title: "iCloud Drive (this Mac)", endpoint: .local(path: root.path), action: nil)) }
             for a in am.accounts where a.drive != nil && a.kind != .mac {
-                out.append(.init(title: "iCloud Drive — \(a.appleID ?? a.title)", endpoint: .drive(account: a.id, folderID: a.drive!.rootID, path: ""), action: nil))
+                out.append(.init(title: "\(a.driveTitle) — \(a.appleID ?? a.title)", endpoint: .drive(account: a.id, folderID: a.drive!.rootID, path: ""), action: nil))
             }
             if case .drive(let a, let id)? = browserLoc {
                 let path = Catalog.shared.pathComponents(.drive(a, id)).dropFirst().map(\.0).joined(separator: "/")
-                out.append(.init(title: "Folder open in Cirrus: iCloud Drive › \(path.replacingOccurrences(of: "/", with: " › "))", endpoint: .drive(account: a, folderID: id, path: path), action: nil))
+                let top = am.account(id: a)?.driveTitle ?? "iCloud Drive"
+                out.append(.init(title: "Folder open in Cirrus: \(top) › \(path.replacingOccurrences(of: "/", with: " › "))", endpoint: .drive(account: a, folderID: id, path: path), action: nil))
             }
         }
         func photoChoices() {
@@ -180,7 +181,7 @@ final class SyncWindowController: NSWindowController, NSTableViewDataSource, NST
         if let action = sender.selectedItem?.representedObject as? String, action == "pickdrive" || action == "pickalbum" {
             Task {
                 let loc = await LocationPicker.pick(action == "pickdrive" ? .driveFolder : .album, title: action == "pickdrive" ? "Choose a Folder" : "Choose a Library or Album",
-                                                    prompt: action == "pickdrive" ? "Pick the iCloud Drive folder to sync." : "Pick the whole library or one album.", on: window)
+                                                    prompt: action == "pickdrive" ? "Pick the folder to sync." : "Pick the whole library or one album.", on: window)
                 if let e = loc.flatMap(Self.endpoint(for:)) { if isSource { currentSource = e } else { currentDest = e } }
                 rebuildEndpointMenus()
             }

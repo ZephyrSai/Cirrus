@@ -57,6 +57,7 @@ enum MainMenu {
             item("Move to Trash", #selector(PaneController.moveToTrash(_:)), "\u{8}"),
             item("Eject", #selector(PaneController.ejectSelection(_:)), "e"), sep(),
             item("Sign In with Apple ID…", #selector(AppDelegate.signInMenu(_:)), target: app),
+            item("Add Account…", #selector(AppDelegate.addCloudAccount(_:)), target: app),
         ])
         let editMenu = top("Edit", [
             item("Undo", Selector(("undo:")), "z"),

@@ -69,6 +69,12 @@ enum Debug {
         default:
             if spec.hasPrefix("local:") { return .local((String(spec.dropFirst(6)) as NSString).expandingTildeInPath) }
             if spec.hasPrefix("drive:"), let demo { return .drive(demo.id, "FOLDER::demo::" + spec.dropFirst(6)) }
+            // cloud:<provider> / cloudtrash:<provider>: the first connected account of that service.
+            if spec.hasPrefix("cloud:") || spec.hasPrefix("cloudtrash:"),
+               let p = CloudProvider(rawValue: String(spec.split(separator: ":", maxSplits: 1)[1])),
+               let a = am.cloudAccounts.first(where: { $0.provider == p }), let d = a.drive {
+                return spec.hasPrefix("cloud:") ? .drive(a.id, d.rootID) : .driveTrash(a.id)
+            }
             return nil
         }
     }
@@ -214,6 +220,15 @@ enum Debug {
                 p.select(keys: Set(idx.map { p.shown[$0].key }))
                 p.itemViewSelectionChanged()
             }
+        case "enter":   // enter:<name> — open the folder with that name in the current pane
+            if let p = pane, let it = p.shown.first(where: { $0.name == arg }), let t = it.target { p.navigate(to: t); await waitLoaded(p) }
+            else { log("enter: no folder named \(arg)") }
+        case "addcloudsheet":   // show the Add Account sheet (addcloudsheet:<provider>)
+            AddAccountSheet.show(on: b?.window, provider: CloudProvider(rawValue: arg))
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            if let w = b?.window?.attachedSheet { offscreen(w); lastWindow = w }
+        case "cloudaccounts":
+            for a in AccountManager.shared.cloudAccounts { log("cloud \(a.provider?.rawValue ?? "?") \(a.title) status=\(a.status) drive=\(a.drive != nil) trash=\(a.canListTrash)") }
         case "selectname":
             if let p = pane, let it = p.shown.first(where: { $0.name == arg }) { p.select(keys: [it.key]); p.itemViewSelectionChanged() }
         case "info": pane?.getInfo(nil); lastWindow = InfoPanel.shared.panel; offscreen(lastWindow)

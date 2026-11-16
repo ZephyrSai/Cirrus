@@ -3,6 +3,14 @@ import CirrusCore
 
 /// Size limits Cirrus enforces before queueing work.
 enum Limits {
+    /// Per-file limits other services document (self-hosted servers set their own).
+    static func cloudFileMax(_ p: CloudProvider) -> (Int64, String)? {
+        switch p {
+        case .onedrive: return (250_000_000_000, "larger than OneDrive’s 250 GB file limit")
+        case .googleDrive: return (5_000_000_000_000, "larger than Google Drive’s 5 TB file limit")
+        case .nextcloud, .webdav: return nil
+        }
+    }
     /// Apple: iCloud Drive stores files of 50 GB or less (and within your storage plan).
     static let iCloudDriveMax: Int64 = 50_000_000_000
     /// Community-reported: uploads through iCloud.com (what web sign-in uses) fail above 10 GB.
@@ -29,9 +37,9 @@ struct PreflightResult {
 enum Preflight {
     static var storageCache = [String: (Date, StorageUsage)]()
 
-    /// Free iCloud storage for a web account, minus uploads already queued to it.
+    /// Free storage for a web iCloud account or another cloud, minus uploads already queued to it.
     static func iCloudFree(_ acct: Account) async -> Int64? {
-        guard acct.kind == .web else { return nil }
+        guard acct.kind == .web || acct.kind == .cloud else { return nil }
         var usage: StorageUsage?
         if let (t, u) = storageCache[acct.id], Date().timeIntervalSince(t) < 120 { usage = u } else if let u = await acct.storageUsage() {
             storageCache[acct.id] = (Date(), u)
@@ -102,6 +110,11 @@ enum Preflight {
                 for f in files where f.size > Limits.iCloudDriveMax { block(f, "larger than iCloud Drive’s 50 GB limit") }
                 r.cautions.append("Items in iCloud Drive count toward your iCloud storage plan; macOS uploads them in the background.")
             }
+        case .drive(let acct, _) where acct.kind == .cloud:
+            r.bytes = files.reduce(0) { $0 + $1.size }
+            r.available = await iCloudFree(acct)
+            r.availableLabel = "in \(acct.provider?.displayName ?? acct.title)"
+            if let p = acct.provider, let (limit, text) = Limits.cloudFileMax(p) { for f in files where f.size > limit { block(f, text) } }
         case .drive(let acct, _):
             r.bytes = files.reduce(0) { $0 + $1.size }
             r.available = await iCloudFree(acct)

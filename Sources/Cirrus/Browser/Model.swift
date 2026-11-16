@@ -145,9 +145,9 @@ final class Catalog {
             if let c = nativeContainer(for: url), c.url.standardizedFileURL.path == url.standardizedFileURL.path { return c.name }
             return FileManager.default.displayName(atPath: p)
         case .drive(let a, let id):
-            if id.hasSuffix("::root") || id == DemoDrive.shared.rootID { return "iCloud Drive" }
+            if isDriveRoot(a, id) { return AccountManager.shared.account(id: a)?.driveTitle ?? "iCloud Drive" }
             return driveNames[a + "|" + id]?.name ?? "Folder"
-        case .driveTrash: return "Recently Deleted"
+        case .driveTrash(let a): return AccountManager.shared.account(id: a)?.deletedTitle ?? "Recently Deleted"
         case .photos(let a, let lib, let folder):
             if let folder { return albumIndex[a + "|" + lib]?.first { $0.id == folder }?.name ?? "Folder" }
             let libs = libraryIndex[a] ?? []
@@ -179,7 +179,9 @@ final class Catalog {
             case "/": return "internaldrive"
             default: return p.hasPrefix("/Volumes/") && p.split(separator: "/").count == 2 ? "externaldrive" : "folder"
             }
-        case .drive: return "icloud"
+        case .drive(let a, let id):
+            guard let p = AccountManager.shared.account(id: a)?.provider else { return "icloud" }
+            return isDriveRoot(a, id) ? p.symbol : "folder"
         case .driveTrash: return "trash"
         case .photos: return "photo.on.rectangle.angled"
         case .album(let a, let lib, let id): return albumIndex[a + "|" + lib]?.first { $0.id == id }?.symbol ?? "rectangle.stack"
@@ -218,9 +220,16 @@ final class Catalog {
         return c
     }
 
+    /// The top folder of an account's drive (iCloud Drive, OneDrive…).
+    func isDriveRoot(_ account: String, _ id: String) -> Bool {
+        if let r = AccountManager.shared.account(id: account)?.drive?.rootID { return id == r }
+        return id.hasSuffix("::root") || id == DemoDrive.shared.rootID
+    }
+
     func isICloud(_ loc: Location) -> Bool {
         switch loc {
-        case .drive, .driveTrash, .photos, .album: return true
+        case .drive(let a, _), .driveTrash(let a): return AccountManager.shared.account(id: a)?.isICloud ?? true
+        case .photos, .album: return true
         case .local(let p): return SafetyPolicy.isICloudPath(URL(fileURLWithPath: p))
         default: return false
         }
@@ -267,18 +276,18 @@ final class Catalog {
             var guardCount = 0
             while let c = cur, guardCount < 64 {
                 out.insert((title(.drive(a, c)), .drive(a, c)), at: 0)
-                if c.hasSuffix("::root") || c == DemoDrive.shared.rootID { break }
+                if isDriveRoot(a, c) { break }
                 cur = driveNames[a + "|" + c]?.parent
                 guardCount += 1
             }
-            if let first = out.first, case .drive(_, let fid) = first.1, !(fid.hasSuffix("::root") || fid == DemoDrive.shared.rootID),
+            if let first = out.first, case .drive(_, let fid) = first.1, !isDriveRoot(a, fid),
                let acct = AccountManager.shared.account(id: a), let d = acct.drive {
-                out.insert(("iCloud Drive", .drive(a, d.rootID)), at: 0)
+                out.insert((acct.driveTitle, .drive(a, d.rootID)), at: 0)
             }
             return out
         case .driveTrash(let a):
-            let root = AccountManager.shared.account(id: a)?.drive?.rootID ?? ""
-            return [("iCloud Drive", .drive(a, root)), ("Recently Deleted", loc)]
+            let acct = AccountManager.shared.account(id: a)
+            return [(acct?.driveTitle ?? "iCloud Drive", .drive(a, acct?.drive?.rootID ?? "")), (acct?.deletedTitle ?? "Recently Deleted", loc)]
         case .photos(let a, let lib, let folder):
             var out = [(title(.photos(a, lib, nil)), Location.photos(a, lib, nil))]
             var chain = [String]()
@@ -339,17 +348,22 @@ final class Catalog {
             items = try await Task.detached(priority: .userInitiated) { try Self.listLocal(url, showHidden: hidden) }.value
                 + rootExtras(url)
         case .drive(let a, let id):
-            guard let acct = AccountManager.shared.account(id: a), let drive = acct.drive else { throw ICloudError.needsSignIn }
+            guard let acct = AccountManager.shared.account(id: a) else { throw ICloudError.needsSignIn }
+            guard let drive = acct.drive else {
+                if let p = acct.provider { throw CloudError.signInNeeded(p.displayName) }
+                throw ICloudError.needsSignIn
+            }
             let file = cacheFile(account: a, library: "drive", album: Ops.stableKey(id))
             if memory[loc] == nil, let d = try? Data(contentsOf: file), let c = try? JSONDecoder().decode(DriveCache.self, from: d) {
                 partial(c.nodes.map { driveItem($0, account: a) })
             }
             let nodes = withRecentUploads(try await drive.list(id), at: loc)
-            if acct.kind == .web, let d = try? JSONEncoder().encode(DriveCache(nodes: nodes, savedAt: Date())) { try? d.write(to: file, options: .atomic) }
+            if acct.kind == .web || acct.kind == .cloud, let d = try? JSONEncoder().encode(DriveCache(nodes: nodes, savedAt: Date())) { try? d.write(to: file, options: .atomic) }
             for n in nodes where n.isFolder { driveNames[a + "|" + n.id] = (n.name, id) }
             items = nodes.map { driveItem($0, account: a) }
         case .driveTrash(let a):
-            guard let drive = AccountManager.shared.account(id: a)?.drive else { throw ICloudError.needsSignIn }
+            guard let acct = AccountManager.shared.account(id: a), let drive = acct.drive else { throw ICloudError.needsSignIn }
+            guard acct.canListTrash else { items = []; break }
             items = try await drive.listTrash().map { var i = driveItem($0, account: a); i.target = nil; i.isContainer = $0.isFolder; return i }
         case .photos(let a, let lib, let folder):
             let albums = try await albums(account: a, library: lib)

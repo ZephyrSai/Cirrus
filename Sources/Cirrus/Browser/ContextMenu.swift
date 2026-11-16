@@ -133,7 +133,9 @@ enum ContextMenu {
         if caps.canTrash || items.contains(where: \.isPhoto) {
             let title: String
             switch loc {
-            case .drive: title = "Move to Recently Deleted"
+            case .drive(let a, _):
+                let acct = AccountManager.shared.account(id: a)
+                title = acct?.isICloud ?? true ? "Move to Recently Deleted" : "Move to \(acct?.deletedTitle ?? "Trash")"
             case .album: title = "Delete"
             case .device: title = "Delete from Device…"
             default: title = "Move to Trash"

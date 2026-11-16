@@ -230,13 +230,14 @@ final class MigrationWindowController: NSWindowController {
 
     func reloadAccounts() {
         let previous = selectedAccount?.id
-        accounts = AccountManager.shared.accounts.filter { $0.hasDrive || $0.photos != nil }
+        accounts = AccountManager.shared.accounts.filter { $0.isICloud && ($0.hasDrive || $0.photos != nil) }
         accountPopup.removeAllItems()
         for a in accounts {
             switch a.kind {
             case .mac: accountPopup.addItem(withTitle: AccountManager.macSignedInToICloud ? "This Mac’s iCloud (iCloud Drive folder + Photos library)" : "This Mac’s Photos library")
             case .web: accountPopup.addItem(withTitle: (a.appleID ?? a.title) + (a.status == .needsSignIn ? " — sign in needed" : ""))
             case .demo: accountPopup.addItem(withTitle: "Demo iCloud")
+            case .cloud: accountPopup.addItem(withTitle: a.title)
             }
         }
         if accounts.isEmpty { accountPopup.addItem(withTitle: "No iCloud account — sign in first") }

@@ -143,7 +143,7 @@ final class BackupWindowController: NSWindowController {
 
     func reloadAccounts() {
         let previous = accountPopup.indexOfSelectedItem >= 0 && accountPopup.indexOfSelectedItem < accounts.count ? accounts[accountPopup.indexOfSelectedItem].id : nil
-        accounts = AccountManager.shared.accounts.filter { $0.hasDrive || $0.photos != nil }
+        accounts = AccountManager.shared.accounts.filter { $0.isICloud && ($0.hasDrive || $0.photos != nil) }
         accountPopup.removeAllItems()
         for a in accounts {
             let t: String
@@ -151,6 +151,7 @@ final class BackupWindowController: NSWindowController {
             case .mac: t = AccountManager.macSignedInToICloud ? "This Mac’s iCloud (iCloud Drive folder + Photos library)" : "This Mac’s Photos library"
             case .web: t = "\(a.appleID ?? a.title)" + (a.status == .needsSignIn ? " — sign in needed" : "")
             case .demo: t = Debug.screenshotMode ? "alex@example.com" : "Demo iCloud"
+            case .cloud: t = a.title
             }
             accountPopup.addItem(withTitle: t)
         }
