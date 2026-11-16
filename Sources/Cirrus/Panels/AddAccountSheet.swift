@@ -21,16 +21,18 @@ final class AddAccountSheet: NSWindowController, NSTextFieldDelegate {
         show(on: parent, reconnecting: r)
     }
 
-    let providers: [CloudProvider] = [.nextcloud, .onedrive, .googleDrive, .webdav]
+    let providers: [CloudProvider] = [.nextcloud, .onedrive, .googleDrive, .dropbox, .immich, .s3, .webdav]
     private(set) var provider: CloudProvider
     let reconnecting: CloudAccountRecord?
 
-    let picker = NSSegmentedControl()
+    let picker = NSPopUpButton(frame: .zero, pullsDown: false)
     let info = NSTextField(wrappingLabelWithString: "")
     let serverField = NSTextField()
     let userField = NSTextField()
     let passField = NSSecureTextField()
     let clientField = NSTextField()
+    let regionField = NSTextField()
+    let bucketField = NSTextField()
     var rows = [CloudFormRow]()
     let status = NSTextField(wrappingLabelWithString: "")
     let spinner = NSProgressIndicator()
@@ -49,8 +51,10 @@ final class AddAccountSheet: NSWindowController, NSTextFieldDelegate {
         super.init(window: w)
         build()
         if let r = reconnecting {
-            serverField.stringValue = r.provider == .webdav ? (r.server ?? "") : (r.server.flatMap { URL(string: $0)?.host } ?? r.server ?? "")
+            serverField.stringValue = r.provider == .nextcloud ? (r.server.flatMap { URL(string: $0)?.host } ?? r.server ?? "") : (r.server ?? "")
             userField.stringValue = r.username ?? ""
+            regionField.stringValue = r.options?["region"] ?? ""
+            bucketField.stringValue = r.options?["bucket"] ?? ""
             picker.isEnabled = false
         }
         select(provider)
@@ -70,14 +74,10 @@ final class AddAccountSheet: NSWindowController, NSTextFieldDelegate {
         sub.textColor = .secondaryLabelColor
         sub.preferredMaxLayoutWidth = 470
 
-        picker.segmentCount = providers.count
-        for (i, p) in providers.enumerated() {
-            picker.setLabel(p == .webdav ? "Other WebDAV" : p.displayName, forSegment: i)
-            picker.setImage(NSImage(systemSymbolName: p.symbol, accessibilityDescription: nil), forSegment: i)
-            picker.setImageScaling(.scaleProportionallyDown, forSegment: i)
+        for p in providers {
+            picker.addItem(withTitle: Self.menuTitle(p))
+            picker.lastItem?.image = NSImage(systemSymbolName: p.symbol, accessibilityDescription: nil)
         }
-        picker.trackingMode = .selectOne
-        picker.segmentDistribution = .fillEqually
         picker.target = self
         picker.action = #selector(pickerChanged)
 
@@ -89,7 +89,9 @@ final class AddAccountSheet: NSWindowController, NSTextFieldDelegate {
         userField.placeholderString = "Name"
         passField.placeholderString = "App password"
         clientField.placeholderString = "00000000-0000-0000-0000-000000000000"
-        for f in [serverField, userField, passField, clientField] as [NSTextField] {
+        regionField.placeholderString = "us-east-1 (or auto)"
+        bucketField.placeholderString = "Optional: one bucket"
+        for f in [serverField, userField, passField, clientField, regionField, bucketField] as [NSTextField] {
             f.delegate = self
             f.translatesAutoresizingMaskIntoConstraints = false
             f.widthAnchor.constraint(equalToConstant: 340).isActive = true
@@ -115,7 +117,8 @@ final class AddAccountSheet: NSWindowController, NSTextFieldDelegate {
         let buttons = NSStackView(views: [NSView(), cancelButton, primary])
         buttons.spacing = 10
 
-        let stack = NSStackView(views: [title, sub, picker, info, formStack, statusRow, buttons])
+        let serviceRow = field("Service:", picker)
+        let stack = NSStackView(views: [title, sub, serviceRow, info, formStack, statusRow, buttons])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14
@@ -128,13 +131,21 @@ final class AddAccountSheet: NSWindowController, NSTextFieldDelegate {
             stack.topAnchor.constraint(equalTo: content.topAnchor), stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: content.leadingAnchor), stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             stack.widthAnchor.constraint(equalToConstant: 520),
-            picker.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -48),
             buttons.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -48),
         ])
         window?.contentView = content
     }
 
-    func field(_ label: String, _ f: NSTextField) -> NSView {
+    static func menuTitle(_ p: CloudProvider) -> String {
+        switch p {
+        case .webdav: return "Other WebDAV server"
+        case .s3: return "S3-compatible storage (B2, R2, Wasabi, MinIO, AWS)"
+        case .immich: return "Immich (photos)"
+        default: return p.displayName
+        }
+    }
+
+    func field(_ label: String, _ f: NSView) -> NSView {
         let l = NSTextField(labelWithString: label)
         l.alignment = .right
         l.translatesAutoresizingMaskIntoConstraints = false
@@ -144,11 +155,11 @@ final class AddAccountSheet: NSWindowController, NSTextFieldDelegate {
         return row
     }
 
-    @objc func pickerChanged() { select(providers[max(0, picker.selectedSegment)]) }
+    @objc func pickerChanged() { select(providers[max(0, picker.indexOfSelectedItem)]) }
 
     func select(_ p: CloudProvider) {
         provider = p
-        picker.selectedSegment = providers.firstIndex(of: p) ?? 0
+        picker.selectItem(at: providers.firstIndex(of: p) ?? 0)
         for v in formStack.arrangedSubviews { formStack.removeArrangedSubview(v); v.removeFromSuperview() }
         setStatus(nil)
         switch p {
@@ -173,6 +184,32 @@ final class AddAccountSheet: NSWindowController, NSTextFieldDelegate {
             formStack.addArrangedSubview(field("WebDAV address:", serverField))
             formStack.addArrangedSubview(field("User name:", userField))
             formStack.addArrangedSubview(field("Password:", passField))
+            passField.placeholderString = "App password"
+            primary.title = "Connect"
+        case .dropbox:
+            info.stringValue = "Sign in to Dropbox in the browser. Cirrus gets access to your Dropbox files and keeps the sign-in in your Keychain."
+            if CloudConnect.dropboxAppKey.isEmpty {
+                info.stringValue += "\n\nThis copy of Cirrus has no Dropbox app key yet. Create a free app at dropbox.com/developers/apps (Scoped access, Full Dropbox), give it the files.content and files.metadata permissions, then paste its App key here."
+                clientField.placeholderString = "App key"
+                formStack.addArrangedSubview(field("App key:", clientField))
+            }
+            primary.title = "Sign In with Dropbox"
+        case .s3:
+            info.stringValue = "Backblaze B2, Cloudflare R2, Wasabi, MinIO, AWS and other S3-compatible storage. Use a key limited to the buckets Cirrus should see. Leave the bucket empty to browse every bucket the key can list."
+            serverField.placeholderString = "https://s3.us-west-004.backblazeb2.com"
+            formStack.addArrangedSubview(field("Endpoint:", serverField))
+            formStack.addArrangedSubview(field("Region:", regionField))
+            formStack.addArrangedSubview(field("Bucket:", bucketField))
+            formStack.addArrangedSubview(field("Access key ID:", userField))
+            passField.placeholderString = "Secret access key"
+            formStack.addArrangedSubview(field("Secret key:", passField))
+            primary.title = "Connect"
+        case .immich:
+            info.stringValue = "Your Immich photo library, with its timeline, albums and favorites, in Cirrus’s Photos views. Create an API key in Immich under Account Settings › API Keys and paste it here."
+            serverField.placeholderString = "https://photos.example.com"
+            formStack.addArrangedSubview(field("Server:", serverField))
+            passField.placeholderString = "API key"
+            formStack.addArrangedSubview(field("API key:", passField))
             primary.title = "Connect"
         }
         validate()
@@ -190,6 +227,9 @@ final class AddAccountSheet: NSWindowController, NSTextFieldDelegate {
         case .webdav: primary.isEnabled = !s.isEmpty && !userField.stringValue.isEmpty && !passField.stringValue.isEmpty
         case .onedrive: primary.isEnabled = !CloudConnect.oneDriveClientID.isEmpty || CloudConnect.looksLikeClientID(clientField.stringValue)
         case .googleDrive: primary.isEnabled = true
+        case .dropbox: primary.isEnabled = !CloudConnect.dropboxAppKey.isEmpty || clientField.stringValue.trimmingCharacters(in: .whitespaces).count >= 8
+        case .s3: primary.isEnabled = !s.isEmpty && !userField.stringValue.isEmpty && !passField.stringValue.isEmpty
+        case .immich: primary.isEnabled = !s.isEmpty && !passField.stringValue.isEmpty
         }
     }
 
@@ -213,6 +253,8 @@ final class AddAccountSheet: NSWindowController, NSTextFieldDelegate {
         AddAccountSheet.current = nil
         if let a = added, let d = a.drive {
             (NSApp.delegate as? AppDelegate)?.activeBrowser?.activePane?.navigate(to: .drive(a.id, d.rootID))
+        } else if let a = added, a.photos != nil {
+            (NSApp.delegate as? AppDelegate)?.activeBrowser?.activePane?.navigate(to: .album(a.id, SidebarController.libraryID(a), SidebarController.allPhotosID(a)))
         }
     }
 
@@ -223,6 +265,8 @@ final class AddAccountSheet: NSWindowController, NSTextFieldDelegate {
         let user = userField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let pass = passField.stringValue
         let client = clientField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let region = regionField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let bucket = bucketField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         picker.isEnabled = false
         let open: @Sendable (URL) async -> Void = { url in await MainActor.run { _ = NSWorkspace.shared.open(url) } }
         work = Task { @MainActor [weak self] in
@@ -245,6 +289,16 @@ final class AddAccountSheet: NSWindowController, NSTextFieldDelegate {
                 case .webdav:
                     self.setStatus("Connecting to the server…", busy: true)
                     result = try await CloudConnect.webdav(url: server, user: user, password: pass)
+                case .dropbox:
+                    if !client.isEmpty { CloudConnect.dropboxAppKey = client }
+                    self.setStatus("Sign in to Dropbox in your browser. Waiting…", busy: true)
+                    result = try await CloudConnect.dropbox(open: open)
+                case .s3:
+                    self.setStatus("Checking the keys…", busy: true)
+                    result = try await CloudConnect.s3(endpoint: server, region: region, bucket: bucket, accessKey: user, secretKey: pass)
+                case .immich:
+                    self.setStatus("Connecting to Immich…", busy: true)
+                    result = try await CloudConnect.immich(server: server, apiKey: pass)
                 }
                 try Task.checkCancellation()
                 var (record, secret) = result
@@ -293,6 +347,24 @@ enum CloudConnect {
             return s.isEmpty ? OneDrive.defaultClientID : s
         }
         set { UserDefaults.standard.set(newValue, forKey: "oneDriveClientID") }
+    }
+
+    /// Dropbox needs an app key: one the user pasted, or Cirrus's own once it's registered.
+    static var dropboxAppKey: String {
+        get { UserDefaults.standard.string(forKey: "dropboxAppKey") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "dropboxAppKey") }
+    }
+
+    static func dropbox(open: @escaping @Sendable (URL) async -> Void) async throws -> (CloudAccountRecord, CloudSecret) {
+        throw CloudError.unsupported("Dropbox isn’t available in this build yet.")
+    }
+
+    static func s3(endpoint: String, region: String, bucket: String, accessKey: String, secretKey: String) async throws -> (CloudAccountRecord, CloudSecret) {
+        throw CloudError.unsupported("S3 storage isn’t available in this build yet.")
+    }
+
+    static func immich(server: String, apiKey: String) async throws -> (CloudAccountRecord, CloudSecret) {
+        throw CloudError.unsupported("Immich isn’t available in this build yet.")
     }
 
     static func looksLikeClientID(_ s: String) -> Bool {

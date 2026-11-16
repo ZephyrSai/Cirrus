@@ -6,7 +6,10 @@ import Foundation
 
 /// The services Cirrus can connect to beside iCloud.
 public enum CloudProvider: String, Codable, Sendable, CaseIterable {
-    case nextcloud, webdav, onedrive, googleDrive
+    case nextcloud, webdav, onedrive, googleDrive, dropbox, s3, immich
+
+    /// A photo library (Immich) rather than files: it gets Cirrus's Photos views, not the file browser.
+    public var isPhotoLibrary: Bool { self == .immich }
 
     public var displayName: String {
         switch self {
@@ -14,6 +17,9 @@ public enum CloudProvider: String, Codable, Sendable, CaseIterable {
         case .webdav: return "WebDAV"
         case .onedrive: return "OneDrive"
         case .googleDrive: return "Google Drive"
+        case .dropbox: return "Dropbox"
+        case .s3: return "S3 Storage"
+        case .immich: return "Immich"
         }
     }
 
@@ -24,6 +30,9 @@ public enum CloudProvider: String, Codable, Sendable, CaseIterable {
         case .webdav: return "server.rack"
         case .onedrive: return "cloud"
         case .googleDrive: return "triangle"
+        case .dropbox: return "shippingbox"
+        case .s3: return "cylinder.split.1x2"
+        case .immich: return "photo.stack"
         }
     }
 
@@ -34,6 +43,9 @@ public enum CloudProvider: String, Codable, Sendable, CaseIterable {
         case .webdav: return "Deleted Items"
         case .onedrive: return "Recycle Bin"
         case .googleDrive: return "Trash"
+        case .dropbox: return "Deleted Files"
+        case .s3: return "Deleted Items"
+        case .immich: return "Trash"
         }
     }
 }
@@ -46,13 +58,18 @@ public struct CloudAccountRecord: Codable, Hashable, Sendable {
     public var title: String
     /// Nextcloud: the server's base URL (https://cloud.example.com). WebDAV: the full WebDAV folder URL.
     public var server: String?
-    /// Nextcloud / WebDAV login name.
+    /// Nextcloud / WebDAV login name; S3 access key ID.
     public var username: String?
     public var added: Date
+    /// Service-specific settings that aren't secret (S3: "region", "bucket", "pathStyle" = "1"/"0"). Optional, so
+    /// records saved by earlier versions still decode.
+    public var options: [String: String]?
 
-    public init(id: String = "", provider: CloudProvider, title: String, server: String? = nil, username: String? = nil, added: Date = Date()) {
+    public init(id: String = "", provider: CloudProvider, title: String, server: String? = nil, username: String? = nil,
+                added: Date = Date(), options: [String: String]? = nil) {
         self.id = id.isEmpty ? Self.newID(provider) : id
         self.provider = provider; self.title = title; self.server = server; self.username = username; self.added = added
+        self.options = options
     }
 
     public static func newID(_ p: CloudProvider) -> String { "cloud:" + p.rawValue + ":" + UUID().uuidString.lowercased() }
@@ -61,6 +78,7 @@ public struct CloudAccountRecord: Codable, Hashable, Sendable {
 /// What a cloud account needs to sign back in. Kept only in the Keychain.
 public struct CloudSecret: Codable, Sendable, Equatable {
     /// Nextcloud / WebDAV: an app password (Nextcloud's browser login creates one; WebDAV: what the user typed).
+    /// S3: the secret access key. Immich: the API key.
     public var password: String?
     /// OAuth services (OneDrive, Google Drive).
     public var refreshToken: String?
@@ -178,6 +196,17 @@ public enum CloudBackends {
         case .nextcloud, .webdav: return try WebDAV.make(record: r, secret: secret, transport: transport)
         case .onedrive: return try OneDrive.make(record: r, secret: secret, transport: transport)
         case .googleDrive: return try GoogleDriveCloud.make(record: r, secret: secret, transport: transport)
+        case .dropbox: return try Dropbox.make(record: r, secret: secret, transport: transport)
+        case .s3: return try S3Storage.make(record: r, secret: secret, transport: transport)
+        case .immich: throw CloudError.unsupported("Immich is a photo library, not a file drive.")
+        }
+    }
+
+    /// Photo-library services (`provider.isPhotoLibrary`).
+    public static func makePhotos(_ r: CloudAccountRecord, secret: CloudSecret) throws -> PhotosBackend {
+        switch r.provider {
+        case .immich: return try Immich.make(record: r, secret: secret, transport: transport)
+        default: throw CloudError.unsupported("\(r.provider.displayName) isn’t a photo library.")
         }
     }
 
@@ -188,7 +217,14 @@ public enum CloudBackends {
         case .nextcloud, .webdav: return WebDAV.demo(p)
         case .onedrive: return OneDrive.demo()
         case .googleDrive: return GoogleDriveCloud.demo()
+        case .dropbox: return Dropbox.demo()
+        case .s3: return S3Storage.demo()
+        case .immich: return nil
         }
+    }
+
+    public static func demoPhotos(_ p: CloudProvider) -> (record: CloudAccountRecord, photos: PhotosBackend)? {
+        p == .immich ? Immich.demo() : nil
     }
     #endif
 }

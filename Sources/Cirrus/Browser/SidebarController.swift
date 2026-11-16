@@ -68,10 +68,16 @@ final class SidebarController: NSViewController, NSOutlineViewDataSource, NSOutl
         case .googleDrive: return .systemGreen
         case .nextcloud: return .systemTeal
         case .webdav: return .systemGray
+        case .dropbox: return .systemBlue
+        case .s3: return .systemOrange
+        case .immich: return .systemPurple
         }
     }
 
-    static func libraryID(_ a: Account) -> String { a.kind == .mac ? "local" : (a.kind == .demo ? "demo" : "PrimarySync") }
+    static func libraryID(_ a: Account) -> String {
+        if a.kind == .cloud { return Catalog.shared.libraryIndex[a.id]?.first?.id ?? (a.provider?.rawValue ?? "cloud") }
+        return a.kind == .mac ? "local" : (a.kind == .demo ? "demo" : "PrimarySync")
+    }
     static func allPhotosID(_ a: Account) -> String { a.kind == .mac ? "smart:all" : "smart:All Photos" }
 
     func rebuild() {
@@ -140,6 +146,11 @@ final class SidebarController: NSViewController, NSOutlineViewDataSource, NSOutl
                 root.toolTip = "\(r.provider.displayName) — \(a.title)" + (r.server.map { "\n\($0)" } ?? "")
                 s.children.append(root)
                 if a.canListTrash { s.children.append(SidebarNode(.location(.driveTrash(a.id)), r.provider.deletedTitle, "trash", tint: .secondaryLabelColor)) }
+            }
+            if a.photos != nil {
+                let lib = Self.libraryID(a)
+                s.children.append(SidebarNode(.location(.album(a.id, lib, Self.allPhotosID(a))), r.provider.displayName, r.provider.symbol, tint: Self.tint(r.provider)))
+                s.children.append(SidebarNode(.location(.photos(a.id, lib, nil)), "Albums", "rectangle.stack", tint: Self.tint(r.provider)))
             }
             out.append(s)
             lastCloud = s

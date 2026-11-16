@@ -106,11 +106,17 @@ public final class AccountManager {
         for r in CloudStore.records() { list.append(makeCloudAccount(r, secret: CloudStore.secret(r.id))) }
         #if DEBUG
         if demoMode && ProcessInfo.processInfo.environment["CIRRUS_NO_DEMO_CLOUDS"] == nil {
-            for p in [CloudProvider.onedrive, .googleDrive, .nextcloud, .webdav] {
+            for p in [CloudProvider.onedrive, .googleDrive, .dropbox, .nextcloud, .webdav, .s3] {
                 guard let (r, backend) = CloudBackends.demo(p) else { continue }
                 let a = Account(id: r.id, kind: .cloud, title: r.title)
                 a.cloud = r
                 a.drive = backend
+                list.append(a)
+            }
+            if let (r, photos) = CloudBackends.demoPhotos(.immich) {
+                let a = Account(id: r.id, kind: .cloud, title: r.title)
+                a.cloud = r
+                a.photos = photos
                 list.append(a)
             }
         }
@@ -218,6 +224,7 @@ public final class AccountManager {
         a.cloud = r
         guard let secret else { a.status = .needsSignIn; return a }
         do {
+            if r.provider.isPhotoLibrary { a.photos = try CloudBackends.makePhotos(r, secret: secret); return a }
             let backend = try CloudBackends.make(r, secret: secret)
             // OAuth services hand out new refresh tokens now and then: keep the newest in the Keychain.
             if let rot = backend as? CloudTokenRotating {

@@ -8,7 +8,9 @@ enum Limits {
         switch p {
         case .onedrive: return (250_000_000_000, "larger than OneDrive’s 250 GB file limit")
         case .googleDrive: return (5_000_000_000_000, "larger than Google Drive’s 5 TB file limit")
-        case .nextcloud, .webdav: return nil
+        case .dropbox: return (2_000_000_000_000, "larger than Dropbox’s 2 TB file limit")
+        case .s3: return (5_000_000_000_000, "larger than S3’s 5 TB object limit")
+        case .nextcloud, .webdav, .immich: return nil
         }
     }
     /// Apple: iCloud Drive stores files of 50 GB or less (and within your storage plan).
