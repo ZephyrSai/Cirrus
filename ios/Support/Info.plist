@@ -32,6 +32,8 @@
 	<string>$(CIRRUS_TESTER)</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Cirrus shows the photos on this device, exports their originals to a folder you choose, and copies the ones you pick to iCloud Drive.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Cirrus connects to the Nextcloud, Immich, WebDAV or S3 servers you add, including ones on your home network.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Cirrus uses Face ID to unlock the Apple ID password you chose to save on this device.</string>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>

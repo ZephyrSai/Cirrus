@@ -342,6 +342,7 @@ enum CloudSignIn {
     }
 
     static func immich(server: String, apiKey: String) async throws -> (CloudAccountRecord, CloudSecret) {
-        throw CloudError.unsupported("Immich isn’t available in this build yet.")
+        let r = try await Immich.connect(server: server, apiKey: apiKey, transport: CloudBackends.transport)
+        return (r.record, r.secret)
     }
 }

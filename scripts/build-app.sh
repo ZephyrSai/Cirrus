@@ -54,6 +54,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSCameraUsageDescription</key><string>Cirrus browses and imports photos from connected iPhones, iPads and cameras.</string>
   <key>NSRemovableVolumesUsageDescription</key><string>Cirrus browses external drives and backs up iCloud to them.</string>
   <key>NSNetworkVolumesUsageDescription</key><string>Cirrus can browse and back up to network drives.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>Cirrus connects to the Nextcloud, Immich, WebDAV or S3 servers you add, including ones on your home network.</string>
   <key>NSDesktopFolderUsageDescription</key><string>Cirrus browses your Desktop like Finder.</string>
   <key>NSDocumentsFolderUsageDescription</key><string>Cirrus browses your Documents like Finder.</string>
   <key>NSDownloadsFolderUsageDescription</key><string>Cirrus saves downloads from iCloud to your Downloads folder.</string>

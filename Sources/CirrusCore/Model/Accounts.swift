@@ -100,7 +100,7 @@ public final class AccountManager {
         if demoMode {
             CloudStore.inMemory = true
             // Accounts added from the sheet in demo mode talk to the fake servers too.
-            CloudBackends.transport = [FakeGoogleServer.self, FakeGraphServer.self, FakeWebDAVServer.self]
+            CloudBackends.transport = [FakeGoogleServer.self, FakeGraphServer.self, FakeWebDAVServer.self, FakeImmichServer.self]
         }
         #endif
         for r in CloudStore.records() { list.append(makeCloudAccount(r, secret: CloudStore.secret(r.id))) }

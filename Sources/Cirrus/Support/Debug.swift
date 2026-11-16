@@ -69,6 +69,13 @@ enum Debug {
         default:
             if spec.hasPrefix("local:") { return .local((String(spec.dropFirst(6)) as NSString).expandingTildeInPath) }
             if spec.hasPrefix("drive:"), let demo { return .drive(demo.id, "FOLDER::demo::" + spec.dropFirst(6)) }
+            // cloudphotos:<provider> / cloudalbums:<provider>: a photo-library service (Immich).
+            if spec.hasPrefix("cloudphotos:") || spec.hasPrefix("cloudalbums:"),
+               let p = CloudProvider(rawValue: String(spec.split(separator: ":", maxSplits: 1)[1])),
+               let a = am.cloudAccounts.first(where: { $0.provider == p && $0.photos != nil }) {
+                let lib = SidebarController.libraryID(a)
+                return spec.hasPrefix("cloudphotos:") ? .album(a.id, lib, "smart:All Photos") : .photos(a.id, lib, nil)
+            }
             // cloud:<provider> / cloudtrash:<provider>: the first connected account of that service.
             if spec.hasPrefix("cloud:") || spec.hasPrefix("cloudtrash:"),
                let p = CloudProvider(rawValue: String(spec.split(separator: ":", maxSplits: 1)[1])),

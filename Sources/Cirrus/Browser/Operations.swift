@@ -753,7 +753,8 @@ final class Ops {
             if acct.kind != .mac {
                 let a = NSAlert()
                 a.messageText = assets.count == 1 ? "Delete this photo?" : "Delete \(assets.count) photos?"
-                a.informativeText = "They’ll move to Recently Deleted in iCloud Photos, on all your devices, and can be recovered for 30 days."
+                a.informativeText = acct.isICloud ? "They’ll move to Recently Deleted in iCloud Photos, on all your devices, and can be recovered for 30 days."
+                    : "They’ll move to \(acct.provider?.displayName ?? "the service")’s \(acct.deletedTitle), where you can put them back."
                 a.addButton(withTitle: "Delete")
                 a.addButton(withTitle: "Cancel")
                 a.buttons[0].hasDestructiveAction = true
