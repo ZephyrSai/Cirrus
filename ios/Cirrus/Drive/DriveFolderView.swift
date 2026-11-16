@@ -75,9 +75,9 @@ struct DriveFolderView: View {
             }
             .confirmationDialog(trashTitle, isPresented: Binding(get: { confirmTrash != nil }, set: { if !$0 { confirmTrash = nil } }),
                                 titleVisibility: .visible) {
-                Button("Move to Recently Deleted", role: .destructive) { if let n = confirmTrash { Task { await trash(n) } } }
+                Button("Move to \(account.deletedTitle)", role: .destructive) { if let n = confirmTrash { Task { await trash(n) } } }
             } message: {
-                Text("You can put items back from Recently Deleted for 30 days.")
+                Text(account.isICloud ? "You can put items back from Recently Deleted for 30 days." : "You can put items back from \(account.deletedTitle).")
             }
             .confirmationDialog(uploadTitle, isPresented: Binding(get: { uploadCheck != nil }, set: { if !$0 { uploadCheck = nil } }),
                                 titleVisibility: .visible) {
@@ -173,7 +173,7 @@ struct DriveFolderView: View {
                     }
                 }
             Text(node.name).font(.caption).lineLimit(2).multilineTextAlignment(.center)
-            Text(node.isFolder ? itemCount(node) : node.size.byteString).font(.caption2).foregroundStyle(.secondary)
+            Text(node.isFolder ? itemCount(node) : (node.zone.hasPrefix("application/vnd.google-apps.") ? "" : node.size.byteString)).font(.caption2).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
@@ -192,6 +192,8 @@ struct DriveFolderView: View {
     func detail(_ n: DriveNode) -> String {
         let date = n.modified.map { $0.formatted(date: .abbreviated, time: .shortened) }
         if n.isFolder { return [date, itemCount(n)].compactMap { $0 }.joined(separator: " · ") }
+        // Google Docs, Sheets and Slides have no size until they're exported.
+        if n.zone.hasPrefix("application/vnd.google-apps.") { return date ?? "" }
         return [date, n.size.byteString].compactMap { $0 }.joined(separator: " · ")
     }
 
@@ -216,7 +218,7 @@ struct DriveFolderView: View {
                 .disabled(state.readOnly)
         }
         Divider()
-        Button(role: .destructive) { confirmTrash = nodes } label: { Label("Move to Recently Deleted", systemImage: "trash") }
+        Button(role: .destructive) { confirmTrash = nodes } label: { Label("Move to \(account.deletedTitle)", systemImage: "trash") }
             .disabled(state.readOnly || nodes.contains { $0.isAppLibrary })
     }
 
@@ -270,21 +272,21 @@ struct DriveFolderView: View {
 
     var trashTitle: String {
         let n = confirmTrash?.count ?? 0
-        if n == 1, let name = confirmTrash?.first?.name { return "Move “\(name)” to Recently Deleted?" }
-        return "Move \(n) items to Recently Deleted?"
+        if n == 1, let name = confirmTrash?.first?.name { return "Move “\(name)” to \(account.deletedTitle)?" }
+        return "Move \(n) items to \(account.deletedTitle)?"
     }
 
     var uploadTitle: String {
         guard let c = uploadCheck else { return "" }
         if !c.conflicts.isEmpty { return c.conflicts.count == 1 ? "“\(c.conflicts[0])” already exists here" : "\(c.conflicts.count) items already exist here" }
-        return "Upload \(c.bytes.byteString) to iCloud Drive?"
+        return "Upload \(c.bytes.byteString) to \(account.driveTitle)?"
     }
 
     var uploadMessage: String {
         guard let c = uploadCheck else { return "" }
         var lines = [String]()
-        if !c.conflicts.isEmpty { lines.append("Replace uploads the new copy first, then moves the old one to Recently Deleted. Keep Both adds a number to the new name.") }
-        if let free = c.iCloudFree { lines.append("\(c.bytes.byteString) to upload, \(free.byteString) free in iCloud.") }
+        if !c.conflicts.isEmpty { lines.append("Replace uploads the new copy first, then moves the old one to \(account.deletedTitle). Keep Both adds a number to the new name.") }
+        if let free = c.iCloudFree { lines.append("\(c.bytes.byteString) to upload, \(free.byteString) free in \(account.isICloud ? "iCloud" : account.driveTitle).") }
         lines += c.blocked + c.cautions
         return lines.joined(separator: "\n\n")
     }
@@ -369,31 +371,31 @@ struct DriveFolderView: View {
     func trash(_ nodes: [DriveNode]) async {
         confirmTrash = nil
         guard let drive = account.drive else { return }
-        busy = "Moving to Recently Deleted…"
+        busy = "Moving to \(account.deletedTitle)…"
         defer { busy = nil }
         do {
             try await drive.trash(nodes)
             selecting = false; selected.removeAll()
             model.invalidate()
             await model.load(force: true)
-            state.show(nodes.count == 1 ? "Moved “\(nodes[0].name)” to Recently Deleted" : "Moved \(nodes.count) items to Recently Deleted")
+            state.show(nodes.count == 1 ? "Moved “\(nodes[0].name)” to \(account.deletedTitle)" : "Moved \(nodes.count) items to \(account.deletedTitle)")
         } catch {
-            alert = AlertInfo(title: "Couldn’t Move to Recently Deleted", message: error.localizedDescription)
+            alert = AlertInfo(title: "Couldn’t Move to \(account.deletedTitle)", message: error.localizedDescription)
         }
     }
 
     func startUpload(_ files: [Ops.UploadFile]) {
         guard !files.isEmpty else { return }
         Task {
-            busy = "Checking iCloud storage…"
+            busy = "Checking \(account.isICloud ? "iCloud" : account.driveTitle) storage…"
             let check = await Ops.checkUpload(files, account: account, existing: model.nodes)
             busy = nil
             if check.files.isEmpty {
                 alert = AlertInfo(title: "Nothing to Upload", message: check.blocked.joined(separator: "\n"))
                 discardStaged(files)
             } else if !check.fits {
-                alert = AlertInfo(title: "Not Enough iCloud Storage",
-                                  message: "These files need \(check.bytes.byteString), and \((check.iCloudFree ?? 0).byteString) is free in iCloud. Nothing was uploaded.")
+                alert = AlertInfo(title: account.isICloud ? "Not Enough iCloud Storage" : "Not Enough Space in \(account.driveTitle)",
+                                  message: "These files need \(check.bytes.byteString), and \((check.iCloudFree ?? 0).byteString) is free in \(account.isICloud ? "iCloud" : account.driveTitle). Nothing was uploaded.")
                 discardStaged(files)
             } else {
                 uploadCheck = check

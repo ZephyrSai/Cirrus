@@ -33,10 +33,14 @@ final class AppState {
     var toast: String?
 
     struct SignInRequest: Identifiable { let id = UUID(); var appleID: String? }
+    /// "Add Account" for other clouds; `reconnect` signs an existing one in again.
+    struct AddCloudRequest: Identifiable { let id = UUID(); var reconnect: CloudAccountRecord? = nil }
+    var addCloud: AddCloudRequest?
 
     private var observers: [NSObjectProtocol] = []
 
     var webAccounts: [Account] { accounts.filter { $0.kind == .web || $0.kind == .demo } }
+    var cloudAccounts: [Account] { accounts.filter { $0.kind == .cloud } }
     var deviceAccount: Account? { accounts.first { $0.kind == .mac } }
 
     func start() {
@@ -56,8 +60,7 @@ final class AppState {
     }
 
     func reloadAccounts() {
-        // Other clouds (OneDrive, Nextcloud…) are Mac-only for now: the iPhone app lists iCloud accounts.
-        accounts = AccountManager.shared.accounts.filter { $0.isICloud }
+        accounts = AccountManager.shared.accounts
         if let device = deviceAccount {
             device.title = UIDevice.current.userInterfaceIdiom == .pad ? "This iPad" : "This iPhone"
         }

@@ -65,6 +65,15 @@ final class Thumbs {
     }
 
     func drive(_ account: Account, _ node: DriveNode, px: Int) async -> UIImage? {
+        // Services with server thumbnails (OneDrive, Google Drive, Dropbox, Nextcloud) make them for any size.
+        if let cloud = account.drive as? CloudDriveBackend, !node.isFolder,
+           let t = UTType(filenameExtension: (node.name as NSString).pathExtension),
+           t.conforms(to: .image) || t.conforms(to: .movie) || t.conforms(to: .pdf) {
+            let key = Self.driveKey(account, node) + "|s\(px)"
+            if let c = cached(key) { return c }
+            let scale = Int(UIScreen.main.scale)
+            if let img = await run(key, { (try? await cloud.thumbnail(node, maxPixel: px * scale)).flatMap { UIImage(data: $0) } }) { return img }
+        }
         guard Self.wantsDrivePreview(node) else { return nil }
         let key = Self.driveKey(account, node) + "|\(px)"
         if let c = cached(key) { return c }

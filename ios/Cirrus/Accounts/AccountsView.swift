@@ -5,6 +5,7 @@ import SwiftUI
 struct AccountsView: View {
     @Environment(AppState.self) private var state
     @State private var confirmSignOut: Account?
+    @State private var confirmRemove: Account?
 
     var body: some View {
         let _ = state.accountsVersion
@@ -15,6 +16,34 @@ struct AccountsView: View {
             } footer: {
                 Text("Each Apple ID gets its own iCloud Drive, Photos and Recently Deleted in the sidebar, even ones that aren’t the Apple ID this device is signed in to.")
             }
+            Section {
+                ForEach(state.cloudAccounts, id: \.id) { a in
+                    HStack {
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(a.title)
+                                Text(a.provider?.displayName ?? "").font(.caption).foregroundStyle(.secondary)
+                            }
+                        } icon: { Image(systemName: a.provider?.symbol ?? "cloud") }
+                        Spacer()
+                        if a.status != .ready {
+                            Button("Sign In") { state.addCloud = .init(reconnect: a.cloud) }.buttonStyle(.borderless)
+                        }
+                    }
+                    .swipeActions {
+                        Button(role: .destructive) { confirmRemove = a } label: { Label("Remove", systemImage: "minus.circle") }
+                    }
+                    .contextMenu {
+                        Button("Sign In Again") { state.addCloud = .init(reconnect: a.cloud) }
+                        Button("Remove from Cirrus", role: .destructive) { confirmRemove = a }
+                    }
+                }
+                Button { state.addCloud = .init() } label: { Label("Add Other Cloud", systemImage: "plus.circle") }
+            } header: {
+                Text("Other Clouds")
+            } footer: {
+                Text("OneDrive, Google Drive, Dropbox, Nextcloud, Immich, S3 storage and WebDAV servers. Sign-ins stay in this device’s Keychain.")
+            }
             if let device = state.deviceAccount {
                 Section(device.title) {
                     Label("Photos library on this device", systemImage: "photo.on.rectangle.angled")
@@ -22,6 +51,19 @@ struct AccountsView: View {
             }
         }
         .navigationTitle("Accounts")
+        .confirmationDialog("Remove \(confirmRemove?.provider?.displayName ?? "") (\(confirmRemove?.title ?? ""))?",
+                            isPresented: Binding(get: { confirmRemove != nil }, set: { if !$0 { confirmRemove = nil } }), titleVisibility: .visible) {
+            Button("Remove", role: .destructive) {
+                if let a = confirmRemove {
+                    if state.selection?.accountID == a.id { state.selection = .accounts }
+                    DriveFolderModel.memory = DriveFolderModel.memory.filter { !$0.key.hasPrefix(a.id + "|") }
+                    AccountManager.shared.removeCloud(a)
+                    state.show("Removed \(a.title)")
+                }
+            }
+        } message: {
+            Text("Cirrus forgets this sign-in and what it cached. Nothing is deleted from the service.")
+        }
         .confirmationDialog("Sign out of \(confirmSignOut?.displayTitle ?? "")?", isPresented: Binding(get: { confirmSignOut != nil }, set: { if !$0 { confirmSignOut = nil } }),
                             titleVisibility: .visible) {
             Button("Sign Out", role: .destructive) {

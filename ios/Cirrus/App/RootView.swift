@@ -16,6 +16,9 @@ struct RootView: View {
         .sheet(item: $state.signIn) { req in
             SignInView(prefill: req.appleID)
         }
+        .sheet(item: $state.addCloud) { req in
+            AddCloudAccountView(reconnect: req.reconnect)
+        }
         .overlay(alignment: .bottom) {
             if let t = state.toast {
                 Text(t)
@@ -75,6 +78,32 @@ struct SidebarView: View {
                     Text(acct.displayTitle)
                 }
             }
+            ForEach(state.cloudAccounts, id: \.id) { acct in
+                if let p = acct.provider {
+                    Section {
+                        if acct.status != .ready {
+                            Button { state.addCloud = .init(reconnect: acct.cloud) } label: {
+                                Label("Sign In Again", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                            }
+                        }
+                        if acct.drive != nil {
+                            Label(p.displayName, systemImage: p.symbol).tag(Destination.drive(acct.id))
+                            if acct.canListTrash { Label(p.deletedTitle, systemImage: "trash").tag(Destination.driveTrash(acct.id)) }
+                        }
+                        if acct.photos != nil {
+                            Label(p.displayName, systemImage: p.symbol).tag(Destination.photos(acct.id))
+                            Label("Albums", systemImage: "rectangle.stack").tag(Destination.albums(acct.id))
+                        }
+                    } header: {
+                        Text(acct.title)
+                    }
+                }
+            }
+            Section(state.cloudAccounts.isEmpty ? "Other Clouds" : "") {
+                Button { state.addCloud = .init() } label: {
+                    Label("Add Account", systemImage: "plus.circle")
+                }
+            }
             if let device = state.deviceAccount, device.photos != nil {
                 Section("On \(device.title)") {
                     Label("Photos", systemImage: "photo.on.rectangle.angled").tag(Destination.photos(device.id))
@@ -101,8 +130,11 @@ struct SidebarView: View {
         .navigationTitle("Cirrus")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button { state.signIn = .init() } label: { Image(systemName: "person.crop.circle.badge.plus") }
-                    .accessibilityLabel("Add Apple ID")
+                Menu {
+                    Button { state.signIn = .init() } label: { Label("Add Apple ID", systemImage: "applelogo") }
+                    Button { state.addCloud = .init() } label: { Label("Add Other Cloud", systemImage: "cloud") }
+                } label: { Image(systemName: "person.crop.circle.badge.plus") }
+                .accessibilityLabel("Add Account")
             }
         }
     }
@@ -133,7 +165,7 @@ struct DetailView: View {
     @ViewBuilder var content: some View {
         switch selection {
         case .drive(let id):
-            if let a = state.account(id), let drive = a.drive { DriveFolderView(account: a, folderID: drive.rootID, title: "iCloud Drive") } else { missing }
+            if let a = state.account(id), let drive = a.drive { DriveFolderView(account: a, folderID: drive.rootID, title: a.driveTitle) } else { missing }
         case .driveTrash(let id):
             if let a = state.account(id) { DriveTrashView(account: a) } else { missing }
         case .photos(let id):

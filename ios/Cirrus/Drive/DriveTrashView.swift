@@ -17,8 +17,8 @@ struct DriveTrashView: View {
             if !loaded {
                 ProgressView("Loading…")
             } else if nodes.isEmpty {
-                ContentUnavailableView("No Recently Deleted Items", systemImage: "trash",
-                                       description: Text(error ?? "Items you move to Recently Deleted stay here for 30 days."))
+                ContentUnavailableView(account.isICloud ? "No Recently Deleted Items" : "\(account.deletedTitle) Is Empty", systemImage: "trash",
+                                       description: Text(error ?? (account.isICloud ? "Items you move to Recently Deleted stay here for 30 days." : "Items you delete in Cirrus wait here until you put them back.")))
             } else {
                 List(selection: $selected) {
                     Section {
@@ -37,13 +37,14 @@ struct DriveTrashView: View {
                             }
                         }
                     } footer: {
-                        Text("Put Back returns items to where they were. To erase them for good, use iCloud.com or the Files app; Cirrus never deletes permanently.")
+                        Text(account.isICloud ? "Put Back returns items to where they were. To erase them for good, use iCloud.com or the Files app; Cirrus never deletes permanently."
+                                              : "Put Back returns items to where they were. To erase them for good, use \(account.provider?.displayName ?? "the service")’s own app or website; Cirrus never deletes permanently.")
                     }
                 }
                 .environment(\.editMode, .constant(.active))
             }
         }
-        .navigationTitle("Recently Deleted")
+        .navigationTitle(account.deletedTitle)
         .toolbar {
             if !nodes.isEmpty {
                 ToolbarItem(placement: .bottomBar) {

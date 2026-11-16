@@ -36,6 +36,17 @@ public enum CloudProvider: String, Codable, Sendable, CaseIterable {
         }
     }
 
+    /// The largest file the service documents (self-hosted servers set their own: nil).
+    public var maxFileSize: Int64? {
+        switch self {
+        case .onedrive: return 250_000_000_000
+        case .googleDrive: return 5_000_000_000_000
+        case .dropbox: return 2_000_000_000_000
+        case .s3: return 5_000_000_000_000
+        case .nextcloud, .webdav, .immich: return nil
+        }
+    }
+
     /// What the service calls the place deleted items go.
     public var deletedTitle: String {
         switch self {

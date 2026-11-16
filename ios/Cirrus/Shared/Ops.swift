@@ -154,7 +154,7 @@ enum Ops {
 
     /// Free iCloud storage for a web account minus uploads already queued to it (nil when unknown).
     static func iCloudFree(_ account: Account) async -> Int64? {
-        guard account.kind == .web, let u = await account.storageUsage(), u.total > 0 else { return nil }
+        guard account.kind == .web || account.kind == .cloud, let u = await account.storageUsage(), u.total > 0 else { return nil }
         return max(0, u.available - TransferManager.shared.pendingBytes("icloud:" + account.id))
     }
 
@@ -267,8 +267,11 @@ enum Ops {
     static func checkUpload(_ files: [UploadFile], account: Account, existing: [DriveNode]) async -> UploadCheck {
         let names = Set(existing.map { $0.name.lowercased() })
         var blocked = [String](), cautions = [String]()
-        for f in files where f.size > Limits.iCloudDriveMax { blocked.append("“\(f.name)” is \(f.size.byteString), over iCloud Drive’s 50 GB file limit.") }
-        let ok = files.filter { $0.size <= Limits.iCloudDriveMax }
+        let limit = account.isICloud ? Limits.iCloudDriveMax : (account.provider?.maxFileSize ?? .max)
+        for f in files where f.size > limit {
+            blocked.append("“\(f.name)” is \(f.size.byteString), over \(account.driveTitle)’s \(limit.byteString) file limit.")
+        }
+        let ok = files.filter { $0.size <= limit }
         if account.kind == .web, let big = ok.first(where: { $0.size > Limits.iCloudWebSoft }) {
             cautions.append("“\(big.name)” is over 10 GB. Uploads that large through iCloud.com often fail; the Files app on a device signed in to this Apple ID is more reliable for it.")
         }

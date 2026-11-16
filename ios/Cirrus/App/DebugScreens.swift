@@ -8,7 +8,7 @@ import UIKit
 /// account can be taken headlessly in the Simulator, e.g.
 ///   SIMCTL_CHILD_CIRRUS_DEMO=1 SIMCTL_CHILD_CIRRUS_SCREEN=photos xcrun simctl launch booted <bundle id>
 /// Screens: sidebar, drive, drive-grid, drive-folder, quicklook, trash, photos, albums, album, photo, export,
-/// device-photos, transfers, backup, accounts, settings, signin, code.
+/// device-photos, transfers, backup, accounts, settings, signin, code, cloud-drive, cloud-onedrive, cloud-folder, cloud-add.
 @MainActor
 enum DebugScreens {
     static let env = ProcessInfo.processInfo.environment
@@ -70,6 +70,21 @@ enum DebugScreens {
             s.selection = .backup
             autoFolder = folder("Backup Drive")
         case "accounts": s.selection = .accounts
+        case "cloud-drive": s.selection = .drive("cloud:googleDrive:demo")
+        case "cloud-onedrive": s.selection = .drive("cloud:onedrive:demo")
+        case "cloud-folder":
+            s.selection = .drive("cloud:googleDrive:demo")
+            if let d = AccountManager.shared.account(id: "cloud:googleDrive:demo")?.drive {
+                Task { @MainActor in
+                    if let photos = try? await d.list(d.rootID).first(where: { $0.name == "Photos" }) {
+                        initialPath.append(DriveFolderRef(accountID: "cloud:googleDrive:demo", folderID: photos.id, title: "Photos"))
+                        s.selection = .accounts
+                        try? await Task.sleep(nanoseconds: 400_000_000)
+                        s.selection = .drive("cloud:googleDrive:demo")
+                    }
+                }
+            }
+        case "cloud-add": s.addCloud = .init()
         case "settings": s.selection = .settings
         case "signin", "code": s.signIn = .init(appleID: "taylor@example.com"); signInStep = screen
         default: break
