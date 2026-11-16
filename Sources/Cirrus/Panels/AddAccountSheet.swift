@@ -189,7 +189,7 @@ final class AddAccountSheet: NSWindowController, NSTextFieldDelegate {
         case .dropbox:
             info.stringValue = "Sign in to Dropbox in the browser. Cirrus gets access to your Dropbox files and keeps the sign-in in your Keychain."
             if CloudConnect.dropboxAppKey.isEmpty {
-                info.stringValue += "\n\nThis copy of Cirrus has no Dropbox app key yet. Create a free app at dropbox.com/developers/apps (Scoped access, Full Dropbox), give it the files.content and files.metadata permissions, then paste its App key here."
+                info.stringValue += "\n\nThis copy of Cirrus has no Dropbox app key yet. Create a free app at dropbox.com/developers/apps: Scoped access, Full Dropbox. Under Settings › OAuth 2, allow public clients and add the redirect URIs http://localhost:47823, http://localhost:47824 and http://localhost:47825. Under Permissions, tick account_info.read and files.metadata/files.content read and write, then Submit. Paste its App key here (no secret needed)."
                 clientField.placeholderString = "App key"
                 formStack.addArrangedSubview(field("App key:", clientField))
             }
@@ -351,12 +351,25 @@ enum CloudConnect {
 
     /// Dropbox needs an app key: one the user pasted, or Cirrus's own once it's registered.
     static var dropboxAppKey: String {
-        get { UserDefaults.standard.string(forKey: "dropboxAppKey") ?? "" }
+        get {
+            #if DEBUG
+            if AccountManager.shared.demoMode { return FakeDropboxServer.state.appKey }
+            #endif
+            let s = UserDefaults.standard.string(forKey: "dropboxAppKey") ?? ""
+            return s.isEmpty ? Dropbox.defaultAppKey : s
+        }
         set { UserDefaults.standard.set(newValue, forKey: "dropboxAppKey") }
     }
 
     static func dropbox(open: @escaping @Sendable (URL) async -> Void) async throws -> (CloudAccountRecord, CloudSecret) {
-        throw CloudError.unsupported("Dropbox isn’t available in this build yet.")
+        let key = dropboxAppKey
+        guard !key.isEmpty else { throw CloudError.notConfigured("Paste the App key of your Dropbox app first.") }
+        var open = open
+        #if DEBUG
+        if AccountManager.shared.demoMode { open = { url in await FakeDropboxServer.approve(url) } }
+        #endif
+        let r = try await Dropbox.signIn(appKey: key, transport: CloudBackends.transport, open: open)
+        return (r.record, r.secret)
     }
 
     static func s3(endpoint: String, region: String, bucket: String, accessKey: String, secretKey: String) async throws -> (CloudAccountRecord, CloudSecret) {

@@ -71,7 +71,7 @@ struct AddCloudAccountView: View {
         case .nextcloud: return "Approve Cirrus on your Nextcloud’s page. It gets an app password of its own, which you can revoke under Settings › Security."
         case .onedrive: return "Sign in with your Microsoft account (personal, work or school)." + (CloudSignIn.oneDriveClientID.isEmpty ? " This copy of Cirrus needs a Microsoft app ID: register a free app at entra.microsoft.com (any organization and personal accounts, “Mobile and desktop” redirect http://localhost) and paste its Application (client) ID." : "")
         case .googleDrive: return "Uses your own Google Cloud “Desktop app” client (free), the same kind “Move to or from Google” uses on the Mac. Google warns that the app isn’t verified: choose Continue."
-        case .dropbox: return "Sign in to Dropbox." + (CloudSignIn.dropboxAppKey.isEmpty ? " This copy of Cirrus needs a Dropbox app key: create a free app at dropbox.com/developers/apps (Scoped access, Full Dropbox) and paste its App key." : "")
+        case .dropbox: return "Sign in to Dropbox." + (CloudSignIn.dropboxAppKey.isEmpty ? " This copy of Cirrus needs a Dropbox app key: create a free app at dropbox.com/developers/apps (Scoped access, Full Dropbox; allow public clients; redirect URIs http://localhost:47823, :47824 and :47825; account_info.read and files read/write permissions) and paste its App key." : "")
         case .immich: return "Create an API key in Immich under Account Settings › API Keys and paste it here. Your timeline, albums and favorites appear in Cirrus’s Photos views."
         case .s3: return "Backblaze B2, Cloudflare R2, Wasabi, MinIO, AWS and other S3-compatible storage. Leave the bucket empty to see every bucket the key can list."
         case .webdav: return "ownCloud, OpenCloud, Synology, QNAP and other WebDAV servers. Use an app password if your server has them."
@@ -270,7 +270,13 @@ enum CloudSignIn {
     }
 
     static var dropboxAppKey: String {
-        get { UserDefaults.standard.string(forKey: "dropboxAppKey") ?? "" }
+        get {
+            #if DEBUG
+            if AccountManager.shared.demoMode { return FakeDropboxServer.state.appKey }
+            #endif
+            let s = UserDefaults.standard.string(forKey: "dropboxAppKey") ?? ""
+            return s.isEmpty ? Dropbox.defaultAppKey : s
+        }
         set { UserDefaults.standard.set(newValue, forKey: "dropboxAppKey") }
     }
 
@@ -334,7 +340,14 @@ enum CloudSignIn {
     }
 
     static func dropbox(open: @escaping @Sendable (URL) async -> Void) async throws -> (CloudAccountRecord, CloudSecret) {
-        throw CloudError.unsupported("Dropbox isn’t available in this build yet.")
+        let key = dropboxAppKey
+        guard !key.isEmpty else { throw CloudError.notConfigured("Paste the App key of your Dropbox app first.") }
+        var open = open
+        #if DEBUG
+        if AccountManager.shared.demoMode { open = { url in await FakeDropboxServer.approve(url) } }
+        #endif
+        let r = try await Dropbox.signIn(appKey: key, transport: CloudBackends.transport, open: open)
+        return (r.record, r.secret)
     }
 
     static func s3(endpoint: String, region: String, bucket: String, accessKey: String, secretKey: String) async throws -> (CloudAccountRecord, CloudSecret) {
