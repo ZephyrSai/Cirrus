@@ -19,7 +19,7 @@ A native app for browsing, moving, syncing and backing up iCloud Drive and iClou
 - **Back Up iCloud.** Checks space, then downloads everything as ordinary files and folders on a drive you choose. Photos are sorted into `YYYY/MM` folders with their Live Photo videos, edits and RAW files. Later runs fetch only what's new.
 - **iCloud ⇄ Google.** Move iCloud Drive and Photos to Google Drive and Google Photos, or bring Google Drive and a Google Takeout export of your photos into iCloud. Albums and favorites come along. Runs are resumable and incremental, and nothing is ever deleted.
 - **Two ways in.** Uses the Mac's own iCloud when it's signed in. Otherwise, sign in to one or more Apple IDs the way iCloud.com does, including two-factor and Advanced Data Protection approval.
-- **Other clouds beside iCloud (Mac).** Add OneDrive, Google Drive, Nextcloud or any WebDAV server (ownCloud, OpenCloud, Synology, QNAP…) with File › Add Account. They get the same browsing, drag and drop, transfer queue and sync jobs as iCloud Drive, server thumbnails, their own trash, and copies between any two of them. Nextcloud, OneDrive and Google sign in through your browser, so Cirrus never sees those passwords; Google Drive uses your own free Google Cloud client, and OneDrive a free Microsoft app registration.
+- **Other clouds beside iCloud.** Add OneDrive, Google Drive, Dropbox, Nextcloud, Immich, S3-compatible storage (Backblaze B2, Cloudflare R2, Wasabi, MinIO, AWS) or any WebDAV server (ownCloud, OpenCloud, Synology, QNAP…) with Add Account, on the Mac, iPhone and iPad. They get the same browsing, drag and drop, transfer queue and sync jobs as iCloud Drive, server thumbnails, their own trash, and copies or moves (⌘-drag) between any two of them; Immich gets the Photos views (timeline, albums, favorites). OneDrive, Google, Dropbox and Nextcloud sign in on their own page, so Cirrus never sees those passwords; Google Drive uses your own free Google Cloud client, OneDrive a free Microsoft app registration and Dropbox a free app key.
 
 ## Privacy and safety
 
@@ -38,7 +38,7 @@ A native app for browsing, moving, syncing and backing up iCloud Drive and iClou
 | **iPhone and iPad** (iOS 17+) | Build from source: SwiftUI app on the same Swift engine, with multiple Apple IDs, exports and backups to USB drives (`ios/`, `scripts/build-ios.sh`) |
 | **Windows 10/11** (x64 and Arm64) | Preview: WPF app with the same engine, ported to .NET |
 | **iCloud ⇄ Google Drive / Google Photos** | In the Mac and Windows apps (bring your own free Google Cloud OAuth client) |
-| **OneDrive, Google Drive, Nextcloud, WebDAV** | Mac app: browse, transfer and sync beside iCloud (File › Add Account) |
+| **OneDrive, Google Drive, Dropbox, Nextcloud, Immich, S3, WebDAV** | Mac, iPhone and iPad: browse, transfer and sync beside iCloud (Add Account) |
 
 ## Building
 
