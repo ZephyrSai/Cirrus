@@ -332,7 +332,8 @@ public partial class MainWindow : Window
         var loc = tab.Current;
         var caps = Catalog.Shared.Caps(loc);
         var one = sel.Count == 1 ? sel[0] : null;
-        var ro = SafetyPolicy.ReadOnlyICloud;
+        var ro = SafetyPolicy.ReadOnlyICloud && (loc.AccountRef?.IsICloud ?? true);   // read-only protects iCloud only
+        var pcaps = loc.AccountRef?.Photos?.Capabilities ?? (PhotoCapabilities)~0;     // an Immich key may allow less
         if (sel.Count > 0)
         {
             if (one?.Target is { } t)
@@ -361,22 +362,26 @@ public partial class MainWindow : Window
             {
                 m.Items.Add(new Separator());
                 var fav = sel.All(i => i.IsFavorite);
-                m.Items.Add(MenuItem(fav ? "Remove from Favorites" : "Favorite", fav ? "\uEB51" : "\uEB52", () => _ = Ops.SetFavorite(sel, !fav, loc, this), enabled: !ro));
+                m.Items.Add(MenuItem(fav ? "Remove from Favorites" : "Favorite", fav ? "\uEB51" : "\uEB52", () => _ = Ops.SetFavorite(sel, !fav, loc, this),
+                    enabled: !ro && pcaps.HasFlag(PhotoCapabilities.Favorite)));
                 var hidden = loc.Id == "smart:Hidden";
-                m.Items.Add(MenuItem(hidden ? "Unhide" : "Hide", "\uED1A", () => _ = Ops.SetHidden(sel, !hidden, loc, this), enabled: !ro));
+                var archive = loc.AccountRef is { IsICloud: false };   // Immich calls hiding "Archive"
+                m.Items.Add(MenuItem(archive ? (hidden ? "Unarchive" : "Archive") : (hidden ? "Unhide" : "Hide"), "\uED1A", () => _ = Ops.SetHidden(sel, !hidden, loc, this),
+                    enabled: !ro && pcaps.HasFlag(PhotoCapabilities.Hide)));
             }
             m.Items.Add(new Separator());
             if (caps.CanRename && one is not null && one.Album is null)
                 m.Items.Add(MenuItem("Rename", "\uE8AC", () => _ = Ops.Rename(one, loc, this), "F2"));
             if (caps.IsTrash)
             {
-                m.Items.Add(MenuItem("Recover", "\uE777", () => _ = Ops.Restore(sel, loc, this), enabled: !ro));
+                m.Items.Add(MenuItem("Recover", "\uE777", () => _ = Ops.Restore(sel, loc, this), enabled: !ro && (loc.Kind == LocKind.DriveTrash || pcaps.HasFlag(PhotoCapabilities.Restore))));
                 if (loc.Kind == LocKind.DriveTrash)
                     m.Items.Add(MenuItem("Delete Immediately…", "\uE74D", () => _ = Ops.DeleteForever(sel, loc, this), "Del", enabled: !ro));
             }
             else if (caps.CanTrash && sel.All(i => i.Album is null && i.Volume is null))
             {
-                var label = loc.Kind == LocKind.Local ? "Move to Recycle Bin" : sel.Any(i => i.IsPhoto) ? "Delete (to Recently Deleted)" : "Move to Recently Deleted";
+                var deleted = loc.AccountRef?.DeletedTitle ?? "Recently Deleted";
+                var label = loc.Kind == LocKind.Local ? "Move to Recycle Bin" : sel.Any(i => i.IsPhoto) ? $"Delete (to {deleted})" : $"Move to {deleted}";
                 m.Items.Add(MenuItem(label, "\uE74D", () => _ = Ops.Trash(sel, loc, this), "Del"));
             }
         }

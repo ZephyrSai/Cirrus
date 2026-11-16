@@ -16,6 +16,8 @@ static class CloudConnect
     public static Func<CloudProvider, Uri, Task>? DemoApprove { get; set; }
     /// <summary>Demo mode: the fake services' own OneDrive client ID and Dropbox app key.</summary>
     public static Func<CloudProvider, string?>? DemoAppID { get; set; }
+    /// <summary>Demo mode: the fake Google that serves the Google Drive cloud (signs in there too).</summary>
+    public static Cirrus.Fakes.FakeGoogle? DemoGoogleDrive { get; set; }
 #endif
 
     /// <summary>OneDrive needs a Microsoft app ID: one the user pasted, or Cirrus's own once it's registered.</summary>
@@ -86,10 +88,16 @@ static class CloudConnect
         if (GoogleAccounts.Shared.Client is not { LooksValid: true } client)
             throw CloudException.NotConfigured("Set up Google sign-in first (your own Google client, the same one “Move to or from Google” uses).");
         Func<Uri, Task> open = Opener(CloudProvider.GoogleDrive);
+        var transport = GoogleAccounts.Shared.Transport;
 #if DEBUG
-        if (GoogleAccounts.Shared.Fake is { } fake) open = u => fake.ApproveAsync(u);
+        if (DemoGoogleDrive is { } fake)
+        {
+            open = u => fake.ApproveAsync(u);
+            transport = fake;
+            client = new GoogleOAuthClient(fake.S.ClientID, fake.S.ClientSecret);
+        }
 #endif
-        return GoogleDriveCloud.SignInAsync(client, open, GoogleAccounts.Shared.Transport, null, ct);
+        return GoogleDriveCloud.SignInAsync(client, open, transport, null, ct);
     }
 
     public static Task<CloudConnection> Dropbox(CancellationToken ct)
