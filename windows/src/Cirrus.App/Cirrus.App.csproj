@@ -20,9 +20,9 @@
   <ItemGroup>
     <ProjectReference Include="..\Cirrus.Core\Cirrus.Core.csproj" />
   </ItemGroup>
-  <!-- Debug builds in demo mode (CIRRUS_DEMO=1) use the unit tests' fake Google; Release builds never contain it. -->
+  <!-- Debug builds in demo mode (CIRRUS_DEMO=1) use the unit tests' fake Google and fake clouds; Release builds never contain them. -->
   <ItemGroup Condition="'$(Configuration)' == 'Debug'">
-    <Compile Include="..\..\tests\Cirrus.Core.Tests\Fakes\FakeGoogle.cs" Link="Fakes\FakeGoogle.cs" />
+    <Compile Include="..\..\tests\Cirrus.Core.Tests\Fakes\Fake*.cs" LinkBase="Fakes" />
   </ItemGroup>
   <ItemGroup>
     <Resource Include="Assets\Cirrus.ico" />

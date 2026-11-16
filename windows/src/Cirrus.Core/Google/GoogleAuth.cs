@@ -14,6 +14,8 @@ public static class GoogleScopes
 {
     /// <summary>Only files and folders Cirrus creates (non-sensitive).</summary>
     public const string DriveFile = "https://www.googleapis.com/auth/drive.file";
+    /// <summary>Google Drive as a cloud in the sidebar: all of My Drive, read and write (a restricted scope: the user's own client).</summary>
+    public const string Drive = "https://www.googleapis.com/auth/drive";
     /// <summary>Add photos and videos to the library and create albums (no read access to the library).</summary>
     public const string PhotosAppend = "https://www.googleapis.com/auth/photoslibrary.appendonly";
     public static readonly IReadOnlyList<string> All = [DriveFile, PhotosAppend];
@@ -126,42 +128,89 @@ public sealed class Pkce
 }
 
 /// <summary>
-/// One-shot HTTP listener on 127.0.0.1 (never other interfaces) for the OAuth redirect. On Windows the port is bound
-/// exclusively, so no other program can listen on it as well.
+/// One-shot HTTP listener on the loopback interface (never other interfaces) for an OAuth redirect. On Windows the port is
+/// bound exclusively, so no other program can listen on it as well. Google uses http://127.0.0.1:&lt;random port&gt;; services
+/// that want http://localhost (OneDrive, Dropbox's fixed ports) get both 127.0.0.1 and ::1 bound, so whichever the browser
+/// resolves "localhost" to reaches Cirrus and nothing else.
 /// </summary>
 sealed class LoopbackReceiver : IDisposable
 {
-    readonly TcpListener _listener;
+    readonly List<TcpListener> _listeners = [];
+    readonly string _service;
+    readonly bool _localhostName;
     public int Port { get; }
 
-    public LoopbackReceiver()
+    /// <param name="service">Named on the page the browser shows and in errors ("Google", "OneDrive", "Dropbox").</param>
+    /// <param name="port">0: any free port. Otherwise that port, or a <see cref="GoogleException"/> when it's taken.</param>
+    /// <param name="localhostName">Redirect to http://localhost:&lt;port&gt; (and listen on IPv6 loopback too).</param>
+    public LoopbackReceiver(string service = "Google", int port = 0, bool localhostName = false)
     {
-        try
+        _service = service;
+        _localhostName = localhostName;
+        for (int attempt = 0; ; attempt++)
         {
-            _listener = new TcpListener(IPAddress.Loopback, 0);
-            if (OperatingSystem.IsWindows()) _listener.ExclusiveAddressUse = true;
-            _listener.Start(8);
-            Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
+            try
+            {
+                var v4 = Start(IPAddress.Loopback, port);
+                Port = ((IPEndPoint)v4.LocalEndpoint).Port;
+                if (localhostName && Socket.OSSupportsIPv6)
+                {
+                    try { Start(IPAddress.IPv6Loopback, Port); }
+                    catch (SocketException e) when (e.SocketErrorCode is SocketError.AddressNotAvailable or SocketError.AddressFamilyNotSupported) { }
+                }
+                return;
+            }
+            catch (SocketException)
+            {
+                Stop();
+                // A random port whose IPv6 twin is taken: try another one.
+                if (port == 0 && attempt < 8) continue;
+                throw GoogleException.BadResponse($"Couldn’t open a local port for the {service} sign-in.");
+            }
         }
-        catch (SocketException) { throw GoogleException.BadResponse("Couldn’t open a local port for the Google sign-in."); }
     }
 
-    public string RedirectURI => $"http://127.0.0.1:{Port}";
+    /// <summary>The receiver on <paramref name="port"/>, or null when that port is in use.</summary>
+    public static LoopbackReceiver? TryOpen(string service, int port, bool localhostName)
+    {
+        try { return new LoopbackReceiver(service, port, localhostName); } catch (GoogleException) { return null; }
+    }
 
-    public void Dispose() { try { _listener.Stop(); } catch { } }
+    TcpListener Start(IPAddress address, int port)
+    {
+        var l = new TcpListener(address, port);
+        if (OperatingSystem.IsWindows()) l.ExclusiveAddressUse = true;
+        _listeners.Add(l);
+        l.Start(8);
+        return l;
+    }
 
-    /// <summary>Waits until the browser delivers Google's redirect; answers other requests (favicon…) with 404.</summary>
+    public string RedirectURI => $"http://{(_localhostName ? "localhost" : "127.0.0.1")}:{Port}";
+
+    void Stop() { foreach (var l in _listeners) { try { l.Stop(); } catch { } } _listeners.Clear(); }
+
+    public void Dispose() => Stop();
+
+    /// <summary>Waits until the browser delivers the redirect; answers other requests (favicon…) with 404.</summary>
     public async Task<Dictionary<string, string>> WaitForRedirectAsync(TimeSpan timeout, CancellationToken ct)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(timeout);
+        var accepting = _listeners.ToDictionary(l => l, l => l.AcceptTcpClientAsync(deadline.Token).AsTask());
         while (true)
         {
             TcpClient c;
-            try { c = await _listener.AcceptTcpClientAsync(deadline.Token).ConfigureAwait(false); }
+            try
+            {
+                var done = await Task.WhenAny(accepting.Values).ConfigureAwait(false);
+                var listener = accepting.First(kv => kv.Value == done).Key;
+                c = await done.ConfigureAwait(false);
+                accepting[listener] = listener.AcceptTcpClientAsync(deadline.Token).AsTask();
+            }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw GoogleException.TimedOut(); }
             catch (OperationCanceledException) { throw GoogleException.Cancelled(); }
             catch (ObjectDisposedException) { throw GoogleException.Cancelled(); }
+            catch (SocketException) { throw GoogleException.Cancelled(); }
             using (c)
             {
                 Dictionary<string, string>? q = null;
@@ -176,7 +225,7 @@ sealed class LoopbackReceiver : IDisposable
                         await RespondAsync(stream, "404 Not Found", "Not found").ConfigureAwait(false);
                         continue;
                     }
-                    await RespondAsync(stream, "200 OK", Page(parsed.ContainsKey("code"))).ConfigureAwait(false);
+                    await RespondAsync(stream, "200 OK", Page(parsed.ContainsKey("code"), _service)).ConfigureAwait(false);
                     q = parsed;
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested && deadline.IsCancellationRequested) { throw GoogleException.TimedOut(); }
@@ -235,10 +284,10 @@ sealed class LoopbackReceiver : IDisposable
         await s.FlushAsync().ConfigureAwait(false);
     }
 
-    static string Page(bool ok)
+    static string Page(bool ok, string service)
     {
-        var title = ok ? "Cirrus is connected to Google" : "Cirrus wasn’t connected";
-        var text = ok ? "You can close this tab and go back to Cirrus." : "Google access wasn’t allowed. Go back to Cirrus to try again.";
+        var title = ok ? $"Cirrus is connected to {service}" : "Cirrus wasn’t connected";
+        var text = ok ? "You can close this tab and go back to Cirrus." : $"{service} access wasn’t allowed. Go back to Cirrus to try again.";
         return "<!doctype html><html><head><meta charset=\"utf-8\"><title>" + title + "</title>"
             + "<style>body{font:16px 'Segoe UI',system-ui,sans-serif;margin:15vh auto;max-width:28em;padding:0 1em;color:#222}"
             + "@media(prefers-color-scheme:dark){body{background:#1e1e1e;color:#eee}}h1{font-size:1.4em}</style></head>"
