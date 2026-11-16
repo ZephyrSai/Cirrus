@@ -277,11 +277,11 @@ enum Debug {
                 let idx = a[0].split(separator: ",").compactMap { Int($0) }.filter { $0 < p.shown.count }
                 await Ops.shared.transfer(idx.map { p.shown[$0] }, to: .local(URL(fileURLWithPath: a[1])), move: false, window: p.view.window)
             }
-        case "copyto":   // copyto:0,1>demo-drive  (cross-location transfer)
+        case "copyto", "moveto":   // copyto:0,1>demo-drive  (cross-location transfer; moveto moves)
             let a = arg.split(separator: ">", maxSplits: 1).map(String.init)
             if let p = pane, a.count == 2, let l = location(a[1]), let d = await Ops.shared.destination(for: l) {
                 let idx = a[0].split(separator: ",").compactMap { Int($0) }.filter { $0 < p.shown.count }
-                await Ops.shared.transfer(idx.map { p.shown[$0] }, to: d, move: false, window: p.view.window)
+                await Ops.shared.transfer(idx.map { p.shown[$0] }, to: d, move: cmd == "moveto", window: p.view.window)
             }
         case "favorite": pane?.toggleFavorite(nil)
         case "trash": pane?.moveToTrash(nil)

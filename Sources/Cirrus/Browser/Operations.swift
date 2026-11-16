@@ -314,7 +314,7 @@ final class Ops {
                     }
                 }
                 let rest = remote.filter { !same.contains($0) }
-                if !rest.isEmpty { await viaTemp(rest, to: dest, window: window) }
+                if !rest.isEmpty { await viaTemp(rest, to: dest, window: window, move: move) }
                 return
             }
         }
@@ -329,7 +329,7 @@ final class Ops {
                     }
                 }
                 let rest = remote.filter { !same.contains($0) }
-                if !rest.isEmpty { await viaTemp(rest, to: dest, window: window) }
+                if !rest.isEmpty { await viaTemp(rest, to: dest, window: window, move: move) }
                 return
             }
         }
@@ -337,11 +337,12 @@ final class Ops {
             await download(remote, to: dir, window: window, moveSource: move)
             return
         }
-        await viaTemp(remote, to: dest, window: window)
+        await viaTemp(remote, to: dest, window: window, move: move)
     }
 
-    /// Remote → remote across services: materialize into a temp folder, then deliver.
-    func viaTemp(_ items: [Item], to dest: Destination, window: NSWindow?) async {
+    /// Remote → remote across services: materialize into a temp folder, then deliver. A move (⌘-drag) also sends
+    /// the originals to their own service's trash, but only once every upload has finished without an error.
+    func viaTemp(_ items: [Item], to dest: Destination, window: NSWindow?, move: Bool = false) async {
         var items = items
         var pre = PreflightResult()
         pre.files = items.count
@@ -359,7 +360,7 @@ final class Ops {
             if acct.kind == .web { pre.available = await Preflight.iCloudFree(acct); pre.availableLabel = "in iCloud" }
         case .local: break
         }
-        guard await Preflight.confirm(pre, verb: "Copy", destination: "“\(dest.title)”", window: window) else { return }
+        guard await Preflight.confirm(pre, verb: move ? "Move" : "Copy", destination: "“\(dest.title)”", window: window) else { return }
         let blocked = pre.blockedNames
         items = items.filter { !blocked.contains($0.name) }
         guard !items.isEmpty else { return }
@@ -377,7 +378,35 @@ final class Ops {
             while !t.isFinished { try? await Task.sleep(nanoseconds: 300_000_000) }
             guard t.state == .done else { try? FileManager.default.removeItem(at: tmp); return }
             let files = (try? FileManager.default.contentsOfDirectory(at: tmp, includingPropertiesForKeys: nil)) ?? []
+            let before = Self.queueIDs
             await self.deliver(files: files, to: dest, move: false, window: window, cleanupTemp: tmp)
+            guard move else { return }
+            await self.retireMovedSources(items, uploads: Self.queueIDs.subtracting(before), window: window)
+        }
+    }
+
+    /// After a move between services: once all of `uploads` are done, send the drive originals to their trash.
+    func retireMovedSources(_ items: [Item], uploads: Set<UUID>, window: NSWindow?) async {
+        guard !uploads.isEmpty else { return }
+        while TransferManager.shared.transfers.contains(where: { uploads.contains($0.id) && !$0.isFinished }) {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+        }
+        let mine = TransferManager.shared.transfers.filter { uploads.contains($0.id) }
+        guard mine.count == uploads.count, mine.allSatisfy({ $0.state == .done }) else {
+            displayError(ICloudError.server("Some items didn’t copy, so the originals were kept where they were."), title: "Move not finished", window: window)
+            return
+        }
+        for (acct, group) in Dictionary(grouping: items.filter { $0.driveNode != nil }, by: { $0.account ?? "" }) {
+            guard let drive = AccountManager.shared.account(id: acct)?.drive else { continue }
+            let nodes = group.compactMap(\.driveNode)
+            do {
+                try await drive.trash(nodes)
+                Catalog.shared.forgetUploads(nodes.map(\.id))
+                for p in Set(nodes.compactMap(\.parentID)) { refresh(.drive(acct, p)) }
+                refresh(.driveTrash(acct))
+            } catch {
+                displayError(error, title: "Copied, but the originals couldn’t be moved to the trash", window: window)
+            }
         }
     }
 
