@@ -39,7 +39,7 @@ scripts/package-mac.sh               # universal app → build/dist/Cirrus-<vers
 | `CONFIG` | `release` | `debug` or `release`. |
 | `OUTPUT` | `build` | Output folder for `Cirrus.app`. |
 | `BUNDLE_ID` | `io.github.zephyrsai.cirrus` | Bundle identifier. |
-| `VERSION` | `1.0.0` | `CFBundleShortVersionString`. |
+| `VERSION` | `1.2.0` | `CFBundleShortVersionString`. |
 | `TESTER` | `0` | `1` = tester build: starts in read-only iCloud mode. |
 
 ### `scripts/package-mac.sh`
@@ -195,7 +195,7 @@ ARCHS=x64 SKIP_TESTS=1 scripts/build-windows.sh
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `VERSION` | `1.0.0` | Version stamped into `Cirrus.exe` and the zip names. |
+| `VERSION` | `1.2.0` | Version stamped into `Cirrus.exe` and the zip names. |
 | `TESTER` | `0` | `1` = tester build: starts in read-only iCloud mode. Zips are named `…-tester-win-<arch>.zip`. |
 | `ARCHS` | `x64 arm64` | Windows architectures to publish. |
 | `SKIP_TESTS` | `0` | `1` skips the Core unit tests. |

@@ -4,7 +4,7 @@
 #   2. publishes Cirrus.exe for win-x64 and win-arm64 (self-contained, single file, .NET runtime included),
 #   3. zips each to build/dist/Cirrus-<version>[-tester]-win-<arch>.zip and prints SHA-256s.
 #
-#   VERSION=1.0.0       version stamped into Cirrus.exe and the zip names
+#   VERSION=1.2.0       version stamped into Cirrus.exe and the zip names
 #   TESTER=1            tester build: starts in read-only iCloud mode (recommended when handing it to testers)
 #   ARCHS="x64 arm64"   Windows architectures to build
 #   SKIP_TESTS=1        skip the unit tests
@@ -13,7 +13,7 @@ set -euo pipefail
 cd "${0:A:h}/.."
 ROOT=$PWD
 DOTNET=${DOTNET:-$(command -v dotnet 2>/dev/null || echo /opt/homebrew/bin/dotnet)}
-VERSION=${VERSION:-1.0.0}
+VERSION=${VERSION:-1.2.0}
 ARCHS=(${=ARCHS:-x64 arm64})
 if [[ "${TESTER:-0}" == "1" ]]; then TESTER_FLAG=true; SUFFIX="-tester"; else TESTER_FLAG=false; SUFFIX=""; fi
 OUT=$ROOT/build/dist
