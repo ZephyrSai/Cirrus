@@ -11,7 +11,7 @@ cd "${0:A:h}/.."
 CONFIG=${CONFIG:-release}
 OUTPUT=${OUTPUT:-build}
 BUNDLE_ID=${BUNDLE_ID:-io.github.zephyrsai.cirrus}
-VERSION=${VERSION:-1.0.0}
+VERSION=${VERSION:-1.2.0}
 BUILD_NUMBER=${BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}
 SIGN=${SIGN_IDENTITY:--}
 

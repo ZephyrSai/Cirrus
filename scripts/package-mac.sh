@@ -4,10 +4,10 @@
 #   TESTER=1                    start in read-only iCloud mode (recommended when handing to testers)
 #   NOTARY_PROFILE=<name>       if set, notarize + staple via `xcrun notarytool` (needs a Developer ID identity
 #                               and `xcrun notarytool store-credentials <name>` run once)
-#   VERSION=1.0.0
+#   VERSION=1.2.0
 set -euo pipefail
 cd "${0:A:h}/.."
-VERSION=${VERSION:-1.0.0}
+VERSION=${VERSION:-1.2.0}
 SUFFIX=$([[ "${TESTER:-0}" == "1" ]] && echo "-tester" || echo "")
 STAGE=build/dist/stage
 OUT=build/dist

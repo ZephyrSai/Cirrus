@@ -12,7 +12,7 @@
   .\scripts\build-windows.ps1 -Run                    # build x64 and start it in demo mode (CIRRUS_DEMO=1)
 #>
 param(
-  [string]$Version = "1.0.0",
+  [string]$Version = "1.2.0",
   [switch]$Tester,
   [string[]]$Archs = @("x64", "arm64"),
   [switch]$SkipTests,
